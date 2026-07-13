@@ -8,6 +8,16 @@
     "node": ">=22.13.0"
   },
   "packageManager": "pnpm@10.12.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "ignoredBuiltDependencies": [
+      "@parcel/watcher",
+      "msgpackr-extract",
+      "protobufjs"
+    ]
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit",

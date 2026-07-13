@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { ValidationError } from "./errors.js";
 
@@ -46,6 +47,12 @@ function targetPorts(value: string | undefined): Set<number> {
   return new Set(parts);
 }
 
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  if (normalized === "localhost" || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
+  return isIP(normalized) === 4 && normalized.split(".")[0] === "127";
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const providerMode = env.PROVIDER_MODE ?? "mock";
   if (providerMode !== "mock" && providerMode !== "live") {
@@ -53,15 +60,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const sqlitePath = resolve(env.SQLITE_PATH ?? "./data/profound.db");
+  const controlHost = env.CONTROL_API_HOST ?? "127.0.0.1";
+  const adminToken = env.CONTROL_API_TOKEN?.trim() || "change-me";
   mkdirSync(dirname(sqlitePath), { recursive: true });
+
+  if ((providerMode === "live" || !isLoopbackHost(controlHost)) && adminToken === "change-me") {
+    throw new ValidationError(
+      "CONTROL_API_TOKEN must be set to a non-placeholder value in live mode or when CONTROL_API_HOST is not loopback",
+    );
+  }
 
   const config: AppConfig = {
     providerMode,
     forwardHost: env.FORWARD_PROXY_HOST ?? "127.0.0.1",
     forwardPort: integer(env.FORWARD_PROXY_PORT, 8080, "FORWARD_PROXY_PORT"),
-    controlHost: env.CONTROL_API_HOST ?? "127.0.0.1",
+    controlHost,
     controlPort: integer(env.CONTROL_API_PORT, 8081, "CONTROL_API_PORT"),
-    adminToken: env.CONTROL_API_TOKEN ?? "change-me",
+    adminToken,
     advertisedProxyHost: env.ADVERTISED_PROXY_HOST ?? "127.0.0.1",
     sqlitePath,
     allowedTargetPorts: targetPorts(env.ALLOWED_TARGET_PORTS),

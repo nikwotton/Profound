@@ -15,14 +15,19 @@ The control plane is defined with Effect `HttpApi` and implemented with `HttpApi
 - TypeScript 7
 - pnpm 10
 
-## Run locally
+## Install
 
 ```sh
 pnpm install
-CONTROL_API_TOKEN=change-me pnpm dev
 ```
 
-The forward proxy listens on `127.0.0.1:8080`; the control API listens on `127.0.0.1:8081`. Configuration is read from environment variables—the service does not automatically load `.env` files. For a larger configuration, export the values in `.env.example` using your preferred process manager or shell tooling.
+## Start locally
+
+```sh
+pnpm dev
+```
+
+The forward proxy listens on `127.0.0.1:8080`; the control API listens on `127.0.0.1:8081`. Local mock mode uses the development administrator token `change-me`, which is used by the examples below. Configuration is read from environment variables—the service does not automatically load `.env` files. For a larger configuration, export the values in `.env.example` using your preferred process manager or shell tooling.
 
 Generated API assets are available without administrator authentication:
 
@@ -46,7 +51,7 @@ curl -sS http://127.0.0.1:8081/v1/routes \
 The response includes a `proxyUrl` exactly once. Use it with an HTTP client:
 
 ```sh
-curl --proxy 'http://ROUTE_ID:ROUTE_TOKEN@127.0.0.1:8080' http://example.test/
+curl --proxy 'http://ROUTE_ID:ROUTE_TOKEN@127.0.0.1:8080' https://example.com/
 ```
 
 Create a persistent mobile route matching a simulated New York T-Mobile device:
@@ -67,14 +72,14 @@ Rotate a route with `POST /v1/routes/:id/rotate`. Inspect redacted route state w
 
 ## Security behavior
 
-- The control API requires `CONTROL_API_TOKEN` on every `/v1` request.
+- The control API requires `CONTROL_API_TOKEN` on every `/v1` request. Local mock mode bound to loopback defaults to `change-me`.
 - Forward-proxy routes use generated Basic-auth credentials; only a scrypt hash is persisted.
 - Target ports are restricted to `80,443` by default.
 - Provider credentials, route tokens, authorization headers, cookies, and URL query strings are omitted or redacted in logs.
 - OpenTelemetry attributes include route/provider identifiers, target host/port, status, and duration, but exclude credentials and URL query strings.
 - Provider failures fail closed. The service never sends target traffic directly as a fallback.
 
-Change the default administrator token before exposing either listener beyond localhost.
+Live mode and control APIs bound beyond loopback refuse to start unless `CONTROL_API_TOKEN` is set to a non-placeholder value.
 
 ## Verification
 
@@ -88,7 +93,7 @@ All normal tests are local and deterministic. `pnpm test:live` is reserved for a
 
 ## Live mode
 
-Set `PROVIDER_MODE=live` and supply the Bright Data and Proxidize variables in `.env.example`. Live mode uses the documented provider endpoints, but has not been credential-verified in this initial offline implementation.
+Set `PROVIDER_MODE=live`, set a strong `CONTROL_API_TOKEN`, and supply the Bright Data and Proxidize variables in `.env.example`. Live mode uses the documented provider endpoints, but has not been credential-verified in this initial offline implementation.
 
 ## OpenTelemetry
 

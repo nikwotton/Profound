@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { OpenApi } from "@effect/platform";
+import { loadConfig } from "../src/config.js";
 import { ControlApi } from "../src/control-contract.js";
 import { buildBrightDataUsername } from "../src/providers/bright-data.js";
 import type { StoredRoute } from "../src/types.js";
@@ -23,6 +24,39 @@ function route(overrides: Partial<StoredRoute> = {}): StoredRoute {
     ...overrides,
   };
 }
+
+test("control API token defaults only for local mock mode", () => {
+  const local = loadConfig({
+    PROVIDER_MODE: "mock",
+    CONTROL_API_HOST: "127.0.0.1",
+    SQLITE_PATH: "./data/config-test.db",
+  });
+  assert.equal(local.adminToken, "change-me");
+
+  assert.throws(() => loadConfig({
+    PROVIDER_MODE: "mock",
+    CONTROL_API_HOST: "0.0.0.0",
+    SQLITE_PATH: "./data/config-test.db",
+  }), /CONTROL_API_TOKEN must be set/);
+
+  assert.throws(() => loadConfig({
+    PROVIDER_MODE: "live",
+    CONTROL_API_HOST: "127.0.0.1",
+    BRIGHT_DATA_CUSTOMER_ID: "customer",
+    BRIGHT_DATA_ZONE: "zone",
+    BRIGHT_DATA_PASSWORD: "password",
+    PROXIDIZE_API_TOKEN: "provider-token",
+    SQLITE_PATH: "./data/config-test.db",
+  }), /CONTROL_API_TOKEN must be set/);
+
+  const shared = loadConfig({
+    PROVIDER_MODE: "mock",
+    CONTROL_API_HOST: "0.0.0.0",
+    CONTROL_API_TOKEN: "local-network-secret",
+    SQLITE_PATH: "./data/config-test.db",
+  });
+  assert.equal(shared.adminToken, "local-network-secret");
+});
 
 test("route validation supplies behavior defaults and normalizes countries", () => {
   const residential = validateRouteProfile({
