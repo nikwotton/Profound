@@ -1,4 +1,5 @@
 import type { Server } from "node:net";
+import { AppError } from "./errors.js";
 import type { ListenAddress } from "./types.js";
 
 export async function listen(server: Server, host: string, port: number): Promise<ListenAddress> {
@@ -40,6 +41,19 @@ export function basicAuth(username: string, password: string): string {
 }
 
 export function parseHostPort(authority: string, defaultPort: number): { host: string; port: number } {
-  const url = new URL(`http://${authority}`);
-  return { host: url.hostname, port: url.port === "" ? defaultPort : Number(url.port) };
+  try {
+    const url = new URL(`http://${authority}`);
+    if (
+      authority.trim() === "" || url.hostname === "" || url.username !== "" || url.password !== "" ||
+      url.pathname !== "/" || url.search !== "" || url.hash !== ""
+    ) {
+      throw new Error("Invalid authority");
+    }
+    return {
+      host: url.hostname.replace(/^\[(.*)\]$/, "$1"),
+      port: url.port === "" ? defaultPort : Number(url.port),
+    };
+  } catch {
+    throw new AppError("CONNECT requires a host:port authority without credentials, path, or query", "invalid_target", 400);
+  }
 }

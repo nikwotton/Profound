@@ -1,0 +1,12 @@
+.git
+.sst
+node_modules
+dist
+data
+coverage
+*.db
+*.db-shm
+*.db-wal
+.env
+.DS_Store
+*.png

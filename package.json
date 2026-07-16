@@ -1,8 +1,8 @@
 {
   "name": "profound-proxy-router",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "private": true,
-  "description": "Provider-neutral residential and mobile forward proxy router",
+  "description": "Provider-neutral HTTP, HTTPS, and SOCKS5 proxy router",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -19,28 +19,42 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "check": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit && tsc -p tsconfig.sst.json",
+    "openapi:generate": "pnpm build && node scripts/openapi-contract.mjs generate",
+    "openapi:check": "pnpm build && node scripts/openapi-contract.mjs check",
+    "openapi:compat": "pnpm build && node scripts/openapi-contract.mjs compatibility",
     "dev": "tsx watch src/index.ts",
+    "geoip:prepare": "node scripts/prepare-geoip.mjs",
+    "aws:deploy": "sst deploy",
+    "aws:remove": "sst remove",
+    "sst:dev": "sst dev",
     "start": "node dist/src/index.js",
     "test": "pnpm build && node --test dist/tests/*.test.js dist/tests/**/*.test.js",
+    "test:deployed": "pnpm build && RUN_DEPLOYED_SST_TESTS=1 node --test --test-concurrency=1 dist/tests/*.test.js dist/tests/deployed/**/*.test.js",
     "test:live": "pnpm build && RUN_LIVE_PROXY_TESTS=1 node --test dist/tests/live/**/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
+    "sst": "^4.17.1",
     "tsx": "^4.20.3",
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1086.0",
+    "@aws-sdk/lib-dynamodb": "^3.1086.0",
     "@effect/opentelemetry": "^0.63.0",
     "@effect/platform": "^0.96.2",
     "@effect/platform-node": "^0.107.0",
+    "@maxmind/geoip2-node": "^7.0.0",
     "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.220.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.220.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
     "@opentelemetry/sdk-metrics": "^2.9.0",
     "@opentelemetry/sdk-node": "^0.220.0",
     "@opentelemetry/sdk-trace-base": "^2.9.0",
-    "effect": "^3.21.4"
+    "effect": "^3.21.4",
+    "tar": "^7.5.20"
   }
 }

@@ -1,0 +1,28 @@
+FROM node:22-bookworm-slim AS build
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY tsconfig.json tsconfig.build.json ./
+COPY scripts ./scripts
+COPY src ./src
+COPY tests ./tests
+RUN pnpm build && pnpm prune --prod
+
+FROM node:22-bookworm-slim AS runtime
+
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY --from=build --chown=node:node /app/package.json ./package.json
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist/src ./dist/src
+
+USER node
+EXPOSE 1080 8080 8081 8082 8083 8090 8091
+CMD ["node", "dist/src/index.js"]

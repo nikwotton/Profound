@@ -1,0 +1,2201 @@
+{
+  "components": {
+    "schemas": {
+      "AccessGrant": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "credentials": {
+            "items": {
+              "$ref": "#/components/schemas/AccessGrantCredential"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "principalId": {
+            "type": "string"
+          },
+          "routeId": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "revoked"
+            ],
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "routeId",
+          "principalId",
+          "status",
+          "credentials",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AccessGrantCredential": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastUsedAt": {
+            "type": "string"
+          },
+          "renewalDue": {
+            "type": "boolean"
+          },
+          "renewalDueAt": {
+            "type": "string"
+          },
+          "revokeAt": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "overlap",
+              "revoked",
+              "expired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "createdAt",
+          "renewalDueAt",
+          "renewalDue",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "BadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "_tag": {
+            "enum": [
+              "BadRequest"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "_tag"
+        ],
+        "type": "object"
+      },
+      "HttpApiDecodeError": {
+        "additionalProperties": false,
+        "description": "The request did not match the expected schema",
+        "properties": {
+          "_tag": {
+            "enum": [
+              "HttpApiDecodeError"
+            ],
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issues",
+          "message",
+          "_tag"
+        ],
+        "type": "object"
+      },
+      "InternalError": {
+        "additionalProperties": false,
+        "properties": {
+          "_tag": {
+            "enum": [
+              "InternalError"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "_tag"
+        ],
+        "type": "object"
+      },
+      "Issue": {
+        "additionalProperties": false,
+        "description": "Represents an error encountered while parsing a value to match the schema",
+        "properties": {
+          "_tag": {
+            "description": "The tag identifying the type of parse issue",
+            "enum": [
+              "Pointer",
+              "Unexpected",
+              "Missing",
+              "Composite",
+              "Refinement",
+              "Transformation",
+              "Type",
+              "Forbidden"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "description": "A descriptive message explaining the issue",
+            "type": "string"
+          },
+          "path": {
+            "description": "The path to the property where the issue occurred",
+            "items": {
+              "$ref": "#/components/schemas/PropertyKey"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "_tag",
+          "path",
+          "message"
+        ],
+        "type": "object"
+      },
+      "IssuedAccessGrant": {
+        "additionalProperties": false,
+        "properties": {
+          "accessGrant": {
+            "$ref": "#/components/schemas/AccessGrant"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/AccessGrantCredential"
+          },
+          "proxyUrls": {
+            "additionalProperties": false,
+            "properties": {
+              "http": {
+                "type": "string"
+              },
+              "socks5": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "http",
+              "socks5"
+            ],
+            "type": "object"
+          },
+          "proxyUsername": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accessGrant",
+          "credential",
+          "proxyUsername",
+          "proxyUrls"
+        ],
+        "type": "object"
+      },
+      "PropertyKey": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "additionalProperties": false,
+            "description": "an object to be decoded into a globally shared symbol",
+            "properties": {
+              "_tag": {
+                "enum": [
+                  "symbol"
+                ],
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "_tag",
+              "key"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RotationPolicy": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "enum": [
+                  "per_request"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "intervalSeconds": {
+                "type": "number"
+              },
+              "mode": {
+                "enum": [
+                  "interval"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "intervalSeconds"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "enum": [
+                  "manual"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Route": {
+        "additionalProperties": false,
+        "properties": {
+          "allowedProtocols": {
+            "items": {
+              "enum": [
+                "http",
+                "https",
+                "socks5"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "customerId": {
+            "type": "string"
+          },
+          "forceProvider": {
+            "enum": [
+              "bright_data",
+              "proxidize"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "isAuthenticated": {
+            "type": "boolean"
+          },
+          "lastError": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "bright_data",
+              "proxidize"
+            ],
+            "type": "string"
+          },
+          "retryPolicy": {
+            "additionalProperties": false,
+            "properties": {
+              "maxAttempts": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "maxAttempts"
+            ],
+            "type": "object"
+          },
+          "rotation": {
+            "$ref": "#/components/schemas/RotationPolicy"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "none"
+                    ],
+                    "type": "string"
+                  },
+                  "requireGeographicContinuity": {
+                    "enum": [
+                      false
+                    ],
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "requireGeographicContinuity"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "enum": [
+                      "sticky"
+                    ],
+                    "type": "string"
+                  },
+                  "requireGeographicContinuity": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "requireGeographicContinuity"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "shouldRetry": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "rotating",
+              "failed",
+              "revoked"
+            ],
+            "type": "string"
+          },
+          "targeting": {
+            "$ref": "#/components/schemas/Targeting"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "allowedProtocols",
+          "targeting",
+          "rotation",
+          "session",
+          "customerId",
+          "userId",
+          "isAuthenticated",
+          "shouldRetry",
+          "retryPolicy",
+          "provider",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "RouteNotFound": {
+        "additionalProperties": false,
+        "properties": {
+          "_tag": {
+            "enum": [
+              "RouteNotFound"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "_tag"
+        ],
+        "type": "object"
+      },
+      "RouteProfileInput": {
+        "additionalProperties": false,
+        "properties": {
+          "allowedProtocols": {
+            "items": {
+              "enum": [
+                "http",
+                "https",
+                "socks5"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "customerId": {
+            "type": "string"
+          },
+          "forceProvider": {
+            "enum": [
+              "bright_data",
+              "proxidize"
+            ],
+            "type": "string"
+          },
+          "isAuthenticated": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "retryPolicy": {
+            "additionalProperties": false,
+            "properties": {
+              "maxAttempts": {
+                "type": "number"
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          "rotation": {
+            "$ref": "#/components/schemas/RotationPolicy"
+          },
+          "session": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "mode": {
+                "enum": [
+                  "none",
+                  "sticky"
+                ],
+                "type": "string"
+              },
+              "requireGeographicContinuity": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "shouldRetry": {
+            "type": "boolean"
+          },
+          "targeting": {
+            "$ref": "#/components/schemas/Targeting"
+          }
+        },
+        "required": [
+          "name",
+          "targeting",
+          "customerId",
+          "isAuthenticated",
+          "shouldRetry"
+        ],
+        "type": "object"
+      },
+      "ServiceUnavailable": {
+        "additionalProperties": false,
+        "properties": {
+          "_tag": {
+            "enum": [
+              "ServiceUnavailable"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "_tag"
+        ],
+        "type": "object"
+      },
+      "Targeting": {
+        "additionalProperties": false,
+        "properties": {
+          "asn": {
+            "type": "number"
+          },
+          "carrier": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "postalCode": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "country"
+        ],
+        "type": "object"
+      },
+      "Unauthorized": {
+        "additionalProperties": false,
+        "properties": {
+          "_tag": {
+            "enum": [
+              "Unauthorized"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "_tag"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "description": "Administrator token supplied through CONTROL_API_TOKEN",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Create reusable route profiles and independently revocable per-principal proxy access grants.",
+    "title": "Profound Proxy Router Control API",
+    "version": "0.5.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health/live": {
+      "get": {
+        "description": "Process liveness",
+        "operationId": "live",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "live"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          }
+        },
+        "security": [],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Provider and service readiness",
+        "operationId": "ready",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "ready"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailable"
+                }
+              }
+            },
+            "description": "ServiceUnavailable"
+          }
+        },
+        "security": [],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/access-grants/{grantId}": {
+      "delete": {
+        "operationId": "revokeAccessGrant",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/access-grants/{grantId}/credentials/emergency-rotate": {
+      "post": {
+        "description": "Replace a suspected-compromised credential immediately without overlap; return the replacement secret only in this response",
+        "operationId": "emergencyRotateAccessGrantCredential",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedAccessGrant"
+                }
+              }
+            },
+            "description": "IssuedAccessGrant"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/access-grants/{grantId}/credentials/rotate": {
+      "post": {
+        "description": "Rotate this grant's bearer credential without changing its device lease; return the replacement secret only in this response",
+        "operationId": "rotateAccessGrantCredential",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedAccessGrant"
+                }
+              }
+            },
+            "description": "IssuedAccessGrant"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/access-grants/{grantId}/emergency-revoke": {
+      "post": {
+        "description": "Revoke this grant and terminate only its established connections",
+        "operationId": "emergencyRevokeAccessGrant",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/access-grants/{grantId}/release": {
+      "post": {
+        "description": "Explicitly release this grant's device-backed session lease",
+        "operationId": "releaseAccessGrantLease",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/providers": {
+      "get": {
+        "operationId": "providerDescriptors",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "capabilities": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "assignmentControl": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "providerManagedReassignment": {
+                                    "enum": [
+                                      "disabled",
+                                      "observable",
+                                      "uncontrolled"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "providerManagedRotation": {
+                                    "enum": [
+                                      "disabled",
+                                      "uncontrolled"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "providerManagedReassignment",
+                                  "providerManagedRotation"
+                                ],
+                                "type": "object"
+                              },
+                              "authenticatedTraffic": {
+                                "type": "boolean"
+                              },
+                              "clientProtocols": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "countries": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "dnsResolution": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "http": {
+                                    "enum": [
+                                      "provider_configurable",
+                                      "provider_remote",
+                                      "unverified"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "socks5": {
+                                    "enum": [
+                                      "provider_configurable",
+                                      "provider_remote",
+                                      "unverified"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "http",
+                                  "socks5"
+                                ],
+                                "type": "object"
+                              },
+                              "exactCity": {
+                                "enum": [
+                                  "provider_guaranteed",
+                                  "verifiable",
+                                  "unsupported"
+                                ],
+                                "type": "string"
+                              },
+                              "geography": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "rotation": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "sessions": {
+                                "type": "boolean"
+                              },
+                              "targetPorts": {
+                                "anyOf": [
+                                  {
+                                    "enum": [
+                                      "any_public"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  {
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "type": "array"
+                                  }
+                                ]
+                              },
+                              "unauthenticatedTraffic": {
+                                "type": "boolean"
+                              },
+                              "upstreamProtocols": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "clientProtocols",
+                              "upstreamProtocols",
+                              "authenticatedTraffic",
+                              "unauthenticatedTraffic",
+                              "geography",
+                              "sessions",
+                              "exactCity",
+                              "assignmentControl",
+                              "rotation",
+                              "targetPorts",
+                              "dnsResolution"
+                            ],
+                            "type": "object"
+                          },
+                          "costRank": {
+                            "type": "number"
+                          },
+                          "id": {
+                            "enum": [
+                              "bright_data",
+                              "proxidize"
+                            ],
+                            "type": "string"
+                          },
+                          "pricing": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "amountUsd": {
+                                "type": "number"
+                              },
+                              "model": {
+                                "enum": [
+                                  "per_gib",
+                                  "per_device_month"
+                                ],
+                                "type": "string"
+                              },
+                              "source": {
+                                "enum": [
+                                  "provider_api",
+                                  "versioned_config"
+                                ],
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "source",
+                              "version",
+                              "model",
+                              "amountUsd"
+                            ],
+                            "type": "object"
+                          },
+                          "providerClass": {
+                            "enum": [
+                              "residential",
+                              "device_backed"
+                            ],
+                            "type": "string"
+                          },
+                          "usageDimensions": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "common": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "providerSpecific": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "common",
+                              "providerSpecific"
+                            ],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "providerClass",
+                          "capabilities",
+                          "pricing",
+                          "usageDimensions",
+                          "costRank"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/v1/providers/health": {
+      "get": {
+        "operationId": "providerHealth",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "checkedAt": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "enum": [
+                              "bright_data",
+                              "proxidize"
+                            ],
+                            "type": "string"
+                          },
+                          "state": {
+                            "enum": [
+                              "healthy",
+                              "degraded",
+                              "unhealthy"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "state",
+                          "checkedAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/v1/routes": {
+      "get": {
+        "operationId": "listRoutes",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Route"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      },
+      "post": {
+        "operationId": "createRoute",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteProfileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "accessGrant": {
+                      "$ref": "#/components/schemas/AccessGrant"
+                    },
+                    "credential": {
+                      "$ref": "#/components/schemas/AccessGrantCredential"
+                    },
+                    "proxyUrls": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "http": {
+                          "type": "string"
+                        },
+                        "socks5": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "http",
+                        "socks5"
+                      ],
+                      "type": "object"
+                    },
+                    "proxyUsername": {
+                      "type": "string"
+                    },
+                    "route": {
+                      "$ref": "#/components/schemas/Route"
+                    }
+                  },
+                  "required": [
+                    "route",
+                    "accessGrant",
+                    "credential",
+                    "proxyUsername",
+                    "proxyUrls"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/HttpApiDecodeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BadRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailable"
+                }
+              }
+            },
+            "description": "ServiceUnavailable"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{id}": {
+      "delete": {
+        "operationId": "deleteRoute",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      },
+      "get": {
+        "operationId": "getRoute",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "route": {
+                      "$ref": "#/components/schemas/Route"
+                    }
+                  },
+                  "required": [
+                    "route"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{id}/access-grants": {
+      "get": {
+        "description": "List the authenticated principal's redacted grants for this route profile",
+        "operationId": "listAccessGrants",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/AccessGrant"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      },
+      "post": {
+        "description": "Issue a proxy credential whose secret is returned only in this response",
+        "operationId": "createAccessGrant",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "accessGrant": {
+                      "$ref": "#/components/schemas/AccessGrant"
+                    },
+                    "credential": {
+                      "$ref": "#/components/schemas/AccessGrantCredential"
+                    },
+                    "proxyUrls": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "http": {
+                          "type": "string"
+                        },
+                        "socks5": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "http",
+                        "socks5"
+                      ],
+                      "type": "object"
+                    },
+                    "proxyUsername": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "accessGrant",
+                    "credential",
+                    "proxyUsername",
+                    "proxyUrls"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{id}/emergency-revoke": {
+      "post": {
+        "description": "Revoke the route and terminate its established connections",
+        "operationId": "emergencyRevokeRoute",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{id}/rotate": {
+      "post": {
+        "operationId": "rotateRoute",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "route": {
+                      "$ref": "#/components/schemas/Route"
+                    }
+                  },
+                  "required": [
+                    "route"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "routes"
+        ]
+      }
+    }
+  },
+  "security": [],
+  "tags": [
+    {
+      "name": "health"
+    },
+    {
+      "name": "routes"
+    },
+    {
+      "name": "providers"
+    }
+  ]
+}

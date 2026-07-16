@@ -5,7 +5,7 @@ test("live Bright Data and Proxidize smoke test", {
 }, async () => {
   if (
     !process.env.BRIGHT_DATA_CUSTOMER_ID || !process.env.BRIGHT_DATA_ZONE ||
-    !process.env.BRIGHT_DATA_PASSWORD || !process.env.PROXIDIZE_API_TOKEN
+    !process.env.BRIGHT_DATA_PASSWORD || !process.env.BRIGHT_DATA_API_KEY || !process.env.PROXIDIZE_API_TOKEN
   ) {
     throw new Error("Live provider credentials are required");
   }

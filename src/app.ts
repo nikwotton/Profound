@@ -1,18 +1,22 @@
 import { ControlApiServer } from "./control-api.js";
 import type { AppConfig } from "./config.js";
+import { DynamoRouteStore } from "./dynamo-store.js";
 import { ForwardProxyServer } from "./forward-proxy.js";
 import type { Logger } from "./logger.js";
 import { BrightDataAdapter } from "./providers/bright-data.js";
 import { ProxidizeAdapter } from "./providers/proxidize.js";
 import { RouteService } from "./route-service.js";
+import { Socks5ProxyServer } from "./socks5-proxy.js";
 import { BrightDataSimulator } from "./simulators/bright-data.js";
 import { ProxidizeSimulator } from "./simulators/proxidize.js";
-import { RouteStore } from "./store.js";
+import { SqliteRouteStore, type RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
-import type { ListenAddress } from "./types.js";
+import { createTargetValidator, type TargetValidator } from "./target-security.js";
+import { DEVICE_LEASE_IDLE_TIMEOUT_MS, type ListenAddress } from "./types.js";
 
 export interface RunningApplication {
   forwardAddress: ListenAddress;
+  socks5Address: ListenAddress;
   controlAddress: ListenAddress;
   routes: RouteService;
   simulators?: {
@@ -22,76 +26,164 @@ export interface RunningApplication {
   stop(): Promise<void>;
 }
 
-export async function startApplication(config: AppConfig, logger: Logger): Promise<RunningApplication> {
-  const telemetry = new Telemetry({
-    serviceName: config.telemetry.serviceName,
-    serviceVersion: config.telemetry.serviceVersion,
-    environment: process.env,
-  });
-  const store = new RouteStore(config.sqlitePath);
+export interface RunningDataPlaneApplication {
+  forwardAddress: ListenAddress;
+  socks5Address: ListenAddress;
+  routes: RouteService;
+  stop(): Promise<void>;
+}
+
+export interface RunningControlPlaneApplication {
+  controlAddress: ListenAddress;
+  routes: RouteService;
+  stop(): Promise<void>;
+}
+
+export interface ApplicationDependencies {
+  targetValidator?: TargetValidator;
+  now?: () => number;
+  telemetry?: Telemetry;
+}
+
+interface RoutingRuntime {
+  routes: RouteService;
+  simulators?: RunningApplication["simulators"];
+  stop(): Promise<void>;
+}
+
+async function createRoutingRuntime(
+  config: AppConfig,
+  logger: Logger,
+  telemetry: Telemetry,
+  proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress },
+  dependencies: Pick<ApplicationDependencies, "now">,
+): Promise<RoutingRuntime> {
+  let store: RouteStore;
+  if (config.persistenceBackend === "dynamodb") {
+    if (config.routeTableName === undefined) throw new Error("DynamoDB route table name is missing");
+    store = new DynamoRouteStore(config.routeTableName);
+  } else {
+    store = new SqliteRouteStore(config.sqlitePath);
+  }
   let simulators: RunningApplication["simulators"];
   let brightConfig = config.brightData;
   let proxidizeConfig = config.proxidize;
 
-  if (config.providerMode === "mock") {
-    const brightData = new BrightDataSimulator({
-      host: "127.0.0.1",
-      port: 0,
-      customerId: config.brightData.customerId,
-      zone: config.brightData.zone,
-      password: config.brightData.password,
-      logger,
+  try {
+    if (config.providerMode === "mock") {
+      const brightData = new BrightDataSimulator({
+        host: "127.0.0.1",
+        port: 0,
+        customerId: config.brightData.customerId,
+        zone: config.brightData.zone,
+        password: config.brightData.password,
+        logger,
+      });
+      const proxidize = new ProxidizeSimulator({
+        host: "127.0.0.1",
+        controlPort: 0,
+        dataPort: 0,
+        apiToken: config.proxidize.apiToken,
+        logger,
+      });
+      const [brightAddress, proxidizeAddresses] = await Promise.all([
+        brightData.start(),
+        proxidize.start(),
+      ]);
+      simulators = { brightData, proxidize };
+      brightConfig = { ...config.brightData, host: brightAddress.host, port: brightAddress.port };
+      proxidizeConfig = {
+        ...config.proxidize,
+        apiBaseUrl: `http://${proxidizeAddresses.control.host}:${proxidizeAddresses.control.port}`,
+      };
+    }
+
+    const brightData = new BrightDataAdapter({
+      ...brightConfig,
+      connectTimeoutMs: config.attemptEstablishmentTimeoutMs,
     });
-    const proxidize = new ProxidizeSimulator({
-      host: "127.0.0.1",
-      controlPort: 0,
-      dataPort: 0,
-      apiToken: config.proxidize.apiToken,
-      logger,
+    const proxidize = new ProxidizeAdapter({
+      ...proxidizeConfig,
+      requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
+      exactCity: config.proxidizeExactCity,
     });
-    const [brightAddress, proxidizeAddresses] = await Promise.all([
-      brightData.start(),
-      proxidize.start(),
+    const routes = new RouteService(
+      store,
+      brightData,
+      proxidize,
+      proxyAddresses,
+      config.advertisedProxyHost,
+      config.advertisedHttpProxyProtocol,
+      logger,
+      telemetry,
+      config.retryDefaults,
+      DEVICE_LEASE_IDLE_TIMEOUT_MS,
+      dependencies.now,
+    );
+    return {
+      routes,
+      ...(simulators === undefined ? {} : { simulators }),
+      stop: async () => {
+        await Promise.allSettled([
+          ...(simulators === undefined
+            ? []
+            : [simulators.brightData.stop(), simulators.proxidize.stop()]),
+        ]);
+        await store.close();
+      },
+    };
+  } catch (error) {
+    await Promise.allSettled([
+      ...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()]),
     ]);
-    simulators = { brightData, proxidize };
-    brightConfig = {
-      ...config.brightData,
-      host: brightAddress.host,
-      port: brightAddress.port,
-    };
-    proxidizeConfig = {
-      ...config.proxidize,
-      apiBaseUrl: `http://${proxidizeAddresses.control.host}:${proxidizeAddresses.control.port}`,
-    };
+    await store.close();
+    throw error;
   }
+}
 
-  const brightData = new BrightDataAdapter({
-    ...brightConfig,
-    connectTimeoutMs: config.connectTimeoutMs,
-  });
-  const proxidize = new ProxidizeAdapter({
-    ...proxidizeConfig,
-    requestTimeoutMs: config.connectTimeoutMs,
-  });
-
+export async function startApplication(
+  config: AppConfig,
+  logger: Logger,
+  dependencies: ApplicationDependencies = {},
+): Promise<RunningApplication> {
+  const ownsTelemetry = dependencies.telemetry === undefined;
+  const telemetry = dependencies.telemetry ?? new Telemetry({
+      serviceName: config.telemetry.serviceName,
+      serviceVersion: config.telemetry.serviceVersion,
+      environment: process.env,
+    });
   let forwardAddress: ListenAddress | undefined;
-  const routes = new RouteService(
-    store,
-    brightData,
-    proxidize,
-    () => {
-      if (forwardAddress === undefined) throw new Error("Forward proxy has not started");
-      return forwardAddress;
-    },
-    config.advertisedProxyHost,
+  let socks5Address: ListenAddress | undefined;
+  const runtime = await createRoutingRuntime(
+    config,
     logger,
     telemetry,
+    () => {
+      if (forwardAddress === undefined || socks5Address === undefined) throw new Error("Data-plane proxies have not started");
+      return { http: forwardAddress, socks5: socks5Address };
+    },
+    dependencies,
   );
+  const routes = runtime.routes;
   const forward = new ForwardProxyServer(routes, {
     host: config.forwardHost,
     port: config.forwardPort,
-    allowedTargetPorts: config.allowedTargetPorts,
-    connectTimeoutMs: config.connectTimeoutMs,
+    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
+    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    maxHeaderBytes: config.maxHeaderBytes,
+    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
+    logger,
+    telemetry,
+  });
+  const socks5 = new Socks5ProxyServer(routes, {
+    host: config.socks5Host,
+    port: config.socks5Port,
+    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
+    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    maxHandshakeBytes: config.maxHeaderBytes,
+    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
     logger,
     telemetry,
   });
@@ -99,49 +191,167 @@ export async function startApplication(config: AppConfig, logger: Logger): Promi
     host: config.controlHost,
     port: config.controlPort,
     adminToken: config.adminToken,
+    adminUserId: config.adminUserId,
+    controlIdentities: config.controlIdentities,
+    advertisedProxyHostFromRequest: config.advertisedProxyHost === "request-host",
     logger,
     telemetry,
   });
 
   try {
     forwardAddress = await forward.start();
+    socks5Address = await socks5.start();
     const controlAddress = await control.start();
     await routes.refreshHealth();
     logger.info("Proxy router started", {
       providerMode: config.providerMode,
       forwardAddress,
+      socks5Address,
       controlAddress,
     });
 
     let stopped = false;
     return {
       forwardAddress,
+      socks5Address,
       controlAddress,
       routes,
-      ...(simulators === undefined ? {} : { simulators }),
+      ...(runtime.simulators === undefined ? {} : { simulators: runtime.simulators }),
       stop: async () => {
         if (stopped) return;
         stopped = true;
         await Promise.allSettled([
           control.stop(),
           forward.stop(),
-          ...(simulators === undefined
-            ? []
-            : [simulators.brightData.stop(), simulators.proxidize.stop()]),
+          socks5.stop(),
         ]);
-        store.close();
-        await telemetry.shutdown();
+        await runtime.stop();
         logger.info("Proxy router stopped");
+        if (ownsTelemetry) await telemetry.shutdown();
       },
     };
   } catch (error) {
     await Promise.allSettled([
       control.stop(),
       forward.stop(),
-      ...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()]),
+      socks5.stop(),
     ]);
-    store.close();
-    await telemetry.shutdown();
+    await runtime.stop();
+    if (ownsTelemetry) await telemetry.shutdown();
+    throw error;
+  }
+}
+
+export async function startDataPlaneApplication(
+  config: AppConfig,
+  logger: Logger,
+  dependencies: ApplicationDependencies = {},
+): Promise<RunningDataPlaneApplication> {
+  const ownsTelemetry = dependencies.telemetry === undefined;
+  const telemetry = dependencies.telemetry ?? new Telemetry({
+    serviceName: config.telemetry.serviceName,
+    serviceVersion: config.telemetry.serviceVersion,
+    environment: process.env,
+  });
+  let forwardAddress: ListenAddress | undefined;
+  let socks5Address: ListenAddress | undefined;
+  const runtime = await createRoutingRuntime(config, logger, telemetry, () => {
+    if (forwardAddress === undefined || socks5Address === undefined) throw new Error("Data-plane proxies have not started");
+    return { http: forwardAddress, socks5: socks5Address };
+  }, dependencies);
+  const forward = new ForwardProxyServer(runtime.routes, {
+    host: config.forwardHost,
+    port: config.forwardPort,
+    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
+    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    maxHeaderBytes: config.maxHeaderBytes,
+    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
+    logger,
+    telemetry,
+  });
+  const socks5 = new Socks5ProxyServer(runtime.routes, {
+    host: config.socks5Host,
+    port: config.socks5Port,
+    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
+    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    maxHandshakeBytes: config.maxHeaderBytes,
+    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
+    logger,
+    telemetry,
+  });
+  try {
+    forwardAddress = await forward.start();
+    socks5Address = await socks5.start();
+    await runtime.routes.refreshHealth();
+    logger.info("Proxy data plane started", { providerMode: config.providerMode, forwardAddress, socks5Address });
+    let stopped = false;
+    return {
+      forwardAddress,
+      socks5Address,
+      routes: runtime.routes,
+      stop: async () => {
+        if (stopped) return;
+        stopped = true;
+        await Promise.allSettled([forward.stop(), socks5.stop()]);
+        await runtime.stop();
+        if (ownsTelemetry) await telemetry.shutdown();
+      },
+    };
+  } catch (error) {
+    await Promise.allSettled([forward.stop(), socks5.stop()]);
+    await runtime.stop();
+    if (ownsTelemetry) await telemetry.shutdown();
+    throw error;
+  }
+}
+
+export async function startControlPlaneApplication(
+  config: AppConfig,
+  logger: Logger,
+  dependencies: ApplicationDependencies = {},
+): Promise<RunningControlPlaneApplication> {
+  const ownsTelemetry = dependencies.telemetry === undefined;
+  const telemetry = dependencies.telemetry ?? new Telemetry({
+    serviceName: config.telemetry.serviceName,
+    serviceVersion: config.telemetry.serviceVersion,
+    environment: process.env,
+  });
+  const runtime = await createRoutingRuntime(config, logger, telemetry, () => ({
+    http: { host: config.advertisedProxyHost, port: config.forwardPort },
+    socks5: { host: config.advertisedProxyHost, port: config.socks5Port },
+  }), dependencies);
+  const control = new ControlApiServer(runtime.routes, {
+    host: config.controlHost,
+    port: config.controlPort,
+    adminToken: config.adminToken,
+    adminUserId: config.adminUserId,
+    controlIdentities: config.controlIdentities,
+    advertisedProxyHostFromRequest: config.advertisedProxyHost === "request-host",
+    logger,
+    telemetry,
+  });
+  try {
+    const controlAddress = await control.start();
+    await runtime.routes.refreshHealth();
+    logger.info("Proxy control plane started", { providerMode: config.providerMode, controlAddress });
+    let stopped = false;
+    return {
+      controlAddress,
+      routes: runtime.routes,
+      stop: async () => {
+        if (stopped) return;
+        stopped = true;
+        await control.stop();
+        await runtime.stop();
+        if (ownsTelemetry) await telemetry.shutdown();
+      },
+    };
+  } catch (error) {
+    await control.stop();
+    await runtime.stop();
+    if (ownsTelemetry) await telemetry.shutdown();
     throw error;
   }
 }

@@ -2,26 +2,64 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { NotFoundError } from "./errors.js";
 import type {
+  CapabilityHealthSnapshot,
+  CapabilityName,
+  DeviceLease,
+  HealthAlertDelivery,
+  HealthAlertEvent,
+  HealthAlertState,
   ProviderHealth,
+  PublicAccessGrant,
   PublicRoute,
   RouteProfile,
   RouteStatus,
+  StoredAccessGrant,
+  StoredAccessGrantCredential,
   StoredRoute,
 } from "./types.js";
+
+export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = 30 * 24 * 60 * 60_000;
+export const ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS = 7 * 24 * 60 * 60_000;
+export const ACCESS_GRANT_CREDENTIAL_OVERLAP_MS = 72 * 60 * 60_000;
+
+function credentialDates(createdAt: string): { renewalDueAt: string; expiresAt: string } {
+  const createdAtMs = Date.parse(createdAt);
+  return {
+    renewalDueAt: new Date(createdAtMs + ACCESS_GRANT_CREDENTIAL_LIFETIME_MS - ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS).toISOString(),
+    expiresAt: new Date(createdAtMs + ACCESS_GRANT_CREDENTIAL_LIFETIME_MS).toISOString(),
+  };
+}
+
+export function createStoredCredential(id: string, token: string, createdAt: string): StoredAccessGrantCredential {
+  const tokenSalt = randomBytes(16).toString("hex");
+  return {
+    id,
+    tokenSalt,
+    tokenHash: scryptSync(token, tokenSalt, 32).toString("hex"),
+    status: "active",
+    createdAt,
+    ...credentialDates(createdAt),
+  };
+}
+
+function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number): boolean {
+  return credential.status !== "revoked" && Date.parse(credential.expiresAt) > nowMs &&
+    (credential.revokeAt === undefined || Date.parse(credential.revokeAt) > nowMs);
+}
 
 interface RouteRow {
   id: string;
   name: string;
-  kind: StoredRoute["kind"];
   targeting_json: string;
   rotation_json: string;
-  token_salt: string;
-  token_hash: string;
+  policy_json: string;
   provider: StoredRoute["provider"];
   endpoint_id: string | null;
   status: RouteStatus;
+  terminate_active: number;
   last_error: string | null;
   rotation_epoch: number;
+  last_rotation_at: string;
   created_at: string;
   updated_at: string;
 }
@@ -33,22 +71,104 @@ interface HealthRow {
   message: string | null;
 }
 
+interface AccessGrantRow {
+  id: string;
+  route_id: string;
+  principal_id: string;
+  credentials_json: string;
+  endpoint_id: string | null;
+  status: StoredAccessGrant["status"];
+  terminate_active: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function accessGrantFromRow(row: AccessGrantRow): StoredAccessGrant {
+  return {
+    id: row.id,
+    routeId: row.route_id,
+    principalId: row.principal_id,
+    credentials: JSON.parse(row.credentials_json) as StoredAccessGrantCredential[],
+    ...(row.endpoint_id === null ? {} : { endpointId: row.endpoint_id }),
+    status: row.status,
+    terminateActive: row.terminate_active === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface CapabilityHealthRow {
+  snapshot_json: string;
+}
+
+interface DeviceLeaseRow {
+  lease_key: string;
+  route_id: string;
+  endpoint_id: string;
+  last_activity_at: string;
+  active_until: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function leaseFromRow(row: DeviceLeaseRow): DeviceLease {
+  return {
+    leaseKey: row.lease_key,
+    routeId: row.route_id,
+    endpointId: row.endpoint_id,
+    lastActivityAt: row.last_activity_at,
+    activeUntil: row.active_until,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function routeFromRow(row: RouteRow): StoredRoute {
+  type StoredPolicy = Pick<
+    StoredRoute,
+    "allowedProtocols" | "session" | "customerId" | "userId" | "isAuthenticated" | "shouldRetry" | "retryPolicy" | "forceProvider"
+  >;
+  const policy = JSON.parse(row.policy_json) as StoredPolicy;
   return {
     id: row.id,
     name: row.name,
-    kind: row.kind,
     targeting: JSON.parse(row.targeting_json) as StoredRoute["targeting"],
     rotation: JSON.parse(row.rotation_json) as StoredRoute["rotation"],
-    tokenSalt: row.token_salt,
-    tokenHash: row.token_hash,
+    ...policy,
     provider: row.provider,
     ...(row.endpoint_id === null ? {} : { endpointId: row.endpoint_id }),
     status: row.status,
+    terminateActive: row.terminate_active === 1,
     ...(row.last_error === null ? {} : { lastError: row.last_error }),
     rotationEpoch: row.rotation_epoch,
+    lastRotationAt: row.last_rotation_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant {
+  const nowMs = Date.now();
+  return {
+    id: grant.id,
+    routeId: grant.routeId,
+    principalId: grant.principalId,
+    status: grant.status,
+    credentials: grant.credentials.map((credential) => ({
+      id: credential.id,
+      status: grant.status === "revoked" || credential.status === "revoked" ||
+        (credential.revokeAt !== undefined && Date.parse(credential.revokeAt) <= nowMs)
+        ? "revoked"
+        : Date.parse(credential.expiresAt) <= nowMs ? "expired" : credential.status,
+      createdAt: credential.createdAt,
+      renewalDueAt: credential.renewalDueAt,
+      renewalDue: Date.parse(credential.renewalDueAt) <= nowMs && Date.parse(credential.expiresAt) > nowMs,
+      expiresAt: credential.expiresAt,
+      ...(credential.revokeAt === undefined ? {} : { revokeAt: credential.revokeAt }),
+      ...(credential.lastUsedAt === undefined ? {} : { lastUsedAt: credential.lastUsedAt }),
+    })),
+    createdAt: grant.createdAt,
+    updatedAt: grant.updatedAt,
   };
 }
 
@@ -56,11 +176,17 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
   return {
     id: route.id,
     name: route.name,
-    kind: route.kind,
+    allowedProtocols: route.allowedProtocols,
     targeting: route.targeting,
     rotation: route.rotation,
+    session: route.session,
+    customerId: route.customerId,
+    userId: route.userId,
+    isAuthenticated: route.isAuthenticated,
+    shouldRetry: route.shouldRetry,
+    retryPolicy: route.retryPolicy,
+    ...(route.forceProvider === undefined ? {} : { forceProvider: route.forceProvider }),
     provider: route.provider,
-    ...(route.endpointId === undefined ? {} : { endpointId: route.endpointId }),
     status: route.status,
     ...(route.lastError === undefined ? {} : { lastError: route.lastError }),
     createdAt: route.createdAt,
@@ -68,7 +194,71 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
   };
 }
 
-export class RouteStore {
+export interface RouteStore {
+  create(
+    id: string,
+    profile: RouteProfile,
+    provider: StoredRoute["provider"],
+    endpointId?: string,
+  ): Promise<StoredRoute>;
+  get(id: string, includeRevoked?: boolean): Promise<StoredRoute>;
+  list(): Promise<StoredRoute[]>;
+  createAccessGrant(
+    id: string,
+    routeId: string,
+    principalId: string,
+    credentialId: string,
+    token: string,
+  ): Promise<StoredAccessGrant>;
+  getAccessGrant(id: string, includeRevoked?: boolean): Promise<StoredAccessGrant>;
+  listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]>;
+  authenticateAccessGrant(id: string, token: string): Promise<StoredAccessGrant | undefined>;
+  rotateAccessGrantCredential(
+    id: string,
+    credentialId: string,
+    token: string,
+    suspectedCompromise?: boolean,
+  ): Promise<StoredAccessGrant>;
+  revokeAccessGrant(id: string, terminateActive?: boolean): Promise<void>;
+  setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant>;
+  revoke(id: string, terminateActive?: boolean): Promise<void>;
+  shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean>;
+  setEndpoint(id: string, endpointId?: string): Promise<StoredRoute>;
+  acquireDeviceLease(
+    leaseKey: string,
+    routeId: string,
+    candidateEndpointIds: readonly string[],
+    now: string,
+    idleTimeoutMs: number,
+  ): Promise<DeviceLease | undefined>;
+  renewDeviceLease(
+    leaseKey: string,
+    now: string,
+    activeUntil: string,
+    recordActivity: boolean,
+  ): Promise<DeviceLease | undefined>;
+  getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined>;
+  releaseDeviceLease(leaseKey: string): Promise<void>;
+  setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute>;
+  claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined>;
+  completeRotation(id: string): Promise<StoredRoute>;
+  incrementRotationEpoch(id: string): Promise<StoredRoute>;
+  assignmentCount(endpointId: string): Promise<number>;
+  saveHealth(health: ProviderHealth): Promise<void>;
+  listHealth(): Promise<ProviderHealth[]>;
+  saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void>;
+  latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined>;
+  capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]>;
+  getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined>;
+  saveHealthAlertState(state: HealthAlertState): Promise<void>;
+  createHealthAlertEvent(event: HealthAlertEvent, destinationIds: readonly string[]): Promise<boolean>;
+  pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]>;
+  saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void>;
+  healthAlertHistory(limit: number): Promise<HealthAlertEvent[]>;
+  close(): Promise<void>;
+}
+
+export class SqliteRouteStore implements RouteStore {
   readonly #database: DatabaseSync;
 
   constructor(path: string) {
@@ -78,61 +268,123 @@ export class RouteStore {
       CREATE TABLE IF NOT EXISTS routes (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('residential', 'mobile')),
         targeting_json TEXT NOT NULL,
         rotation_json TEXT NOT NULL,
-        token_salt TEXT NOT NULL,
-        token_hash TEXT NOT NULL,
+        policy_json TEXT NOT NULL,
         provider TEXT NOT NULL CHECK(provider IN ('bright_data', 'proxidize')),
         endpoint_id TEXT,
         status TEXT NOT NULL CHECK(status IN ('ready', 'rotating', 'failed', 'revoked')),
+        terminate_active INTEGER NOT NULL DEFAULT 0 CHECK(terminate_active IN (0, 1)),
         last_error TEXT,
         rotation_epoch INTEGER NOT NULL DEFAULT 0,
+        last_rotation_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS routes_endpoint_id ON routes(endpoint_id) WHERE status != 'revoked';
+      CREATE TABLE IF NOT EXISTS access_grants (
+        id TEXT PRIMARY KEY,
+        route_id TEXT NOT NULL,
+        principal_id TEXT NOT NULL,
+        credentials_json TEXT NOT NULL,
+        endpoint_id TEXT,
+        status TEXT NOT NULL CHECK(status IN ('ready', 'revoked')),
+        terminate_active INTEGER NOT NULL DEFAULT 0 CHECK(terminate_active IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(route_id) REFERENCES routes(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS access_grants_route_principal
+        ON access_grants(route_id, principal_id, created_at);
+      CREATE INDEX IF NOT EXISTS access_grants_endpoint
+        ON access_grants(endpoint_id) WHERE status != 'revoked';
+      CREATE TABLE IF NOT EXISTS device_leases (
+        lease_key TEXT PRIMARY KEY,
+        route_id TEXT NOT NULL,
+        endpoint_id TEXT NOT NULL UNIQUE,
+        last_activity_at TEXT NOT NULL,
+        active_until TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS device_leases_expiry
+        ON device_leases(last_activity_at, active_until);
       CREATE TABLE IF NOT EXISTS provider_health (
         provider TEXT PRIMARY KEY,
         state TEXT NOT NULL CHECK(state IN ('healthy', 'degraded', 'unhealthy')),
         checked_at TEXT NOT NULL,
         message TEXT
       );
+      CREATE TABLE IF NOT EXISTS capability_health_snapshots (
+        id TEXT PRIMARY KEY,
+        generated_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS capability_health_generated_at
+        ON capability_health_snapshots(generated_at DESC);
+      CREATE TABLE IF NOT EXISTS health_alert_states (
+        capability TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS health_alert_events (
+        id TEXT PRIMARY KEY,
+        dedupe_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        event_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS health_alert_events_created_at
+        ON health_alert_events(created_at DESC);
+      CREATE TABLE IF NOT EXISTS health_alert_deliveries (
+        alert_id TEXT NOT NULL,
+        destination_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'delivered', 'failed')),
+        next_attempt_at TEXT NOT NULL,
+        delivery_json TEXT NOT NULL,
+        PRIMARY KEY(alert_id, destination_id),
+        FOREIGN KEY(alert_id) REFERENCES health_alert_events(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS health_alert_deliveries_pending
+        ON health_alert_deliveries(status, next_attempt_at);
     `);
   }
 
-  create(
+  async create(
     id: string,
     profile: RouteProfile,
-    token: string,
     provider: StoredRoute["provider"],
     endpointId?: string,
-  ): StoredRoute {
+  ): Promise<StoredRoute> {
     const now = new Date().toISOString();
-    const salt = randomBytes(16).toString("hex");
-    const tokenHash = scryptSync(token, salt, 32).toString("hex");
     this.#database.prepare(`
       INSERT INTO routes (
-        id, name, kind, targeting_json, rotation_json, token_salt, token_hash,
-        provider, endpoint_id, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
+        id, name, targeting_json, rotation_json, policy_json,
+        provider, endpoint_id, status, last_rotation_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?)
     `).run(
       id,
       profile.name,
-      profile.kind,
       JSON.stringify(profile.targeting),
       JSON.stringify(profile.rotation),
-      salt,
-      tokenHash,
+      JSON.stringify({
+        allowedProtocols: profile.allowedProtocols,
+        session: profile.session,
+        customerId: profile.customerId,
+        userId: profile.userId,
+        isAuthenticated: profile.isAuthenticated,
+        shouldRetry: profile.shouldRetry,
+        retryPolicy: profile.retryPolicy,
+        ...(profile.forceProvider === undefined ? {} : { forceProvider: profile.forceProvider }),
+      }),
       provider,
       endpointId ?? null,
+      now,
       now,
       now,
     );
     return this.get(id);
   }
 
-  get(id: string, includeRevoked = false): StoredRoute {
+  async get(id: string, includeRevoked = false): Promise<StoredRoute> {
     const sql = includeRevoked
       ? "SELECT * FROM routes WHERE id = ?"
       : "SELECT * FROM routes WHERE id = ? AND status != 'revoked'";
@@ -141,34 +393,233 @@ export class RouteStore {
     return routeFromRow(row);
   }
 
-  list(): StoredRoute[] {
+  async list(): Promise<StoredRoute[]> {
     const rows = this.#database
       .prepare("SELECT * FROM routes WHERE status != 'revoked' ORDER BY created_at ASC")
       .all() as unknown as RouteRow[];
     return rows.map(routeFromRow);
   }
 
-  authenticate(id: string, token: string): StoredRoute | undefined {
-    let route: StoredRoute;
+  async createAccessGrant(
+    id: string,
+    routeId: string,
+    principalId: string,
+    credentialId: string,
+    token: string,
+  ): Promise<StoredAccessGrant> {
+    await this.get(routeId);
+    const now = new Date().toISOString();
+    const credential = createStoredCredential(credentialId, token, now);
+    this.#database.prepare(`
+      INSERT INTO access_grants(
+        id, route_id, principal_id, credentials_json, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'ready', ?, ?)
+    `).run(id, routeId, principalId, JSON.stringify([credential]), now, now);
+    return this.getAccessGrant(id);
+  }
+
+  async getAccessGrant(id: string, includeRevoked = false): Promise<StoredAccessGrant> {
+    const sql = includeRevoked
+      ? "SELECT * FROM access_grants WHERE id = ?"
+      : "SELECT * FROM access_grants WHERE id = ? AND status != 'revoked'";
+    const row = this.#database.prepare(sql).get(id) as unknown as AccessGrantRow | undefined;
+    if (row === undefined) throw new NotFoundError();
+    return accessGrantFromRow(row);
+  }
+
+  async listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]> {
+    await this.get(routeId);
+    const rows = (principalId === undefined
+      ? this.#database.prepare("SELECT * FROM access_grants WHERE route_id = ? ORDER BY created_at").all(routeId)
+      : this.#database.prepare("SELECT * FROM access_grants WHERE route_id = ? AND principal_id = ? ORDER BY created_at").all(routeId, principalId)) as unknown as AccessGrantRow[];
+    return rows.map(accessGrantFromRow);
+  }
+
+  async authenticateAccessGrant(id: string, token: string): Promise<StoredAccessGrant | undefined> {
+    let grant: StoredAccessGrant;
     try {
-      route = this.get(id);
+      grant = await this.getAccessGrant(id);
+      await this.get(grant.routeId);
     } catch {
       return undefined;
     }
-    const candidate = scryptSync(token, route.tokenSalt, 32);
-    const expected = Buffer.from(route.tokenHash, "hex");
-    return candidate.length === expected.length && timingSafeEqual(candidate, expected) ? route : undefined;
+    const now = new Date().toISOString();
+    const nowMs = Date.parse(now);
+    const credential = grant.credentials.find((candidateCredential) => {
+      if (!credentialUsable(candidateCredential, nowMs)) return false;
+      const candidate = scryptSync(token, candidateCredential.tokenSalt, 32);
+      const expected = Buffer.from(candidateCredential.tokenHash, "hex");
+      return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+    });
+    if (credential === undefined) return undefined;
+    credential.lastUsedAt = now;
+    this.#database.prepare(`
+      UPDATE access_grants SET credentials_json = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
+    `).run(JSON.stringify(grant.credentials), now, id);
+    return { ...grant, credentials: grant.credentials, updatedAt: now };
   }
 
-  revoke(id: string): void {
+  async rotateAccessGrantCredential(
+    id: string,
+    credentialId: string,
+    token: string,
+    suspectedCompromise = false,
+  ): Promise<StoredAccessGrant> {
+    const grant = await this.getAccessGrant(id);
     const now = new Date().toISOString();
-    const result = this.#database
-      .prepare("UPDATE routes SET status = 'revoked', updated_at = ? WHERE id = ? AND status != 'revoked'")
-      .run(now, id);
+    const nowMs = Date.parse(now);
+    const overlapLimit = nowMs + ACCESS_GRANT_CREDENTIAL_OVERLAP_MS;
+    const credentials = grant.credentials.map((credential) => {
+      if (!credentialUsable(credential, nowMs)) return credential;
+      if (suspectedCompromise) return { ...credential, status: "revoked" as const, revokeAt: now };
+      return {
+        ...credential,
+        status: "overlap" as const,
+        revokeAt: new Date(Math.min(Date.parse(credential.expiresAt), overlapLimit)).toISOString(),
+      };
+    });
+    credentials.push(createStoredCredential(credentialId, token, now));
+    const result = this.#database.prepare(`
+      UPDATE access_grants SET credentials_json = ?, updated_at = ?
+      WHERE id = ? AND status != 'revoked'
+    `).run(JSON.stringify(credentials), now, id);
+    if (result.changes === 0) throw new NotFoundError();
+    return this.getAccessGrant(id);
+  }
+
+  async revokeAccessGrant(id: string, terminateActive = false): Promise<void> {
+    const now = new Date().toISOString();
+    const result = this.#database.prepare(terminateActive
+      ? "UPDATE access_grants SET status = 'revoked', terminate_active = 1, updated_at = ? WHERE id = ?"
+      : "UPDATE access_grants SET status = 'revoked', updated_at = ? WHERE id = ?"
+    ).run(now, id);
     if (result.changes === 0) throw new NotFoundError();
   }
 
-  setStatus(id: string, status: RouteStatus, lastError?: string): StoredRoute {
+  async setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant> {
+    const now = new Date().toISOString();
+    const result = this.#database.prepare(`
+      UPDATE access_grants SET endpoint_id = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
+    `).run(endpointId ?? null, now, id);
+    if (result.changes === 0) throw new NotFoundError();
+    return this.getAccessGrant(id);
+  }
+
+  async revoke(id: string, terminateActive = false): Promise<void> {
+    const now = new Date().toISOString();
+    const result = this.#database.prepare(terminateActive
+      ? "UPDATE routes SET status = 'revoked', terminate_active = 1, updated_at = ? WHERE id = ?"
+      : "UPDATE routes SET status = 'revoked', terminate_active = 0, updated_at = ? WHERE id = ? AND status != 'revoked'"
+    ).run(now, id);
+    if (result.changes === 0) throw new NotFoundError();
+  }
+
+  async shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean> {
+    const row = this.#database.prepare("SELECT terminate_active FROM routes WHERE id = ?")
+      .get(id) as { terminate_active: number } | undefined;
+    if (row?.terminate_active === 1) return true;
+    if (accessGrantId === undefined) return false;
+    const grant = this.#database.prepare("SELECT terminate_active FROM access_grants WHERE id = ?")
+      .get(accessGrantId) as { terminate_active: number } | undefined;
+    return grant?.terminate_active === 1;
+  }
+
+  async setEndpoint(id: string, endpointId?: string): Promise<StoredRoute> {
+    const now = new Date().toISOString();
+    const result = this.#database.prepare(`
+      UPDATE routes SET endpoint_id = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
+    `).run(endpointId ?? null, now, id);
+    if (result.changes === 0) throw new NotFoundError();
+    return this.get(id);
+  }
+
+  async acquireDeviceLease(
+    leaseKey: string,
+    routeId: string,
+    candidateEndpointIds: readonly string[],
+    now: string,
+    idleTimeoutMs: number,
+  ): Promise<DeviceLease | undefined> {
+    if (candidateEndpointIds.length === 0) return undefined;
+    const idleBefore = new Date(Date.parse(now) - idleTimeoutMs).toISOString();
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const existingRow = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
+        .get(leaseKey) as unknown as DeviceLeaseRow | undefined;
+      if (existingRow !== undefined) {
+        const expired = existingRow.last_activity_at <= idleBefore && existingRow.active_until <= now;
+        if (!expired) {
+          if (candidateEndpointIds.includes(existingRow.endpoint_id)) {
+            this.#database.prepare(`
+              UPDATE device_leases
+              SET route_id = ?, last_activity_at = ?, updated_at = ?
+              WHERE lease_key = ?
+            `).run(routeId, now, now, leaseKey);
+            const renewed = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
+              .get(leaseKey) as unknown as DeviceLeaseRow;
+            this.#database.exec("COMMIT");
+            return leaseFromRow(renewed);
+          }
+          // The leased candidate is no longer eligible. Its lock can move because
+          // the route explicitly permits candidate failover; the new candidate is
+          // still exclusive to the same logical session.
+          this.#database.prepare("DELETE FROM device_leases WHERE lease_key = ?").run(leaseKey);
+        }
+        if (expired) this.#database.prepare("DELETE FROM device_leases WHERE lease_key = ?").run(leaseKey);
+      }
+      this.#database.prepare(`
+        DELETE FROM device_leases WHERE last_activity_at <= ? AND active_until <= ?
+      `).run(idleBefore, now);
+      const candidate = candidateEndpointIds.find((endpointId) => {
+        const row = this.#database.prepare("SELECT 1 FROM device_leases WHERE endpoint_id = ?").get(endpointId);
+        return row === undefined;
+      });
+      if (candidate === undefined) {
+        this.#database.exec("COMMIT");
+        return undefined;
+      }
+      this.#database.prepare(`
+        INSERT INTO device_leases(
+          lease_key, route_id, endpoint_id, last_activity_at, active_until, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(leaseKey, routeId, candidate, now, now, now, now);
+      const inserted = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
+        .get(leaseKey) as unknown as DeviceLeaseRow;
+      this.#database.exec("COMMIT");
+      return leaseFromRow(inserted);
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async renewDeviceLease(
+    leaseKey: string,
+    now: string,
+    activeUntil: string,
+    recordActivity: boolean,
+  ): Promise<DeviceLease | undefined> {
+    const result = this.#database.prepare(`
+      UPDATE device_leases
+      SET last_activity_at = CASE WHEN ? THEN ? ELSE last_activity_at END,
+          active_until = ?, updated_at = ?
+      WHERE lease_key = ?
+    `).run(recordActivity ? 1 : 0, now, activeUntil, now, leaseKey);
+    if (result.changes === 0) return undefined;
+    return this.getDeviceLease(leaseKey);
+  }
+
+  async getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined> {
+    const row = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
+      .get(leaseKey) as unknown as DeviceLeaseRow | undefined;
+    return row === undefined ? undefined : leaseFromRow(row);
+  }
+
+  async releaseDeviceLease(leaseKey: string): Promise<void> {
+    this.#database.prepare("DELETE FROM device_leases WHERE lease_key = ?").run(leaseKey);
+  }
+
+  async setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
     const result = this.#database
       .prepare("UPDATE routes SET status = ?, last_error = ?, updated_at = ? WHERE id = ? AND status != 'revoked'")
@@ -177,7 +628,28 @@ export class RouteStore {
     return this.get(id);
   }
 
-  incrementRotationEpoch(id: string): StoredRoute {
+  async claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined> {
+    const now = new Date().toISOString();
+    const result = this.#database.prepare(`
+      UPDATE routes
+      SET status = 'rotating', last_error = NULL, updated_at = ?
+      WHERE id = ? AND status = 'ready' AND last_rotation_at <= ?
+    `).run(now, id, dueBefore);
+    return result.changes === 0 ? undefined : this.get(id);
+  }
+
+  async completeRotation(id: string): Promise<StoredRoute> {
+    const now = new Date().toISOString();
+    const result = this.#database.prepare(`
+      UPDATE routes
+      SET status = 'ready', last_error = NULL, last_rotation_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'rotating'
+    `).run(now, now, id);
+    if (result.changes === 0) throw new NotFoundError();
+    return this.get(id);
+  }
+
+  async incrementRotationEpoch(id: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
     const result = this.#database
       .prepare(`
@@ -190,14 +662,14 @@ export class RouteStore {
     return this.get(id);
   }
 
-  assignmentCount(endpointId: string): number {
+  async assignmentCount(endpointId: string): Promise<number> {
     const row = this.#database
-      .prepare("SELECT COUNT(*) AS count FROM routes WHERE endpoint_id = ? AND status != 'revoked'")
+      .prepare("SELECT COUNT(*) AS count FROM access_grants WHERE endpoint_id = ? AND status != 'revoked'")
       .get(endpointId) as { count: number };
     return row.count;
   }
 
-  saveHealth(health: ProviderHealth): void {
+  async saveHealth(health: ProviderHealth): Promise<void> {
     this.#database.prepare(`
       INSERT INTO provider_health(provider, state, checked_at, message)
       VALUES (?, ?, ?, ?)
@@ -208,7 +680,7 @@ export class RouteStore {
     `).run(health.provider, health.state, health.checkedAt, health.message ?? null);
   }
 
-  listHealth(): ProviderHealth[] {
+  async listHealth(): Promise<ProviderHealth[]> {
     const rows = this.#database.prepare("SELECT * FROM provider_health ORDER BY provider").all() as unknown as HealthRow[];
     return rows.map((row) => ({
       provider: row.provider,
@@ -218,7 +690,115 @@ export class RouteStore {
     }));
   }
 
-  close(): void {
+  async saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
+    this.#database.prepare(`
+      INSERT INTO capability_health_snapshots(id, generated_at, snapshot_json)
+      VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        generated_at = excluded.generated_at,
+        snapshot_json = excluded.snapshot_json
+    `).run(snapshot.id, snapshot.generatedAt, JSON.stringify(snapshot));
+  }
+
+  async latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined> {
+    const row = this.#database
+      .prepare("SELECT snapshot_json FROM capability_health_snapshots ORDER BY generated_at DESC LIMIT 1")
+      .get() as CapabilityHealthRow | undefined;
+    return row === undefined ? undefined : JSON.parse(row.snapshot_json) as CapabilityHealthSnapshot;
+  }
+
+  async capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]> {
+    const rows = this.#database
+      .prepare("SELECT snapshot_json FROM capability_health_snapshots ORDER BY generated_at DESC LIMIT ?")
+      .all(limit) as unknown as CapabilityHealthRow[];
+    return rows.map((row) => JSON.parse(row.snapshot_json) as CapabilityHealthSnapshot);
+  }
+
+  async getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined> {
+    const row = this.#database.prepare("SELECT state_json FROM health_alert_states WHERE capability = ?")
+      .get(capability) as { state_json: string } | undefined;
+    return row === undefined ? undefined : JSON.parse(row.state_json) as HealthAlertState;
+  }
+
+  async saveHealthAlertState(state: HealthAlertState): Promise<void> {
+    this.#database.prepare(`
+      INSERT INTO health_alert_states(capability, state_json) VALUES (?, ?)
+      ON CONFLICT(capability) DO UPDATE SET state_json = excluded.state_json
+    `).run(state.capability, JSON.stringify(state));
+  }
+
+  async createHealthAlertEvent(event: HealthAlertEvent, destinationIds: readonly string[]): Promise<boolean> {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const inserted = this.#database.prepare(`
+        INSERT OR IGNORE INTO health_alert_events(id, dedupe_key, created_at, event_json)
+        VALUES (?, ?, ?, ?)
+      `).run(event.id, event.dedupeKey, event.createdAt, JSON.stringify(event));
+      const persistedEvent = inserted.changes > 0
+        ? event
+        : JSON.parse((this.#database.prepare(`
+            SELECT event_json FROM health_alert_events WHERE dedupe_key = ?
+          `).get(event.dedupeKey) as { event_json: string }).event_json) as HealthAlertEvent;
+      const delivery = this.#database.prepare(`
+        INSERT OR IGNORE INTO health_alert_deliveries(
+          alert_id, destination_id, status, next_attempt_at, delivery_json
+        ) VALUES (?, ?, 'pending', ?, ?)
+      `);
+      for (const destinationId of destinationIds) {
+        const value: HealthAlertDelivery = {
+          alertId: persistedEvent.id,
+          destinationId,
+          status: "pending",
+          attemptCount: 0,
+          nextAttemptAt: persistedEvent.createdAt,
+          event: persistedEvent,
+        };
+        delivery.run(
+          persistedEvent.id,
+          destinationId,
+          persistedEvent.createdAt,
+          JSON.stringify(value),
+        );
+      }
+      this.#database.exec("COMMIT");
+      return inserted.changes > 0;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]> {
+    const rows = this.#database.prepare(`
+      SELECT delivery_json FROM health_alert_deliveries
+      WHERE status = 'pending' AND next_attempt_at <= ?
+      ORDER BY next_attempt_at ASC LIMIT ?
+    `).all(dueBefore, limit) as unknown as Array<{ delivery_json: string }>;
+    return rows.map((row) => JSON.parse(row.delivery_json) as HealthAlertDelivery);
+  }
+
+  async saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void> {
+    this.#database.prepare(`
+      UPDATE health_alert_deliveries
+      SET status = ?, next_attempt_at = ?, delivery_json = ?
+      WHERE alert_id = ? AND destination_id = ?
+    `).run(
+      delivery.status,
+      delivery.nextAttemptAt,
+      JSON.stringify(delivery),
+      delivery.alertId,
+      delivery.destinationId,
+    );
+  }
+
+  async healthAlertHistory(limit: number): Promise<HealthAlertEvent[]> {
+    const rows = this.#database.prepare(`
+      SELECT event_json FROM health_alert_events ORDER BY created_at DESC LIMIT ?
+    `).all(limit) as unknown as Array<{ event_json: string }>;
+    return rows.map((row) => JSON.parse(row.event_json) as HealthAlertEvent);
+  }
+
+  async close(): Promise<void> {
     this.#database.close();
   }
 }

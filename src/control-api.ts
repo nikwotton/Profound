@@ -8,6 +8,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   AdminAuthorization,
+  AuthenticatedUser,
   BadRequest,
   ControlApi,
   InternalError,
@@ -15,7 +16,7 @@ import {
   ServiceUnavailable,
   Unauthorized,
 } from "./control-contract.js";
-import { AppError, NotFoundError, ProviderUnavailableError, ValidationError, errorMessage } from "./errors.js";
+import { AppError, NotFoundError, ProviderUnavailableError, ValidationError, safeErrorMessage } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { closeServer, listen } from "./net-utils.js";
 import { RouteService } from "./route-service.js";
@@ -26,6 +27,9 @@ export interface ControlApiOptions {
   host: string;
   port: number;
   adminToken: string;
+  adminUserId: string;
+  controlIdentities: ReadonlyMap<string, string>;
+  advertisedProxyHostFromRequest: boolean;
   logger: Logger;
   telemetry: Telemetry;
 }
@@ -37,6 +41,13 @@ function secureEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function authenticatedUser(token: string, identities: ReadonlyMap<string, string>): string | undefined {
+  for (const [candidate, userId] of identities) {
+    if (secureEqual(token, candidate)) return userId;
+  }
+  return undefined;
 }
 
 function createError(error: unknown): RouteCreateError {
@@ -58,9 +69,12 @@ function internalError(_error: unknown): InternalError {
 
 function makeHandler(routes: RouteService, options: ControlApiOptions) {
   const AuthorizationLive = Layer.succeed(AdminAuthorization, {
-    bearer: (token) => secureEqual(Redacted.value(token), options.adminToken)
-      ? Effect.void
-      : Effect.fail(new Unauthorized({ code: "unauthorized", message: "Administrator bearer token required" })),
+    bearer: (token) => {
+      const userId = authenticatedUser(Redacted.value(token), options.controlIdentities);
+      return userId === undefined
+        ? Effect.fail(new Unauthorized({ code: "unauthorized", message: "Administrator bearer token required" }))
+        : Effect.succeed({ userId });
+    },
   });
 
   const HealthLive = HttpApiBuilder.group(ControlApi, "health", (handlers) => handlers
@@ -76,26 +90,86 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
     )));
 
   const RoutesLive = HttpApiBuilder.group(ControlApi, "routes", (handlers) => handlers
-    .handle("createRoute", ({ payload }) => Effect.tryPromise({
-      try: () => routes.create(payload),
+    .handle("createRoute", ({ payload }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: () => routes.create(payload, identity.userId),
       catch: createError,
-    }).pipe(Effect.withSpan("control.routes.create")))
-    .handle("listRoutes", () => Effect.succeed({ data: routes.list() }).pipe(Effect.withSpan("control.routes.list")))
-    .handle("getRoute", ({ path }) => Effect.try({
-      try: () => ({ route: routes.get(path.id) }),
+    })).pipe(Effect.withSpan("control.routes.create")))
+    .handle("listRoutes", () => Effect.tryPromise({
+      try: async () => ({ data: await routes.list() }),
+      catch: internalError,
+    }).pipe(Effect.withSpan("control.routes.list")))
+    .handle("getRoute", ({ path }) => Effect.tryPromise({
+      try: async () => ({ route: await routes.get(path.id) }),
       catch: readError,
     }).pipe(Effect.withSpan("control.routes.get", { attributes: { "proxy.route.id": path.id } })))
-    .handle("deleteRoute", ({ path }) => Effect.try({
+    .handle("deleteRoute", ({ path }) => Effect.tryPromise({
       try: () => routes.delete(path.id),
       catch: readError,
     }).pipe(Effect.withSpan("control.routes.delete", { attributes: { "proxy.route.id": path.id } })))
-    .handle("rotateRoute", ({ path }) => Effect.try({
-      try: () => ({ route: routes.rotate(path.id) }),
+    .handle("rotateRoute", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: async () => ({ route: await routes.rotate(path.id, identity.userId) }),
       catch: readError,
-    }).pipe(Effect.withSpan("control.routes.rotate", { attributes: { "proxy.route.id": path.id } }))),
+    })).pipe(Effect.withSpan("control.routes.rotate", { attributes: { "proxy.route.id": path.id } })))
+    .handle("createAccessGrant", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: () => routes.createAccessGrant(path.id, identity.userId),
+      catch: readError,
+    })).pipe(Effect.withSpan("control.access_grants.create", { attributes: { "proxy.route.id": path.id } })))
+    .handle("listAccessGrants", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: async () => ({ data: await routes.listAccessGrants(path.id, identity.userId) }),
+      catch: readError,
+    })).pipe(Effect.withSpan("control.access_grants.list", { attributes: { "proxy.route.id": path.id } })))
+    .handle("rotateAccessGrantCredential", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: () => routes.rotateAccessGrantCredential(path.grantId, identity.userId),
+      catch: readError,
+    })).pipe(Effect.withSpan("control.access_grants.rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } })))
+    .handle("emergencyRotateAccessGrantCredential", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: () => routes.rotateAccessGrantCredential(path.grantId, identity.userId, true),
+      catch: readError,
+    })).pipe(Effect.withSpan("control.access_grants.emergency_rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } })))
+    .handle("revokeAccessGrant", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: () => routes.revokeAccessGrant(path.grantId, identity.userId),
+      catch: readError,
+    })).pipe(Effect.withSpan("control.access_grants.revoke", { attributes: { "proxy.access_grant.id": path.grantId } })))
+    .handle("releaseAccessGrantLease", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: () => routes.releaseDeviceLease(path.grantId, identity.userId),
+      catch: readError,
+    })).pipe(Effect.withSpan("control.access_grants.release_lease", { attributes: { "proxy.access_grant.id": path.grantId } })))
+    .handle("emergencyRevokeAccessGrant", ({ path }) => Effect.flatMap(AuthenticatedUser, (identity) => Effect.tryPromise({
+      try: () => routes.revokeAccessGrant(path.grantId, identity.userId, true),
+      catch: readError,
+    })).pipe(Effect.withSpan("control.access_grants.emergency_revoke", { attributes: { "proxy.access_grant.id": path.grantId } })))
+    .handle("emergencyRevokeRoute", ({ path }) => Effect.tryPromise({
+      try: () => routes.emergencyRevoke(path.id),
+      catch: readError,
+    }).pipe(Effect.withSpan("control.routes.emergency_revoke", { attributes: { "proxy.route.id": path.id } }))),
   ).pipe(Layer.provide(AuthorizationLive));
 
   const ProvidersLive = HttpApiBuilder.group(ControlApi, "providers", (handlers) => handlers
+    .handle("providerDescriptors", () => Effect.succeed({
+      data: routes.descriptors().map((descriptor) => {
+        const {
+          clientProtocols,
+          upstreamProtocols,
+          geography,
+          rotation,
+          countries,
+          targetPorts,
+          ...capabilities
+        } = descriptor.capabilities;
+        return {
+          ...descriptor,
+          capabilities: {
+            ...capabilities,
+            clientProtocols: [...clientProtocols],
+            upstreamProtocols: [...upstreamProtocols],
+            geography: [...geography],
+            rotation: [...rotation],
+            targetPorts: targetPorts === "any_public" ? targetPorts : [...targetPorts],
+            ...(countries === undefined ? {} : { countries: [...countries] }),
+          },
+        };
+      }),
+    }).pipe(Effect.withSpan("control.providers.descriptors")))
     .handle("providerHealth", () => Effect.tryPromise({
       try: async () => ({ data: await routes.refreshHealth() }),
       catch: internalError,
@@ -126,6 +200,34 @@ async function readBody(request: IncomingMessage): Promise<Buffer | undefined> {
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
+}
+
+function requestHostname(hostHeader: string | undefined): string | undefined {
+  if (hostHeader === undefined) return undefined;
+  try {
+    return new URL(`http://${hostHeader}`).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+function rewriteCreatedRouteHost(body: Buffer, hostname: string): Buffer {
+  const payload = JSON.parse(body.toString("utf8")) as {
+    proxyUrls?: { http?: string; socks5?: string };
+  };
+  const rewrite = (value: string | undefined): string | undefined => {
+    if (value === undefined) return undefined;
+    const url = new URL(value);
+    url.hostname = hostname;
+    return url.toString();
+  };
+  if (payload.proxyUrls !== undefined) {
+    const http = rewrite(payload.proxyUrls.http);
+    const socks5 = rewrite(payload.proxyUrls.socks5);
+    if (http !== undefined) payload.proxyUrls.http = http;
+    if (socks5 !== undefined) payload.proxyUrls.socks5 = socks5;
+  }
+  return Buffer.from(JSON.stringify(payload));
 }
 
 export class ControlApiServer {
@@ -188,8 +290,23 @@ export class ControlApiServer {
         },
       );
       const webResponse = await this.#handler(webRequest);
-      response.writeHead(webResponse.status, webResponse.statusText, Object.fromEntries(webResponse.headers.entries()));
-      response.end(Buffer.from(await webResponse.arrayBuffer()));
+      let responseBody: Buffer<ArrayBufferLike> = Buffer.from(await webResponse.arrayBuffer());
+      const responseHeaders = Object.fromEntries(webResponse.headers.entries());
+      if (
+        this.options.advertisedProxyHostFromRequest &&
+        request.method === "POST" &&
+        (pathname === "/v1/routes" || pathname.endsWith("/access-grants") ||
+          pathname.endsWith("/credentials/rotate") || pathname.endsWith("/credentials/emergency-rotate")) &&
+        (webResponse.status === 200 || webResponse.status === 201)
+      ) {
+        const hostname = requestHostname(request.headers.host);
+        if (hostname !== undefined) {
+          responseBody = rewriteCreatedRouteHost(responseBody, hostname);
+          delete responseHeaders["content-length"];
+        }
+      }
+      response.writeHead(webResponse.status, webResponse.statusText, responseHeaders);
+      response.end(responseBody);
       this.options.telemetry.finishSpan(span, startedAt, {
         plane: "control",
         "http.route": pathname,
@@ -199,7 +316,7 @@ export class ControlApiServer {
       this.options.logger.warn("Control API request failed", {
         method: request.method,
         path: pathname,
-        error: errorMessage(error),
+        error: safeErrorMessage(error),
       });
       const status = error instanceof AppError ? error.statusCode : 500;
       response.writeHead(status, { "content-type": "application/json" });

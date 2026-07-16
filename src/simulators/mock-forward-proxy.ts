@@ -1,6 +1,6 @@
 import { request as httpRequest, createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { connect } from "node:net";
+import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import type { Logger } from "../logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "../net-utils.js";
@@ -82,10 +82,15 @@ function applyFailure(response: ServerResponse, failure: SimulatorFailure): bool
 
 export class MockForwardProxy {
   readonly #server;
+  readonly #connections = new Set<Socket>();
   #address?: ListenAddress;
 
   constructor(private readonly options: MockForwardProxyOptions) {
     this.#server = createServer((request, response) => this.#handleRequest(request, response));
+    this.#server.on("connection", (socket) => {
+      this.#connections.add(socket);
+      socket.once("close", () => this.#connections.delete(socket));
+    });
     this.#server.on("connect", (request, clientSocket, head) => {
       this.#handleConnect(request, clientSocket, head);
     });
@@ -102,6 +107,7 @@ export class MockForwardProxy {
   }
 
   async stop(): Promise<void> {
+    for (const socket of this.#connections) socket.destroy();
     await closeServer(this.#server);
   }
 
@@ -129,9 +135,12 @@ export class MockForwardProxy {
       method: request.method,
       headers: copyHeaders(request.headers),
     }, (upstreamResponse) => {
+      const resolvedDestination = upstreamResponse.socket.remoteAddress;
       response.writeHead(upstreamResponse.statusCode ?? 502, {
         ...copyResponseHeaders(upstreamResponse.headers),
         ...identityHeaders(identity),
+        ...(resolvedDestination === undefined ? {} : { "x-mock-resolved-destination": resolvedDestination }),
+        "x-mock-resolver-country": identity.country,
       });
       upstreamResponse.pipe(response);
     });
@@ -166,9 +175,24 @@ export class MockForwardProxy {
       return;
     }
     const targetSocket = connect(target.port, target.host);
+    this.#connections.add(targetSocket);
+    const closeTarget = (): void => {
+      targetSocket.destroy();
+    };
+    clientSocket.once("close", closeTarget);
+    targetSocket.once("close", () => {
+      this.#connections.delete(targetSocket);
+      clientSocket.off("close", closeTarget);
+    });
     targetSocket.setTimeout(10_000, () => targetSocket.destroy(new Error("Target timed out")));
     targetSocket.once("connect", () => {
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      const resolvedDestination = targetSocket.remoteAddress;
+      clientSocket.write(
+        "HTTP/1.1 200 Connection Established\r\n" +
+        (resolvedDestination === undefined ? "" : `X-Mock-Resolved-Destination: ${resolvedDestination}\r\n`) +
+        `X-Mock-Resolver-Country: ${identity.country}\r\n` +
+        "\r\n",
+      );
       if (head.length > 0) targetSocket.write(head);
       clientSocket.pipe(targetSocket);
       targetSocket.pipe(clientSocket);

@@ -215,6 +215,7 @@ export class ProxidizeSimulator {
           public_key: device.publicKey,
           healthy: device.healthy,
           status: device.healthy ? "active" : "offline",
+          current_ip: device.exitIp,
         })),
       });
       return;

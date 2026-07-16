@@ -4,11 +4,12 @@ import { createLogger } from "../src/logger.js";
 import {
   createRoute,
   requestViaProxy,
+  socks5AuthenticationStatus,
   startHttpTarget,
   startTestApp,
 } from "./helpers.js";
 
-test("route credentials and mobile affinity survive a service restart", async (t) => {
+test("access-grant credentials and mobile affinity survive a service restart", async (t) => {
   const target = await startHttpTarget();
   let testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -17,18 +18,23 @@ test("route credentials and mobile affinity survive a service restart", async (t
   });
   const route = await createRoute(testApp.application, {
     name: "persistent",
-    kind: "mobile",
-    targeting: { country: "US", region: "CA", carrier: "AT&T" },
+    isAuthenticated: true,
+    targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
   });
-  const endpointId = route.route.endpointId;
+  const before = await requestViaProxy(route.proxyUrls.http, target.url);
+  const endpointId = before.headers["x-mock-endpoint-id"];
   const saved = { databasePath: testApp.databasePath, directory: testApp.directory };
   await testApp.stop(false);
   testApp = await startTestApp([target.port], saved);
 
-  const response = await requestViaProxy(route.proxyUrl.replace(/:\d+$/, `:${testApp.application.forwardAddress.port}`), target.url);
+  const response = await requestViaProxy(route.proxyUrls.http.replace(/:\d+$/, `:${testApp.application.forwardAddress.port}`), target.url);
   assert.equal(response.status, 200);
   assert.equal(response.headers["x-mock-endpoint-id"], endpointId);
-  assert.equal(testApp.application.routes.get(route.route.id).endpointId, endpointId);
+  assert.equal((await testApp.application.routes.get(route.route.id)).customerId, "test-customer");
+  assert.equal((await testApp.application.routes.get(route.route.id)).userId, "local-dev");
+  assert.deepEqual((await testApp.application.routes.get(route.route.id)).allowedProtocols, ["http", "https", "socks5"]);
+  const socks5Url = route.proxyUrls.socks5.replace(/:\d+$/, `:${testApp.application.socks5Address.port}`);
+  assert.equal(await socks5AuthenticationStatus(socks5Url), 0x00);
 });
 
 test("provider authentication, rate limiting, and unavailable peers are normalized", async (t) => {
@@ -37,28 +43,27 @@ test("provider authentication, rate limiting, and unavailable peers are normaliz
   t.after(async () => { await Promise.all([target.stop(), testApp.stop()]); });
   const route = await createRoute(testApp.application, {
     name: "failures",
-    kind: "residential",
     targeting: { country: "US" },
   });
   const simulator = testApp.application.simulators?.brightData;
   assert.ok(simulator);
 
   simulator.setFailure("auth");
-  const authentication = await requestViaProxy(route.proxyUrl, target.url);
+  const authentication = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(authentication.status, 502);
   assert.doesNotMatch(authentication.body, /mock-bright-password/);
 
   simulator.setFailure("rate_limit");
-  const rateLimit = await requestViaProxy(route.proxyUrl, target.url);
-  assert.equal(rateLimit.status, 503);
-  assert.match(rateLimit.body, /provider_rate_limited/);
+  const rateLimit = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.equal(rateLimit.status, 429);
+  assert.match(rateLimit.body, /Rate limited/);
 
   simulator.setFailure("unavailable");
-  const unavailable = await requestViaProxy(route.proxyUrl, target.url);
+  const unavailable = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(unavailable.status, 502);
 
   simulator.setFailure("timeout");
-  const timeout = await requestViaProxy(route.proxyUrl, target.url);
+  const timeout = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(timeout.status, 503);
   simulator.setFailure(null);
 });
@@ -69,12 +74,56 @@ test("structured logs redact credentials, cookies, authorization, and URL querie
   logger.info("redaction", {
     authorization: "Bearer secret",
     password: "provider-password",
+    routeToken: "route-token-secret",
     cookie: "session=secret",
     proxyUrl: "http://user:token@proxy",
     target: new URL("https://example.test/path?secret=value"),
+    destination: "https://embedded-user:embedded-password@example.test/other?embedded=secret#fragment",
   });
   const output = lines.join("\n");
-  assert.doesNotMatch(output, /Bearer secret|provider-password|session=secret|user:token|secret=value/);
+  assert.doesNotMatch(
+    output,
+    /Bearer secret|provider-password|route-token-secret|session=secret|user:token|secret=value|embedded-user|embedded-password|embedded=secret|fragment/,
+  );
   assert.match(output, /\[REDACTED\]/);
   assert.match(output, /https:\/\/example\.test\/path/);
+  assert.match(output, /https:\/\/example\.test\/other/);
+});
+
+test("OpenTelemetry mode keeps console output as an error-only fallback", () => {
+  const lines: string[] = [];
+  const logger = createLogger({
+    write: (line) => lines.push(line),
+    consoleMode: "errors",
+  });
+  logger.info("exported through OTLP");
+  logger.warn("also exported through OTLP");
+  logger.error("bootstrap fallback", { token: "secret" });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0] ?? "", /bootstrap fallback/);
+  assert.doesNotMatch(lines[0] ?? "", /secret/);
+});
+
+test("data-plane attempt logs include attribution and byte counts without request content", async (t) => {
+  const lines: string[] = [];
+  const logger = createLogger((line) => lines.push(line));
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port], undefined, logger);
+  t.after(async () => { await Promise.all([target.stop(), testApp.stop()]); });
+  const route = await createRoute(testApp.application, {
+    name: "telemetry",
+    targeting: { country: "US" },
+    isAuthenticated: false,
+    shouldRetry: false,
+  });
+  const response = await requestViaProxy(route.proxyUrls.http, target.url, {
+    method: "POST",
+    headers: { authorization: "Bearer target-secret", cookie: "session=secret-cookie" },
+    body: "sensitive-request-content",
+  });
+  assert.equal(response.status, 200);
+  const output = lines.join("\n");
+  assert.match(output, /test-customer|local-dev|bytesSent|bytesReceived|upstreamAttemptId/);
+  assert.match(output, /candidateId|assignmentMode|providerManagedReassignmentDisabled|changeReason/);
+  assert.doesNotMatch(output, /target-secret|secret-cookie|sensitive-request-content|query-value|mock-bright-password/);
 });

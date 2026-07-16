@@ -42,3 +42,56 @@ export class UpstreamError extends AppError {
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
 }
+
+export function safeErrorMessage(error: unknown): string {
+  return error instanceof AppError ? error.message : "Unexpected internal error";
+}
+
+export function attributeProvider(error: unknown, provider: string): unknown {
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    Object.defineProperty(error, "providerId", { value: provider, configurable: true });
+    return error;
+  }
+  const attributed = new ProviderUnavailableError();
+  Object.defineProperty(attributed, "providerId", { value: provider, configurable: true });
+  return attributed;
+}
+
+export function providerIdFromError(error: unknown): string | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
+  const provider = (error as { providerId?: unknown }).providerId;
+  return typeof provider === "string" ? provider : undefined;
+}
+
+export function attributeAssignment(error: unknown, assignment: AssignmentEvidence): unknown {
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    Object.defineProperty(error, "assignmentEvidence", { value: assignment, configurable: true });
+    return error;
+  }
+  const attributed = new ProviderUnavailableError();
+  Object.defineProperty(attributed, "assignmentEvidence", { value: assignment, configurable: true });
+  return attributed;
+}
+
+export function assignmentFromError(error: unknown): AssignmentEvidence | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
+  const assignment = (error as { assignmentEvidence?: unknown }).assignmentEvidence;
+  return assignment !== null && typeof assignment === "object" ? assignment as AssignmentEvidence : undefined;
+}
+
+export function isRetryableUpstreamFailure(error: unknown): boolean {
+  if (error instanceof ProviderUnavailableError) return true;
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code !== undefined && new Set([
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "EPIPE",
+    "ENETDOWN",
+    "ENETUNREACH",
+    "EHOSTDOWN",
+    "EHOSTUNREACH",
+  ]).has(code);
+}
+import type { AssignmentEvidence } from "./types.js";
