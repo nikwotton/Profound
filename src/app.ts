@@ -7,8 +7,6 @@ import { BrightDataAdapter } from "./providers/bright-data.js";
 import { ProxidizeAdapter } from "./providers/proxidize.js";
 import { RouteService } from "./route-service.js";
 import { Socks5ProxyServer } from "./socks5-proxy.js";
-import { BrightDataSimulator } from "./simulators/bright-data.js";
-import { ProxidizeSimulator } from "./simulators/proxidize.js";
 import { SqliteRouteStore, type RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import { createTargetValidator, type TargetValidator } from "./target-security.js";
@@ -19,10 +17,6 @@ export interface RunningApplication {
   socks5Address: ListenAddress;
   controlAddress: ListenAddress;
   routes: RouteService;
-  simulators?: {
-    brightData: BrightDataSimulator;
-    proxidize: ProxidizeSimulator;
-  };
   stop(): Promise<void>;
 }
 
@@ -47,7 +41,6 @@ export interface ApplicationDependencies {
 
 interface RoutingRuntime {
   routes: RouteService;
-  simulators?: RunningApplication["simulators"];
   stop(): Promise<void>;
 }
 
@@ -65,42 +58,13 @@ async function createRoutingRuntime(
   } else {
     store = new SqliteRouteStore(config.sqlitePath);
   }
-  let simulators: RunningApplication["simulators"];
-  let brightConfig = config.brightData;
-  let proxidizeConfig = config.proxidize;
-
   try {
-    if (config.providerMode === "mock") {
-      const brightData = new BrightDataSimulator({
-        host: "127.0.0.1",
-        port: 0,
-        customerId: config.brightData.customerId,
-        zone: config.brightData.zone,
-        password: config.brightData.password,
-        logger,
-      });
-      const proxidize = new ProxidizeSimulator({
-        host: "127.0.0.1",
-        controlPort: 0,
-        dataPort: 0,
-        apiToken: config.proxidize.apiToken,
-        logger,
-      });
-      const [brightAddress, proxidizeAddresses] = await Promise.all([brightData.start(), proxidize.start()]);
-      simulators = { brightData, proxidize };
-      brightConfig = { ...config.brightData, host: brightAddress.host, port: brightAddress.port };
-      proxidizeConfig = {
-        ...config.proxidize,
-        apiBaseUrl: `http://${proxidizeAddresses.control.host}:${proxidizeAddresses.control.port}`,
-      };
-    }
-
     const brightData = new BrightDataAdapter({
-      ...brightConfig,
+      ...config.brightData,
       connectTimeoutMs: config.attemptEstablishmentTimeoutMs,
     });
     const proxidize = new ProxidizeAdapter({
-      ...proxidizeConfig,
+      ...config.proxidize,
       requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
       exactCity: config.proxidizeExactCity,
     });
@@ -120,14 +84,11 @@ async function createRoutingRuntime(
     );
     return {
       routes,
-      ...(simulators === undefined ? {} : { simulators }),
       stop: async () => {
-        await Promise.allSettled([...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()])]);
         await store.close();
       },
     };
   } catch (error) {
-    await Promise.allSettled([...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()])]);
     await store.close();
     throw error;
   }
@@ -210,7 +171,6 @@ export async function startApplication(
       socks5Address,
       controlAddress,
       routes,
-      ...(runtime.simulators === undefined ? {} : { simulators: runtime.simulators }),
       stop: async () => {
         if (stopped) return;
         stopped = true;

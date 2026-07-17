@@ -6,6 +6,7 @@ import {
   startHealthAggregatorService,
   startIntegrationTargetService,
   startNotificationService,
+  startProviderSimulatorService,
   startPublicCanaryService,
   startStatusApplicationService,
   startUsageAccountingService,
@@ -58,9 +59,12 @@ try {
     case "integration-target":
       application = await startIntegrationTargetService(logger);
       break;
+    case "provider-simulators":
+      application = await startProviderSimulatorService(logger);
+      break;
     default:
       throw new Error(
-        "SERVICE_MODE must be proxy, data-plane, control-plane, health-aggregator, status, usage-accounting, notification, canary, or integration-target",
+        "SERVICE_MODE must be proxy, data-plane, control-plane, health-aggregator, status, usage-accounting, notification, canary, integration-target, or provider-simulators",
       );
   }
 } catch (error) {

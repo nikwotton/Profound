@@ -140,6 +140,16 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     const healthAggregatorPassiveEndpoint = $interpolate`http://${healthAggregatorServiceHost}:8082/v1/passive-signals/otlp`;
     const telemetryCollectorServiceHost = $interpolate`TelemetryCollector.${$app.stage}.${$app.name}.${vpc.nodes.cloudmapNamespace.name}`;
     const telemetryCollectorEndpoint = $interpolate`http://${telemetryCollectorServiceHost}:4318`;
+    const providerSimulatorServiceHost = $interpolate`ProviderSimulators.${$app.stage}.${$app.name}.${vpc.nodes.cloudmapNamespace.name}`;
+    const providerSimulatorHost = $dev ? "127.0.0.1" : providerSimulatorServiceHost;
+    const providerEndpointEnvironment: Record<string, string | ReturnType<typeof $interpolate>> =
+      providerMode === "mock"
+        ? {
+            BRIGHT_DATA_HOST: providerSimulatorHost,
+            BRIGHT_DATA_PORT: "33335",
+            PROXIDIZE_API_BASE_URL: $interpolate`http://${providerSimulatorHost}:8092`,
+          }
+        : {};
     const canaryTelemetryCollectorServiceHost = $interpolate`CanaryTelemetryCollector.${$app.stage}.${$app.name}.${canaryVpc.nodes.cloudmapNamespace.name}`;
     const canaryTelemetryCollectorEndpoint = $interpolate`http://${canaryTelemetryCollectorServiceHost}:4318`;
 
@@ -509,6 +519,52 @@ service:
       },
     });
 
+    const providerSimulators =
+      providerMode === "mock"
+        ? new sst.aws.Service("ProviderSimulators", {
+            cluster,
+            dev: { url: "http://127.0.0.1:8094" },
+            architecture: "x86_64",
+            cpu: "0.5 vCPU",
+            memory: "1 GB",
+            containers: [
+              {
+                name: "app",
+                image: applicationImage,
+                cpu: "0.5 vCPU",
+                memory: "1 GB",
+                dev: { command: "pnpm dev:service" },
+                environment: {
+                  NODE_ENV: "production",
+                  SERVICE_MODE: "provider-simulators",
+                  PROVIDER_SIMULATOR_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
+                  PROVIDER_SIMULATOR_BRIGHT_DATA_PORT: "33335",
+                  PROVIDER_SIMULATOR_PROXIDIZE_CONTROL_PORT: "8092",
+                  PROVIDER_SIMULATOR_PROXIDIZE_DATA_PORT: "8093",
+                  PROVIDER_SIMULATOR_ADMIN_PORT: "8094",
+                  PROVIDER_SIMULATOR_ADVERTISED_HOST: providerSimulatorHost,
+                  PROVIDER_SIMULATOR_ADVERTISED_PROXIDIZE_DATA_PORT: "8093",
+                  ...otelEnvironment(`profound-provider-simulators-${$app.stage}`, telemetryCollectorEndpoint),
+                },
+                health: {
+                  command: [
+                    "CMD-SHELL",
+                    "node -e \"fetch('http://127.0.0.1:8094/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+                  ],
+                  startPeriod: "20 seconds",
+                  interval: "30 seconds",
+                  timeout: "5 seconds",
+                  retries: 3,
+                },
+                logging: { retention: "1 week" },
+              },
+            ],
+            serviceRegistry: { port: 8094 },
+            scaling: { min: 1, max: 1 },
+            wait: true,
+          })
+        : undefined;
+
     // Native ECS blue/green needs two target groups per listener. SST still
     // owns the task definition and service, while these raw resources expose
     // the alternate target groups required by the ECS deployment strategy.
@@ -630,7 +686,7 @@ service:
           image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "data-plane",
@@ -652,6 +708,7 @@ service:
             RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
             PROXIDIZE_EXACT_CITY_SUPPORT:
               process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+            ...providerEndpointEnvironment,
             ...otelEnvironment(`profound-proxy-router-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: proxyAppSsm,
@@ -758,7 +815,7 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "control-plane",
@@ -777,6 +834,7 @@ service:
             RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
             PROXIDIZE_EXACT_CITY_SUPPORT:
               process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+            ...providerEndpointEnvironment,
             ...otelEnvironment(`profound-proxy-control-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev ? { CONTROL_API_TOKEN: devControlApiToken } : {}),
           },
@@ -986,7 +1044,7 @@ service:
           image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "health-aggregator",
@@ -1014,6 +1072,7 @@ service:
             CONNECT_TIMEOUT_MS: process.env.CONNECT_TIMEOUT_MS ?? "10000",
             PROXIDIZE_EXACT_CITY_SUPPORT:
               process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+            ...providerEndpointEnvironment,
             ...otelEnvironment(`profound-proxy-health-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev
               ? {
@@ -1087,7 +1146,7 @@ service:
           image: applicationImage,
           cpu: "0.25 vCPU",
           memory: "0.5 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "status",
@@ -1158,7 +1217,7 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "usage-accounting",
@@ -1239,7 +1298,7 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "notification",
@@ -1344,6 +1403,17 @@ service:
             productVpcId: vpc.id,
             canaryVpcId: canaryVpc.id,
             services: {
+              ...(providerSimulators === undefined
+                ? {}
+                : {
+                    providerSimulators: {
+                      cluster: cluster.nodes.cluster.name,
+                      service: providerSimulators.nodes.service.name,
+                      taskDefinition: providerSimulators.nodes.taskDefinition.arn,
+                      taskRole: providerSimulators.nodes.taskRole.arn,
+                      executionRole: providerSimulators.nodes.executionRole!.arn,
+                    },
+                  }),
               proxy: {
                 cluster: cluster.nodes.cluster.name,
                 service: service.nodes.service.name,

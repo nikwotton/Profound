@@ -194,10 +194,10 @@ test("plain HTTP provider statuses are returned without failover", async (t) => 
     isAuthenticated: false,
     shouldRetry: true,
   });
-  testApp.application.simulators?.brightData.setFailure("unavailable");
+  await testApp.simulators.setFailure("bright-data", "unavailable");
   const response = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(response.status, 502);
-  assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
+  assert.equal(await testApp.simulators.lastIdentity("proxidize"), null);
 });
 
 test("authenticated routes prefer Proxidize and may explicitly use Bright Data", async (t) => {
@@ -216,10 +216,10 @@ test("authenticated routes prefer Proxidize and may explicitly use Bright Data",
   const first = await requestViaProxy(preferred.proxyUrls.http, target.url);
   assert.equal(first.headers["x-mock-endpoint-id"], "px-us-ny-1");
 
-  testApp.application.simulators?.proxidize.setFailure("unavailable");
+  await testApp.simulators.setFailure("proxidize", "unavailable");
   const failedOver = await requestViaProxy(preferred.proxyUrls.http, target.url);
   assert.equal(failedOver.status, 502);
-  testApp.application.simulators?.proxidize.setFailure(null);
+  await testApp.simulators.setFailure("proxidize", null);
 
   const forced = await createRoute(testApp.application, {
     name: "authenticated-bright-data",
@@ -256,10 +256,10 @@ test("CONNECT exhausts two peers in the selected provider before cross-provider 
     shouldRetry: true,
     retryPolicy: { maxAttempts: 4 },
   });
-  testApp.application.simulators?.brightData.setFailure("unavailable");
+  await testApp.simulators.setFailure("bright-data", "unavailable");
   const exchange = await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "hierarchical-payload");
   assert.deepEqual(exchange, { status: 200, body: "hierarchical-payload" });
-  assert.equal(testApp.application.simulators?.proxidize.lastIdentity()?.id, "px-us-ca-1");
+  assert.equal((await testApp.simulators.lastIdentity("proxidize"))?.id, "px-us-ca-1");
   const attempts = lines
     .map((line) => JSON.parse(line) as { message: string; context?: { provider?: string } })
     .filter((entry) => entry.message === "Proxy tunnel establishment failed" || entry.message === "Proxy tunnel opened")
@@ -282,10 +282,10 @@ test("authenticated CONNECT failover preserves the route's exact city", async (t
     shouldRetry: true,
     retryPolicy: { maxAttempts: 4 },
   });
-  testApp.application.simulators?.proxidize.setFailure("unavailable");
+  await testApp.simulators.setFailure("proxidize", "unavailable");
   const exchange = await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "authenticated-payload");
   assert.deepEqual(exchange, { status: 200, body: "authenticated-payload" });
-  assert.equal(testApp.application.simulators?.brightData.lastIdentity()?.city, "newyork");
+  assert.equal((await testApp.simulators.lastIdentity("bright-data"))?.city, "newyork");
 });
 
 test("candidate establishment enforces per-attempt and overall deadlines without backoff", async (t) => {
@@ -305,13 +305,13 @@ test("candidate establishment enforces per-attempt and overall deadlines without
     shouldRetry: true,
     retryPolicy: { maxAttempts: 4 },
   });
-  testApp.application.simulators?.brightData.setFailure("timeout");
+  await testApp.simulators.setFailure("bright-data", "timeout");
   const startedAt = Date.now();
   const result = await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "");
   const elapsedMs = Date.now() - startedAt;
   assert.equal(result.status, 502);
   assert.ok(elapsedMs < 400, `operation took ${elapsedMs}ms`);
-  assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
+  assert.equal(await testApp.simulators.lastIdentity("proxidize"), null);
 });
 
 test("mobile routes preserve affinity, rotate in-region, and distribute new routes", async (t) => {
@@ -469,7 +469,7 @@ test("an unhealthy assigned mobile device fails over within the route's exact ci
   });
   const before = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(before.headers["x-mock-endpoint-id"], "px-us-ny-1");
-  testApp.application.simulators?.proxidize.setDeviceHealth("px-us-ny-1", false);
+  await testApp.simulators.setDeviceHealth("px-us-ny-1", false);
   const response = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(response.status, 200);
   assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-2");
@@ -492,7 +492,7 @@ test("scheduled mobile rotation retains the assigned device and region", async (
     rotation: { mode: "interval", intervalSeconds: 60 },
   });
   const before = await requestViaProxy(route.proxyUrls.http, target.url);
-  assert.equal(testApp.application.simulators?.proxidize.devices()[0]?.rotationIntervalSeconds, undefined);
+  assert.equal((await testApp.simulators.devices())[0]?.rotationIntervalSeconds, undefined);
   now += 61_000;
   const after = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.notEqual(before.headers["x-mock-exit-ip"], after.headers["x-mock-exit-ip"]);
@@ -540,7 +540,7 @@ test("HTTPS CONNECT tunnels bytes through the selected provider", async (t) => {
     });
   });
   assert.match(echoed, /tunnel-payload/);
-  assert.equal(testApp.application.simulators?.proxidize.lastIdentity()?.id, "px-us-ny-2");
+  assert.equal((await testApp.simulators.lastIdentity("proxidize"))?.id, "px-us-ny-2");
 });
 
 test("SOCKS5 TCP CONNECT uses the same access-grant credentials and preserves domain targets", async (t) => {

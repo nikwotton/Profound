@@ -147,7 +147,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     proxidizeExactCity: proxidizeExactCity as AppConfig["proxidizeExactCity"],
     telemetry: { serviceName: env.OTEL_SERVICE_NAME ?? "profound-proxy-router", serviceVersion: "0.3.0" },
     brightData: {
-      host: env.BRIGHT_DATA_HOST ?? "brd.superproxy.io",
+      host: env.BRIGHT_DATA_HOST ?? (providerMode === "mock" ? "127.0.0.1" : "brd.superproxy.io"),
       port: integer(env.BRIGHT_DATA_PORT, 33_335, "BRIGHT_DATA_PORT", 1),
       customerId: env.BRIGHT_DATA_CUSTOMER_ID ?? "mock-customer",
       zone: env.BRIGHT_DATA_ZONE ?? "residential",
@@ -160,7 +160,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         : {}),
     },
     proxidize: {
-      apiBaseUrl: env.PROXIDIZE_API_BASE_URL ?? "https://api.proxidize.com",
+      apiBaseUrl: env.PROXIDIZE_API_BASE_URL ?? (providerMode === "mock" ? "http://127.0.0.1:8092" : "https://api.proxidize.com"),
       apiToken: env.PROXIDIZE_API_TOKEN ?? "mock-proxidize-token",
     },
   };

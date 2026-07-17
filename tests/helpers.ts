@@ -8,6 +8,7 @@ import { startApplication, type ApplicationDependencies, type RunningApplication
 import { loadConfig } from "../src/config.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
+import { ProviderSimulatorAdminClient, ProviderSimulatorService } from "../src/simulators/provider-simulator-service.js";
 import type { RouteProfileInput } from "../src/types.js";
 
 export interface TestTarget {
@@ -18,6 +19,7 @@ export interface TestTarget {
 
 export interface TestApp {
   application: RunningApplication;
+  simulators: ProviderSimulatorAdminClient;
   databasePath: string;
   directory: string;
   stop(remove?: boolean): Promise<void>;
@@ -100,6 +102,21 @@ export async function startTestApp(
 ): Promise<TestApp> {
   const directory = existing?.directory ?? mkdtempSync(join(tmpdir(), "profound-test-"));
   const databasePath = existing?.databasePath ?? join(directory, "routes.db");
+  const simulatorAdminToken = "test-provider-simulator-admin";
+  const simulatorService = new ProviderSimulatorService({
+    host: "127.0.0.1",
+    brightDataPort: 0,
+    proxidizeControlPort: 0,
+    proxidizeDataPort: 0,
+    adminPort: 0,
+    adminToken: simulatorAdminToken,
+    brightDataCustomerId: "mock-customer",
+    brightDataZone: "residential",
+    brightDataPassword: "mock-bright-password",
+    proxidizeApiToken: "mock-proxidize-token",
+    logger,
+  });
+  const simulatorAddresses = await simulatorService.start();
   const config = loadConfig({
     PROVIDER_MODE: "mock",
     FORWARD_PROXY_HOST: "127.0.0.1",
@@ -114,17 +131,30 @@ export async function startTestApp(
     ALLOWED_TARGET_PORTS: allowedPorts.join(","),
     CONNECT_TIMEOUT_MS: "250",
     ...environment,
+    BRIGHT_DATA_HOST: simulatorAddresses.brightData.host,
+    BRIGHT_DATA_PORT: String(simulatorAddresses.brightData.port),
+    PROXIDIZE_API_BASE_URL: `http://${simulatorAddresses.proxidize.control.host}:${simulatorAddresses.proxidize.control.port}`,
   });
-  const application = await startApplication(config, logger, {
-    targetValidator: async () => undefined,
-    ...dependencies,
-  });
+  let application: RunningApplication;
+  try {
+    application = await startApplication(config, logger, {
+      targetValidator: async () => undefined,
+      ...dependencies,
+    });
+  } catch (error) {
+    await simulatorService.stop();
+    throw error;
+  }
   return {
     application,
+    simulators: new ProviderSimulatorAdminClient(
+      `http://${simulatorAddresses.admin.host}:${simulatorAddresses.admin.port}`,
+      simulatorAdminToken,
+    ),
     databasePath,
     directory,
     stop: async (remove = true) => {
-      await application.stop();
+      await Promise.allSettled([application.stop(), simulatorService.stop()]);
       if (remove) rmSync(directory, { recursive: true, force: true });
     },
   };

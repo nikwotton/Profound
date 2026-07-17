@@ -54,6 +54,8 @@ test("control API token defaults only for local mock mode", () => {
   });
   assert.equal(local.adminToken, "change-me");
   assert.equal(local.proxidizeExactCity, "provider_guaranteed");
+  assert.equal(local.brightData.host, "127.0.0.1");
+  assert.equal(local.proxidize.apiBaseUrl, "http://127.0.0.1:8092");
 
   assert.throws(
     () =>
@@ -99,6 +101,8 @@ test("control API token defaults only for local mock mode", () => {
     SQLITE_PATH: "./data/config-test.db",
   });
   assert.equal(live.proxidizeExactCity, "unsupported");
+  assert.equal(live.brightData.host, "brd.superproxy.io");
+  assert.equal(live.proxidize.apiBaseUrl, "https://api.proxidize.com");
 
   assert.throws(
     () =>

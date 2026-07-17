@@ -41,27 +41,24 @@ test("provider authentication, rate limiting, and unavailable peers are normaliz
     name: "failures",
     targeting: { country: "US" },
   });
-  const simulator = testApp.application.simulators?.brightData;
-  assert.ok(simulator);
-
-  simulator.setFailure("auth");
+  await testApp.simulators.setFailure("bright-data", "auth");
   const authentication = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(authentication.status, 502);
   assert.doesNotMatch(authentication.body, /mock-bright-password/);
 
-  simulator.setFailure("rate_limit");
+  await testApp.simulators.setFailure("bright-data", "rate_limit");
   const rateLimit = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(rateLimit.status, 429);
   assert.match(rateLimit.body, /Rate limited/);
 
-  simulator.setFailure("unavailable");
+  await testApp.simulators.setFailure("bright-data", "unavailable");
   const unavailable = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(unavailable.status, 502);
 
-  simulator.setFailure("timeout");
+  await testApp.simulators.setFailure("bright-data", "timeout");
   const timeout = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(timeout.status, 503);
-  simulator.setFailure(null);
+  await testApp.simulators.setFailure("bright-data", null);
 });
 
 test("structured logs redact credentials, cookies, authorization, and URL queries", () => {

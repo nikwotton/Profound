@@ -24,6 +24,8 @@ export interface ProxidizeSimulatorOptions {
   controlPort: number;
   dataPort: number;
   apiToken: string;
+  advertisedDataHost?: string;
+  advertisedDataPort?: number;
   logger: Logger;
   devices?: SimulatedMobileDevice[];
 }
@@ -201,8 +203,8 @@ export class ProxidizeSimulator {
           session_id: device.id,
           username: device.username,
           password: device.password,
-          host: dataAddress.host,
-          port: dataAddress.port,
+          host: this.options.advertisedDataHost ?? dataAddress.host,
+          port: this.options.advertisedDataPort ?? dataAddress.port,
           country: device.country,
           region: device.region,
           city: device.city,

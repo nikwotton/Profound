@@ -29,6 +29,13 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /new sst\.aws\.Service\("NotificationService"/);
   assert.match(aws, /new sst\.aws\.Service\("TelemetryCollector"/);
   assert.match(aws, /new sst\.aws\.Service\("CanaryTelemetryCollector"/);
+  assert.match(aws, /new sst\.aws\.Service\("ProviderSimulators"/);
+  assert.match(aws, /SERVICE_MODE: "provider-simulators"/);
+  assert.match(aws, /serviceRegistry: \{ port: 8094 \}/);
+  assert.match(aws, /scaling: \{ min: 1, max: 1 \}/);
+  assert.match(aws, /PROXIDIZE_API_BASE_URL: \$interpolate`http:\/\/\$\{providerSimulatorHost\}:8092`/);
+  assert.match(aws, /BRIGHT_DATA_HOST: providerSimulatorHost/);
+  assert.doesNotMatch(aws, /dev: \{ command: "pnpm dev" \}/);
   assert.match(aws, /new sst\.aws\.ApiGatewayV2\("PublicCanary"/);
   assert.match(aws, /handler: "src\/canary-lambda\.handler"/);
   assert.doesNotMatch(aws, /new sst\.aws\.Service\("PublicCanary"/);

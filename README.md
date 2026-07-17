@@ -52,13 +52,16 @@ Start the combined proxy and control plane in offline mock mode:
 pnpm dev
 ```
 
-| Interface                | Address                              |
-| ------------------------ | ------------------------------------ |
-| HTTP/HTTPS forward proxy | `127.0.0.1:8080`                     |
-| SOCKS5 proxy             | `127.0.0.1:1080`                     |
-| Control API              | `http://127.0.0.1:8081`              |
-| Swagger UI               | `http://127.0.0.1:8081/docs`         |
-| OpenAPI JSON             | `http://127.0.0.1:8081/openapi.json` |
+The development supervisor starts two Node.js processes: one shared provider-simulator service and one combined proxy/control service. This keeps the mock topology equivalent to SST while preserving a single local command and requiring no AWS or vendor account.
+
+| Interface                       | Address                              |
+| ------------------------------- | ------------------------------------ |
+| HTTP/HTTPS forward proxy        | `127.0.0.1:8080`                     |
+| SOCKS5 proxy                    | `127.0.0.1:1080`                     |
+| Control API                     | `http://127.0.0.1:8081`              |
+| Swagger UI                      | `http://127.0.0.1:8081/docs`         |
+| OpenAPI JSON                    | `http://127.0.0.1:8081/openapi.json` |
+| Provider-simulator health/admin | `http://127.0.0.1:8094`              |
 
 Loopback-only mock mode supplies the development control token `change-me` and trusted principal `local-dev`.
 

@@ -28,6 +28,8 @@ Start the combined local proxy/control process in mock mode:
 pnpm dev
 ```
 
+The command supervises a shared provider-simulator Node.js process plus the combined proxy/control Node.js process. Use `pnpm dev:service` only when an orchestrator such as SST already owns process topology, or when deliberately starting one `SERVICE_MODE` yourself.
+
 Build production JavaScript:
 
 ```sh
@@ -47,7 +49,7 @@ pnpm start
 | `src/socks5-proxy.ts`               | SOCKS5 authentication and TCP `CONNECT`                 |
 | `src/route-service.ts`              | Route/grant lifecycle and candidate routing             |
 | `src/providers/`                    | Provider abstraction and Bright Data/Proxidize adapters |
-| `src/simulators/`                   | Offline provider contracts                              |
+| `src/simulators/`                   | Shared offline provider-simulator service and contracts |
 | `src/store.ts`                      | SQLite schema and persistence contract                  |
 | `src/dynamo-store.ts`               | DynamoDB implementation                                 |
 | `src/health-aggregator.ts`          | Capability-health evaluation                            |
@@ -81,7 +83,7 @@ Format changed files with:
 pnpm format
 ```
 
-`pnpm check` validates application and SST TypeScript. `pnpm lint` uses the checked-in isolated lint environment. `pnpm test` builds first and runs offline Node tests against local simulators and controlled recipients.
+`pnpm check` validates application and SST TypeScript. `pnpm lint` uses the checked-in isolated lint environment. `pnpm test` builds first and runs the shared provider-simulator service separately from the application, then uses controlled recipients for end-to-end traffic.
 
 ## Test suites
 

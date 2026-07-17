@@ -6,19 +6,20 @@ This guide is the shipped-v0 runbook for deploying, configuring, monitoring, and
 
 AWS is the only deployment provider implemented in v0. The SST module deploys independent runtime and health boundaries rather than one monolith:
 
-| Component                   | Responsibility                                                | Local mode/port              | AWS placement                                        |
-| --------------------------- | ------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------- |
-| Data plane                  | HTTP/HTTPS and SOCKS5 proxy listeners                         | `data-plane`; `8080`, `1080` | ECS Fargate behind an internal Network Load Balancer |
-| Control plane               | Routes, grants, providers, readiness, OpenAPI                 | `control-plane`; `8081`      | ECS Fargate behind an internal load balancer         |
-| Health aggregator           | Provider/passive/synthetic health and alert creation          | `health-aggregator`; `8082`  | Internal ECS Fargate service                         |
-| Internal dashboard          | Capability status, usage, cost, reconciliation                | `status`; `8083`             | Internal ECS Fargate service                         |
-| Notification worker         | Signed webhook delivery                                       | `notification`; `8084`       | Internal ECS Fargate service                         |
-| Usage accounting            | Durable rollups and provider-cost reconciliation              | `usage-accounting`; `8085`   | Internal ECS Fargate service                         |
-| Public canary               | Signed source-IP/geography observation                        | `canary`; `8090`             | API Gateway and Lambda in an isolated canary VPC     |
-| Product telemetry collector | OTLP buffering/filtering/export and passive health forwarding | n/a                          | ECS Fargate in the product VPC                       |
-| Canary telemetry collector  | Isolated canary OTLP export                                   | n/a                          | ECS Fargate in the canary VPC                        |
+| Component                   | Responsibility                                                | Local mode/port                               | AWS placement                                        |
+| --------------------------- | ------------------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------- |
+| Data plane                  | HTTP/HTTPS and SOCKS5 proxy listeners                         | `data-plane`; `8080`, `1080`                  | ECS Fargate behind an internal Network Load Balancer |
+| Control plane               | Routes, grants, providers, readiness, OpenAPI                 | `control-plane`; `8081`                       | ECS Fargate behind an internal load balancer         |
+| Health aggregator           | Provider/passive/synthetic health and alert creation          | `health-aggregator`; `8082`                   | Internal ECS Fargate service                         |
+| Internal dashboard          | Capability status, usage, cost, reconciliation                | `status`; `8083`                              | Internal ECS Fargate service                         |
+| Notification worker         | Signed webhook delivery                                       | `notification`; `8084`                        | Internal ECS Fargate service                         |
+| Usage accounting            | Durable rollups and provider-cost reconciliation              | `usage-accounting`; `8085`                    | Internal ECS Fargate service                         |
+| Provider simulators         | Bright Data/Proxidize mock control and data planes            | `provider-simulators`; `33335`, `8092`–`8094` | One internal ECS task in mock stages only            |
+| Public canary               | Signed source-IP/geography observation                        | `canary`; `8090`                              | API Gateway and Lambda in an isolated canary VPC     |
+| Product telemetry collector | OTLP buffering/filtering/export and passive health forwarding | n/a                                           | ECS Fargate in the product VPC                       |
+| Canary telemetry collector  | Isolated canary OTLP export                                   | n/a                                           | ECS Fargate in the canary VPC                        |
 
-`SERVICE_MODE=proxy` starts the combined local data and control planes. `integration-target` is a controlled recipient used by tests and is not a production component.
+`SERVICE_MODE=proxy` starts the combined local data and control planes. The `pnpm dev` supervisor also starts one shared `provider-simulators` process in mock mode; the application processes never embed their own provider mocks. `integration-target` is a controlled recipient used by tests and is not a production component.
 
 The product VPC holds provider credentials, route state, and customer attribution. The public canary has no provider credentials, customer data, internal routes, or path into the product VPC. Target traffic always travels through a selected provider and never falls back to a direct connection.
 
@@ -45,6 +46,8 @@ The defaults are offline and safe for local development:
 - persistence: `./data/profound.db` with SQLite;
 - control principal: `local-dev` authenticated by `change-me`;
 - all listeners: loopback only.
+
+The supervisor starts separate Node.js processes for the provider simulators and the combined application. Provider traffic uses `33335` for the Bright Data proxy, `8092` for Proxidize control, `8093` for Proxidize data, and `8094` for simulator health/administration.
 
 Check the process:
 
@@ -125,7 +128,7 @@ Live mode requires all of the following:
 - `BRIGHT_DATA_API_KEY`
 - `PROXIDIZE_API_TOKEN`
 
-Optional endpoint overrides are `BRIGHT_DATA_HOST`, `BRIGHT_DATA_PORT`, `BRIGHT_DATA_STATUS_API_URL`, and `PROXIDIZE_API_BASE_URL`. Keep provider configuration in SST secrets or a local secret source, never committed environment files.
+Optional endpoint overrides are `BRIGHT_DATA_HOST`, `BRIGHT_DATA_PORT`, `BRIGHT_DATA_STATUS_API_URL`, and `PROXIDIZE_API_BASE_URL`. Mock mode defaults these to the shared local service; SST replaces them with the non-production simulator's Cloud Map address. Keep live provider configuration in SST secrets or a local secret source, never committed environment files.
 
 ### Persistence
 
@@ -237,7 +240,7 @@ DATA_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
 pnpm aws:deploy --stage staging
 ```
 
-Non-production uses provider simulators by default. SST prints internal proxy, control, dashboard, health, accounting, notification, canary, and telemetry metadata. Internal names resolve only from the product VPC or an SST tunnel.
+Non-production uses one shared provider-simulator service by default. `sst dev` runs that service and each application mode as separate local processes; deployed mock stages run a single internal simulator task resolved through Cloud Map. Production does not create the simulator service. SST prints internal proxy, control, dashboard, health, accounting, notification, canary, and telemetry metadata. Internal names resolve only from the product VPC or an SST tunnel.
 
 ### Deploy production
 

@@ -14,8 +14,7 @@ import type { ProviderAdapter } from "./providers/provider.js";
 import { ProxidizeAdapter } from "./providers/proxidize.js";
 import { PublicCanaryServer } from "./public-canary.js";
 import { SignedCanaryProbe } from "./signed-canary-probe.js";
-import { BrightDataSimulator } from "./simulators/bright-data.js";
-import { ProxidizeSimulator } from "./simulators/proxidize.js";
+import { ProviderSimulatorService } from "./simulators/provider-simulator-service.js";
 import { SqliteRouteStore, type RouteStore } from "./store.js";
 import { StatusApplicationServer } from "./status-app.js";
 import {
@@ -72,51 +71,45 @@ function createStore(config: AppConfig): RouteStore {
   return new SqliteRouteStore(config.sqlitePath);
 }
 
-async function createHealthProviders(config: AppConfig, logger: Logger): Promise<{ providers: ProviderAdapter[]; stop(): Promise<void> }> {
-  let brightConfig = config.brightData;
-  let proxidizeConfig = config.proxidize;
-  let brightSimulator: BrightDataSimulator | undefined;
-  let proxidizeSimulator: ProxidizeSimulator | undefined;
-  if (config.providerMode === "mock") {
-    brightSimulator = new BrightDataSimulator({
-      host: "127.0.0.1",
-      port: 0,
-      customerId: config.brightData.customerId,
-      zone: config.brightData.zone,
-      password: config.brightData.password,
-      logger,
-    });
-    proxidizeSimulator = new ProxidizeSimulator({
-      host: "127.0.0.1",
-      controlPort: 0,
-      dataPort: 0,
-      apiToken: config.proxidize.apiToken,
-      logger,
-    });
-    const [brightAddress, proxidizeAddress] = await Promise.all([brightSimulator.start(), proxidizeSimulator.start()]);
-    brightConfig = { ...brightConfig, host: brightAddress.host, port: brightAddress.port };
-    proxidizeConfig = {
-      ...proxidizeConfig,
-      apiBaseUrl: `http://${proxidizeAddress.control.host}:${proxidizeAddress.control.port}`,
-    };
-  }
+async function createHealthProviders(config: AppConfig): Promise<{ providers: ProviderAdapter[]; stop(): Promise<void> }> {
   const providers: ProviderAdapter[] = [
-    new BrightDataAdapter({ ...brightConfig, connectTimeoutMs: config.attemptEstablishmentTimeoutMs }),
+    new BrightDataAdapter({ ...config.brightData, connectTimeoutMs: config.attemptEstablishmentTimeoutMs }),
     new ProxidizeAdapter({
-      ...proxidizeConfig,
+      ...config.proxidize,
       requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
       exactCity: config.proxidizeExactCity,
     }),
   ];
-  return {
-    providers,
-    stop: async () => {
-      await Promise.allSettled([
-        ...(brightSimulator === undefined ? [] : [brightSimulator.stop()]),
-        ...(proxidizeSimulator === undefined ? [] : [proxidizeSimulator.stop()]),
-      ]);
-    },
-  };
+  return { providers, stop: async () => undefined };
+}
+
+export async function startProviderSimulatorService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
+  const host = env.PROVIDER_SIMULATOR_HOST ?? "127.0.0.1";
+  const service = new ProviderSimulatorService({
+    host,
+    brightDataPort: integer(env.PROVIDER_SIMULATOR_BRIGHT_DATA_PORT, 33_335, "PROVIDER_SIMULATOR_BRIGHT_DATA_PORT", 0),
+    proxidizeControlPort: integer(env.PROVIDER_SIMULATOR_PROXIDIZE_CONTROL_PORT, 8_092, "PROVIDER_SIMULATOR_PROXIDIZE_CONTROL_PORT", 0),
+    proxidizeDataPort: integer(env.PROVIDER_SIMULATOR_PROXIDIZE_DATA_PORT, 8_093, "PROVIDER_SIMULATOR_PROXIDIZE_DATA_PORT", 0),
+    adminPort: integer(env.PROVIDER_SIMULATOR_ADMIN_PORT, 8_094, "PROVIDER_SIMULATOR_ADMIN_PORT", 0),
+    adminToken: env.PROVIDER_SIMULATOR_ADMIN_TOKEN ?? "local-provider-simulator-admin",
+    brightDataCustomerId: env.BRIGHT_DATA_CUSTOMER_ID ?? "mock-customer",
+    brightDataZone: env.BRIGHT_DATA_ZONE ?? "residential",
+    brightDataPassword: env.BRIGHT_DATA_PASSWORD ?? "mock-bright-password",
+    proxidizeApiToken: env.PROXIDIZE_API_TOKEN ?? "mock-proxidize-token",
+    ...(env.PROVIDER_SIMULATOR_ADVERTISED_HOST === undefined
+      ? {}
+      : {
+          proxidizeAdvertisedDataHost: env.PROVIDER_SIMULATOR_ADVERTISED_HOST,
+          proxidizeAdvertisedDataPort: integer(
+            env.PROVIDER_SIMULATOR_ADVERTISED_PROXIDIZE_DATA_PORT,
+            8_093,
+            "PROVIDER_SIMULATOR_ADVERTISED_PROXIDIZE_DATA_PORT",
+          ),
+        }),
+    logger,
+  });
+  await service.start();
+  return { stop: () => service.stop() };
 }
 
 export function requireServiceOwnedCapabilityAlerts(env: NodeJS.ProcessEnv = process.env): void {
@@ -132,7 +125,7 @@ export async function startHealthAggregatorService(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RunningService> {
   const store = createStore(config);
-  const providerRuntime = await createHealthProviders(config, logger);
+  const providerRuntime = await createHealthProviders(config);
   const canaryUrl = env.HEALTH_CANARY_URL?.trim();
   const signingSecret = env.CANARY_SIGNING_SECRET?.trim();
   const probe =
