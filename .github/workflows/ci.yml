@@ -19,6 +19,8 @@ jobs:
           node-version: 22.13.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install SST providers and generated types
+        run: pnpm sst install
       - run: pnpm check
       - run: pnpm test
       - run: pnpm openapi:check
