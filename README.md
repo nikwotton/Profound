@@ -6,7 +6,7 @@ V0 includes:
 
 - native HTTP forwarding, HTTPS `CONNECT`, and SOCKS5 TCP `CONNECT`;
 - reusable, secret-free route profiles and independently revocable access grants;
-- capability-aware provider selection, retry, rotation, and device affinity;
+- versioned, capacity-aware candidate scoring, safe pre-commit retry, and atomic per-connection proxy-slot assignment;
 - local provider simulators that require no vendor account or payment;
 - SQLite for local state and DynamoDB for deployed state;
 - health aggregation, signed external canaries, alerts, usage accounting, and an internal dashboard;

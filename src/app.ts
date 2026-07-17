@@ -12,7 +12,7 @@ import { ProxidizeSimulator } from "./simulators/proxidize.js";
 import { SqliteRouteStore, type RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import { createTargetValidator, type TargetValidator } from "./target-security.js";
-import { DEVICE_LEASE_IDLE_TIMEOUT_MS, type ListenAddress } from "./types.js";
+import type { ListenAddress } from "./types.js";
 
 export interface RunningApplication {
   forwardAddress: ListenAddress;
@@ -114,7 +114,7 @@ async function createRoutingRuntime(
       logger,
       telemetry,
       config.retryDefaults,
-      DEVICE_LEASE_IDLE_TIMEOUT_MS,
+      0,
       config.deploymentId,
       dependencies.now,
     );

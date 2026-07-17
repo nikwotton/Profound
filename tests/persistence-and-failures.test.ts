@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createLogger } from "../src/logger.js";
 import { createRoute, requestViaProxy, socks5AuthenticationStatus, startHttpTarget, startTestApp } from "./helpers.js";
 
-test("access-grant credentials and mobile affinity survive a service restart", async (t) => {
+test("access-grant credentials and route requirements survive a service restart", async (t) => {
   const target = await startHttpTarget();
   let testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -17,7 +17,7 @@ test("access-grant credentials and mobile affinity survive a service restart", a
     targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
   });
   const before = await requestViaProxy(route.proxyUrls.http, target.url);
-  const endpointId = before.headers["x-mock-endpoint-id"];
+  const city = before.headers["x-mock-city"];
   const saved = { databasePath: testApp.databasePath, directory: testApp.directory };
   await testApp.stop(false);
   testApp = await startTestApp([target.port], saved);
@@ -26,7 +26,7 @@ test("access-grant credentials and mobile affinity survive a service restart", a
   restartedHttpProxy.port = String(testApp.application.forwardAddress.port);
   const response = await requestViaProxy(restartedHttpProxy.toString(), target.url);
   assert.equal(response.status, 200);
-  assert.equal(response.headers["x-mock-endpoint-id"], endpointId);
+  assert.equal(response.headers["x-mock-city"], city);
   const persisted = await testApp.application.routes.get(route.profile.id, "local-dev");
   assert.equal(persisted.customerId, "customer-persistent");
   assert.equal(persisted.isTargetAuthenticated, true);

@@ -27,6 +27,7 @@ export interface CreatedRouteResponse {
   profile: {
     id: string;
     status: string;
+    providerOverride: "bright_data" | "proxidize" | null;
   };
   accessGrant: {
     id: string;
@@ -112,6 +113,7 @@ function canonicalTestProfile(input: LegacyTestProfileInput): RouteProfileInput 
     customerId: profile.customerId ?? "test-customer",
     ...(geography === undefined ? {} : { geography }),
     ...(carrier === undefined ? {} : { carrier }),
+    ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
     isTargetAuthenticated: profile.isTargetAuthenticated ?? isAuthenticated ?? false,
     allowConnectionRetry: profile.allowConnectionRetry ?? shouldRetry ?? false,
   };

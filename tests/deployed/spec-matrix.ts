@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHx04oYTLZd70PIxESYrlwdoKvNMTAyrUvTPb1gP6dp-UMIfKzOjPMsoDyde16hG8ygO8FdOhLtgyfrvkX0ljyfV0OdHbNqaUXuCVCA";
+  "ALtnJHyWHFXa5QZwJMHayu3I_-18X9qjDPmLybKO8OA5IvI3qLdmC9zkc6CZRrkJmkB9FWdAWX2sG6C3L4dj9wV5x15gwU2VoL8N9w77xgw";
 
 export interface SpecCoverage {
   id: string;
@@ -85,7 +85,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "4.route-fields",
     section: 4,
     requirement:
-      "Profile input contains only customer, optional geography/carrier, target-authenticated intent, and connection-retry intent",
+      "Profile input contains only customer, optional geography/carrier/provider override, target-authenticated intent, and connection-retry intent",
     deployed: [
       "deployed route management rejects untrusted and malformed requests",
       "deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI",
@@ -93,6 +93,17 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [
       "profile validation accepts only stable requirements and derives routing behavior",
       "profile validation rejects missing authenticated geography and every non-canonical field",
+    ],
+  },
+  {
+    id: "4.provider-override",
+    section: 4,
+    requirement:
+      "providerOverride is the sole caller-visible provider constraint, is null when unused, and never bypasses compatibility, geography, safety, health, hard-capacity, or circuit gates",
+    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
+    offline: [
+      "provider override is explicit, persisted, compatibility-gated, and never falls back",
+      "profile validation accepts only stable requirements and derives routing behavior",
     ],
   },
   {
@@ -124,7 +135,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     section: 4,
     requirement: "User identity comes from trusted control-plane claims",
     deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
-    offline: ["access-grant credentials and mobile affinity survive a service restart"],
+    offline: ["access-grant credentials and route requirements survive a service restart"],
   },
   {
     id: "4.auth-city",
@@ -132,7 +143,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     requirement: "Authenticated routes require and preserve an exact city",
     deployed: [
       "deployed route management rejects untrusted and malformed requests",
-      "deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city",
+      "deployed Proxidize connections share slot capacity and preserve the exact city",
     ],
     offline: ["authenticated CONNECT failover preserves the route's exact city"],
   },
@@ -151,7 +162,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
     offline: [
       "route profiles contain no credential verifier and access grants rotate and revoke independently",
-      "mobile device leases are isolated by access grant and survive credential rotation",
+      "mobile grants share scored proxy-slot capacity and credential rotation creates no affinity",
       "routine revocation preserves active work and emergency revocation raises the kill switch",
       "credential metadata is inspectable and each credential can be revoked independently",
     ],
@@ -162,7 +173,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     requirement: "Provider capabilities, not intended use alone, determine authenticated and unauthenticated eligibility",
     deployed: [
       "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
-      "deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city",
+      "deployed Proxidize connections share slot capacity and preserve the exact city",
     ],
     offline: ["authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider"],
   },
@@ -172,7 +183,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     requirement: "A provider and candidate are eligible only when operational, available, and compatible with every route constraint",
     deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: [
-      "an unhealthy assigned mobile device fails over within the route's exact city",
+      "an unhealthy mobile slot is excluded while exact-city routing remains mandatory",
       "profile validation rejects missing authenticated geography and every non-canonical field",
     ],
   },
@@ -180,13 +191,14 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "5.provider-class-ordering",
     section: 5,
     requirement:
-      "Authenticated routes order all device-backed providers before residential providers and unauthenticated routes use the reverse order",
+      "Authenticated routes exhaust bounded device-backed attempts before residential providers and unauthenticated routes use the reverse order; soft saturation changes ordering only inside the current class",
     deployed: [
       "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
-      "deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city",
+      "deployed Proxidize connections share slot capacity and preserve the exact city",
     ],
     offline: [
       "authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider",
+      "soft-saturated preferred slots remain ahead of the fallback provider class",
       "capability health follows preferred provider classes without penalizing a healthy preferred class",
     ],
   },
@@ -200,19 +212,20 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "5.exact-city-levels",
     section: 5,
-    requirement: "Exact-city support is guaranteed, verifiable, or unsupported with a two-candidate verification budget",
+    requirement: "Exact-city support is guaranteed, verifiable, or unsupported with a three-candidate verification budget",
     deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: ["profile validation rejects missing authenticated geography and every non-canonical field"],
   },
   {
     id: "5.rotation-control",
     section: 5,
-    requirement: "Provider-specific rotation remains internal and grant affinity is stable for authenticated targets",
+    requirement:
+      "Provider-specific rotation stays internal; provider auto-reassignment is disabled when supported and grants never create provider affinity",
     deployed: [
       "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
-      "deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city",
+      "deployed Proxidize connections share slot capacity and preserve the exact city",
     ],
-    offline: ["mobile grants preserve affinity and distribute devices"],
+    offline: ["mobile grants share scored proxy-slot capacity and credential rotation creates no affinity"],
   },
   {
     id: "5.commit-boundary",
@@ -236,15 +249,39 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: ["candidate establishment enforces per-attempt and overall deadlines without backoff"],
   },
   {
-    id: "5.device-leases",
+    id: "5.versioned-candidate-scoring",
     section: 5,
     requirement:
-      "Device candidates are exclusively leased within an access grant, optionally keyed by sessionId, with activity renewal, explicit release, a durable 15-minute sliding idle timeout, and no absolute cap",
+      "Every eligible provider and peer, slot, or device candidate uses the versioned weighted reliability, nonlinear headroom, performance, cost-efficiency, and stability score; selection is score-squared within five points of the best candidate in the applicable preference tier or override",
     deployed: [],
     offline: [
-      "device leases are exclusive, session-shareable, sliding, releasable, and durable",
-      "DynamoDB device leases conditionally lock endpoints and survive gateway-local state",
-      "mobile device leases are isolated by access grant and survive credential rotation",
+      "routing score uses the versioned weighted formula and nonlinear headroom",
+      "top-band selection excludes candidates more than five points behind and weights score squared",
+      "routing evidence excludes target HTTP outcomes and discounts stale or churning evidence",
+    ],
+  },
+  {
+    id: "5.shared-proxy-slots",
+    section: 5,
+    requirement:
+      "Every new upstream connection atomically increments durable liveness-backed load for its scored compatible healthy Proxidize slot; soft-saturated slots remain overflow behind unsaturated same-class candidates without binding a grant or triggering cross-class fallback",
+    deployed: [],
+    offline: [
+      "active proxy-slot loads are shared across callers, durable, and released with each connection",
+      "concurrent proxy-slot claims atomically include earlier claims in candidate load",
+      "concurrent mobile connections persist distinct atomic load claims for scored compatible slots",
+      "mobile grants share scored proxy-slot capacity and credential rotation creates no affinity",
+    ],
+  },
+  {
+    id: "5.capacity-circuits",
+    section: 5,
+    requirement:
+      "TTL-backed provider/candidate circuits open immediately on provider hard limits or after repeated proxy-controlled pre-commit capacity failures, use a 60-second exponential cooldown, permit one half-open probe, and reset after success",
+    deployed: [],
+    offline: [
+      "shared capacity circuits open, back off, half-open exactly one probe, and reset after success",
+      "a provider-reported hard capacity limit opens the shared circuit immediately",
     ],
   },
   {
@@ -257,9 +294,10 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "6.proxidize",
     section: 6,
-    requirement: "Proxidize implements inventory, credentials, location, device capacity, health, and rotation",
-    deployed: ["deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city"],
-    offline: ["mobile grants preserve affinity and distribute devices"],
+    requirement:
+      "Proxidize maps account credentials, slot inventory, device/IP/location evidence, connection load, health, and reroutes while hiding vendor details from callers",
+    deployed: ["deployed Proxidize connections share slot capacity and preserve the exact city"],
+    offline: ["mobile grants share scored proxy-slot capacity and credential rotation creates no affinity"],
   },
   {
     id: "6.provider-metadata",
@@ -305,7 +343,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "7.authoritative-usage-ledger",
     section: 7,
     requirement:
-      "Every upstream attempt creates an unsampled idempotent record with operation, attribution, provider, outcome, bytes, lease, and pricing context",
+      "Every upstream attempt creates an unsampled idempotent record with operation, attribution, provider override, provider, outcome, bytes, proxy-slot/upstream-connection context, routing score, soft pressure, hard/circuit state and failure class, and pricing context",
     deployed: [],
     offline: ["usage records are immutable and idempotent"],
   },
@@ -316,9 +354,9 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     deployed: [],
     offline: [
       "usage-priced traffic is estimated from billable bytes and historical price",
-      "device-priced traffic unions overlapping leases including idle time",
+      "device-priced slot cost is allocated by customer connection-seconds",
       "provider totals reconcile authoritative spend while grouped attribution stays estimated",
-      "unassigned device capacity is attributed to the synthetic Unallocated customer",
+      "idle proxy-slot capacity is attributed to the synthetic Unallocated customer",
     ],
   },
   {
@@ -330,6 +368,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [
       "reconciliation persists variance evidence and posts unexplained differences to Unallocated",
       "variance thresholds enforce the absolute floor, 5% warning, 15% error, and repeated-warning escalation",
+      "capacity pressure creates one idempotent durable alert per aggregate period",
     ],
   },
   {
@@ -343,9 +382,12 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "7.capacity-utilization",
     section: 7,
     requirement:
-      "Preallocated capacity reports current and time-weighted utilization while separating healthy idle and paid unhealthy time",
+      "Preallocated slot capacity reports current, peak, percentile, concurrency, throughput, prioritized-data, pressure, failure, wait, and time-weighted utilization with versioned recommendations",
     deployed: [],
-    offline: ["preallocated capacity reports time-weighted and current utilization with unhealthy capacity separated"],
+    offline: [
+      "preallocated capacity reports time-weighted and current utilization with unhealthy capacity separated",
+      "capacity recommendations use the versioned v0 policy and suppress location-limited changes",
+    ],
   },
   {
     id: "7.destination-resolution",
@@ -459,9 +501,9 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "8.internal-dashboard",
     section: 8,
     requirement:
-      "The internal dashboard supports overall and per-customer usage, configurable ranges, intervals, grouping, filters, and cost status",
+      "The internal dashboard supports usage/cost controls and shows explicit profile overrides plus hard-capacity circuit state, failure class, and cooldown",
     deployed: [],
-    offline: ["internal dashboard usage API supports time presets, grouping, and filters"],
+    offline: ["internal dashboard supports usage filters and surfaces provider overrides and capacity circuits"],
   },
   {
     id: "8.freshness",

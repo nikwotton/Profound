@@ -19,12 +19,11 @@ interface HealthSnapshot {
 }
 
 async function fetchInternal(base: string, path: string, token?: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
   return fetch(new URL(path, `${base}/`), {
     ...init,
-    headers: {
-      ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
-      ...init.headers,
-    },
+    headers,
   });
 }
 
@@ -288,7 +287,7 @@ deployedTest("deployed OTLP logs, metrics, traces, and canary security logs arri
     { timeoutMs: 180_000, intervalMs: 10_000 },
   );
   for (const forbidden of ["route", "user", "peer", "device", "session", "ip"]) {
-    assert.doesNotMatch(metricText, new RegExp(`proxy[._][^\"]*${forbidden}`, "i"));
+    assert.doesNotMatch(metricText, new RegExp(`proxy[._][^"]*${forbidden}`, "i"));
   }
 
   const spans = await waitFor(

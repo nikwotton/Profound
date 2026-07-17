@@ -16,21 +16,14 @@ import {
   passiveSignalsFromOtlpJson,
 } from "../src/health-aggregator.js";
 import { silentLogger, type Logger } from "../src/logger.js";
-import type { ProviderAdapter, ResolveOptions } from "../src/providers/provider.js";
+import type { ProviderAdapter } from "../src/providers/provider.js";
 import { PublicCanaryServer } from "../src/public-canary.js";
 import { startPublicCanaryService } from "../src/runtime-services.js";
 import { SignedCanaryProbe } from "../src/signed-canary-probe.js";
 import { SqliteRouteStore } from "../src/store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
 import { v0TraceSampler } from "../src/telemetry.js";
-import type {
-  CapabilityHealthSnapshot,
-  ProviderDescriptor,
-  ProviderHealth,
-  ProviderId,
-  StoredRoute,
-  UpstreamEndpoint,
-} from "../src/types.js";
+import type { CapabilityHealthSnapshot, ProviderDescriptor, ProviderHealth, ProviderId, UpstreamEndpoint } from "../src/types.js";
 import { createRoute, startTestApp } from "./helpers.js";
 
 function descriptor(id: ProviderId, authenticatedTraffic: boolean, unauthenticatedTraffic: boolean): ProviderDescriptor {
@@ -76,11 +69,13 @@ class HealthProvider implements ProviderAdapter {
     this.descriptor = descriptor(id, authenticated, unauthenticated);
   }
 
-  async resolve(_route: StoredRoute, _options: ResolveOptions): Promise<UpstreamEndpoint> {
+  async resolve(): Promise<UpstreamEndpoint> {
     throw new Error("not used");
   }
 
-  async rotate(_route: StoredRoute): Promise<void> {}
+  rotate(): Promise<void> {
+    return Promise.resolve();
+  }
 
   async health(): Promise<ProviderHealth> {
     return this.current;

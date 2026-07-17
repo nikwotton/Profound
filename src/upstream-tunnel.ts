@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { connect, isIP, type Socket } from "node:net";
-import { AppError, ProviderUnavailableError, UpstreamError } from "./errors.js";
+import { AppError, ProviderCapacityLimitError, ProviderUnavailableError, UpstreamError } from "./errors.js";
 import { abortReason } from "./establishment-budget.js";
 import { basicAuth } from "./net-utils.js";
 import { resolvedAddressesFromHeader, type ProviderResolutionMetadata } from "./destination-resolution.js";
@@ -56,7 +56,11 @@ function ipv6Bytes(address: string): Buffer {
     for (const part of parts) {
       if (part.includes(".")) {
         const octets = part.split(".").map(Number);
-        result.push((octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!);
+        const [first, second, third, fourth] = octets;
+        if (first === undefined || second === undefined || third === undefined || fourth === undefined) {
+          throw new ProviderUnavailableError("Upstream SOCKS5 proxy address is invalid");
+        }
+        result.push((first << 8) | second, (third << 8) | fourth);
       } else {
         result.push(Number.parseInt(part, 16));
       }
@@ -133,6 +137,10 @@ async function openHttpTunnel(
         reject(new UpstreamError("Upstream provider authentication failed"));
         return;
       }
+      if (status === 509) {
+        reject(new ProviderCapacityLimitError());
+        return;
+      }
       if (status !== 200) {
         reject(new ProviderUnavailableError("Upstream provider rejected the tunnel"));
         return;
@@ -183,7 +191,9 @@ async function openSocks5Tunnel(
   if (reply[0] !== 0x05 || reply[1] !== 0x00) {
     throw new ProviderUnavailableError("Upstream SOCKS5 proxy rejected the tunnel");
   }
-  const addressLength = reply[3] === 0x01 ? 4 : reply[3] === 0x04 ? 16 : reply[3] === 0x03 ? (await readExactly(socket, 1))[0]! : undefined;
+  const addressType = reply.readUInt8(3);
+  const addressLength =
+    addressType === 0x01 ? 4 : addressType === 0x04 ? 16 : addressType === 0x03 ? (await readExactly(socket, 1)).readUInt8(0) : undefined;
   if (addressLength === undefined) throw new ProviderUnavailableError("Upstream SOCKS5 proxy sent an invalid reply");
   await readExactly(socket, addressLength + 2);
   return { remainder: Buffer.alloc(0), providerMetadata: {} };

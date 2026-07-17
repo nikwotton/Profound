@@ -95,7 +95,7 @@ Every pull request must state:
 - whether provider contracts changed;
 - whether OpenAPI changed;
 - whether secrets, IAM, network boundaries, or retention changed;
-- test evidence, including any intentionally skipped live/deployed checks.
+- test evidence, including any intentionally skipped E2E, live-provider, or AWS acceptance checks.
 
 ## External integrations
 
@@ -112,7 +112,7 @@ Before the first production release, verify:
 - branch protection and required checks behave on a test pull request;
 - CODEOWNER changes cannot merge without owner review;
 - OIDC can deploy without stored AWS keys and cannot assume the wrong environment role;
-- staging deploy, migration, deployed suite, rollback, and removal complete;
+- staging deploy, migration, black-box E2E and AWS acceptance suites, rollback, and removal complete;
 - production approval blocks an unapproved promotion;
 - the promoted ECR digest matches the staging-validated digest;
 - private DNS, certificates, CIDRs, and SST secrets are correct;

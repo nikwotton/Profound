@@ -6,7 +6,7 @@ import type { Logger } from "../logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "../net-utils.js";
 import type { ListenAddress } from "../types.js";
 
-export type SimulatorFailure = "auth" | "unavailable" | "rate_limit" | "timeout" | null;
+export type SimulatorFailure = "auth" | "unavailable" | "rate_limit" | "timeout" | "capacity" | null;
 
 export interface MockIdentity {
   id: string;
@@ -80,6 +80,11 @@ function applyFailure(response: ServerResponse, failure: SimulatorFailure): bool
   if (failure === "rate_limit") {
     response.writeHead(429, { "content-type": "text/plain", "retry-after": "1" });
     response.end("Rate limited");
+    return true;
+  }
+  if (failure === "capacity") {
+    response.writeHead(509, { "content-type": "text/plain", "x-mock-provider-error": "hard_capacity_limit" });
+    response.end("Provider hard capacity limit");
     return true;
   }
   return false;
@@ -170,8 +175,9 @@ export class MockForwardProxy {
     }
     const failure = this.options.failure();
     if (failure === "timeout") return;
-    if (failure === "unavailable" || failure === "rate_limit") {
-      const status = failure === "rate_limit" ? "429 Too Many Requests" : "502 Bad Gateway";
+    if (failure === "unavailable" || failure === "rate_limit" || failure === "capacity") {
+      const status =
+        failure === "rate_limit" ? "429 Too Many Requests" : failure === "capacity" ? "509 Bandwidth Limit Exceeded" : "502 Bad Gateway";
       clientSocket.end(`HTTP/1.1 ${status}\r\n\r\n`);
       return;
     }

@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { connect, type Socket } from "node:net";
 import { test } from "node:test";
 import { basicAuth } from "../src/net-utils.js";
+import { CAPACITY_POLICY } from "../src/capacity-policy.js";
 import { SqliteRouteStore } from "../src/store.js";
 import {
   controlRequest,
@@ -227,6 +228,102 @@ test("authenticated routes prefer Proxidize while Bright Data remains eligible w
   );
 });
 
+test("provider override is explicit, persisted, compatibility-gated, and never falls back", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+
+  const overridden = await createRoute(testApp.application, {
+    targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
+    providerOverride: "bright_data",
+    isAuthenticated: true,
+    shouldRetry: true,
+  });
+  assert.equal(overridden.profile.providerOverride, "bright_data");
+  assert.equal((await requestViaProxy(overridden.proxyUrls.http, target.url)).headers["x-mock-endpoint-id"], "bright-data-superproxy");
+
+  testApp.application.simulators?.brightData.setFailure("unavailable");
+  assert.equal((await requestViaProxy(overridden.proxyUrls.http, target.url)).status, 502);
+  assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined, "an override never silently falls back");
+  testApp.application.simulators?.brightData.setFailure(null);
+
+  const incompatible = await controlRequest(testApp.application, "/v1/profiles", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      customerId: "override-incompatible",
+      geography: { countryCode: "GB", city: "London" },
+      providerOverride: "proxidize",
+      isTargetAuthenticated: true,
+      allowConnectionRetry: false,
+    }),
+  });
+  assert.equal(incompatible.status, 503);
+  assert.equal(((await incompatible.json()) as { code: string }).code, "provider_override_unsatisfied");
+});
+
+test("soft-saturated preferred slots remain ahead of the fallback provider class", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const store = new SqliteRouteStore(testApp.databasePath);
+  try {
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 120_000).toISOString();
+    for (let index = 0; index < CAPACITY_POLICY.softConnectionsPerSlot; index += 1) {
+      await store.registerActiveTunnel({
+        id: `soft-load-${index}`,
+        deploymentId: "other-deployment",
+        routeId: `other-route-${index}`,
+        accessGrantId: `other-grant-${index}`,
+        protocol: "https",
+        provider: "proxidize",
+        endpointId: "px-us-ny-1",
+        startedAt: now,
+        lastHeartbeatAt: now,
+        expiresAt,
+      });
+    }
+  } finally {
+    await store.close();
+  }
+
+  const route = await createRoute(testApp.application, {
+    targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
+    isAuthenticated: true,
+  });
+  const response = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-1");
+});
+
+test("a provider-reported hard capacity limit opens the shared circuit immediately", async (t) => {
+  const echo = await startEchoTarget();
+  const testApp = await startTestApp([echo.port]);
+  t.after(async () => {
+    await Promise.all([echo.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(testApp.application, {
+    targeting: { country: "US" },
+    providerOverride: "bright_data",
+    shouldRetry: false,
+  });
+  testApp.application.simulators?.brightData.setFailure("capacity");
+  assert.equal((await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "")).status, 502);
+
+  const store = new SqliteRouteStore(testApp.databasePath);
+  try {
+    const circuit = await store.getCapacityCircuit("bright_data", "bright_data");
+    assert.equal(circuit?.status, "open");
+    assert.equal(circuit?.reason, "provider_hard_limit");
+  } finally {
+    await store.close();
+  }
+});
+
 test("unauthenticated CONNECT exhausts residential peers without an incompatible device fallback", async (t) => {
   const echo = await startEchoTarget();
   const lines: string[] = [];
@@ -305,8 +402,8 @@ test("candidate establishment enforces per-attempt and overall deadlines without
   assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
 });
 
-test("mobile grants preserve affinity and distribute devices", async (t) => {
-  const target = await startHttpTarget();
+test("concurrent mobile connections persist distinct atomic load claims for scored compatible slots", async (t) => {
+  const target = await startEchoTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
@@ -324,12 +421,31 @@ test("mobile grants preserve affinity and distribute devices", async (t) => {
     targeting: { country: "US", region: "NY", city: "New York" },
     rotation: { mode: "manual" },
   });
-  const before = await requestViaProxy(firstRoute.proxyUrls.http, target.url);
-  const secondDevice = await requestViaProxy(secondRoute.proxyUrls.http, target.url);
-  assert.notEqual(before.headers["x-mock-endpoint-id"], secondDevice.headers["x-mock-endpoint-id"]);
-  const stable = await requestViaProxy(firstRoute.proxyUrls.http, target.url);
-  assert.equal(before.headers["x-mock-exit-ip"], stable.headers["x-mock-exit-ip"]);
-  assert.equal(before.headers["x-mock-region"], "NY");
+  const openTunnel = async (proxyUrl: string): Promise<Socket> => {
+    const proxy = new URL(proxyUrl);
+    const socket = connect(Number(proxy.port), proxy.hostname);
+    await once(socket, "connect");
+    socket.write(
+      `CONNECT 127.0.0.1:${target.port} HTTP/1.1\r\nHost: 127.0.0.1:${target.port}\r\n` +
+        `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
+    );
+    assert.match(await readHttpHead(socket), /200 Connection Established/);
+    return socket;
+  };
+  const firstTunnel = await openTunnel(firstRoute.proxyUrls.http);
+  const secondTunnel = await openTunnel(secondRoute.proxyUrls.http);
+  assert.equal(testApp.application.simulators?.proxidize.lastIdentity()?.city, "New York");
+  const store = new SqliteRouteStore(testApp.databasePath);
+  try {
+    const active = await store.listAllActiveTunnels();
+    assert.equal(active.length, 2);
+    assert.equal(new Set(active.map((connection) => connection.id)).size, 2);
+    assert.ok(active.every((connection) => connection.routingPolicyVersion !== undefined && connection.routingScore !== undefined));
+  } finally {
+    await store.close();
+  }
+  firstTunnel.destroy();
+  secondTunnel.destroy();
 });
 
 test("profile updates apply to new connections without replacing access-grant credentials or exposing providers", async (t) => {
@@ -366,7 +482,7 @@ test("profile updates apply to new connections without replacing access-grant cr
   assert.equal((await requestViaProxy(created.proxyUrls.http, target.url)).headers["x-mock-country"], "GB");
 });
 
-test("mobile device leases are isolated by access grant and survive credential rotation", async (t) => {
+test("mobile grants share scored proxy-slot capacity and credential rotation creates no affinity", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port], undefined, undefined, {
     CONTROL_API_IDENTITIES_JSON: JSON.stringify({
@@ -401,9 +517,10 @@ test("mobile device leases are isolated by access grant and survive credential r
   assert.notEqual(first.proxyUsername, first.accessGrant.id, "proxy usernames remain opaque credential identifiers");
   const firstResponse = await requestViaProxy(first.proxyUrls.http, target.url);
   const secondResponse = await requestViaProxy(second.proxyUrls.http, target.url);
-  assert.notEqual(firstResponse.headers["x-mock-endpoint-id"], secondResponse.headers["x-mock-endpoint-id"]);
-  const exhausted = await controlRequest(testApp.application, `/v1/profiles/${first.profile.id}/grants`, { method: "POST" });
-  assert.equal(exhausted.status, 503);
+  assert.equal(firstResponse.headers["x-mock-city"], "New York");
+  assert.equal(secondResponse.headers["x-mock-city"], "New York");
+  const third = await issueGrant();
+  assert.equal((await requestViaProxy(third.proxyUrls.http, target.url)).status, 200, "slot capacity is shared rather than reserved");
 
   const rotateCredential = await controlRequest(testApp.application, `/v1/grants/${first.accessGrant.id}/credentials/rotate`, {
     method: "POST",
@@ -418,7 +535,7 @@ test("mobile device leases are isolated by access grant and survive credential r
   assert.equal(Date.parse(rotated.credential.expiresAt) - Date.parse(rotated.credential.createdAt), 30 * 24 * 60 * 60_000);
   assert.equal(Date.parse(rotated.credential.expiresAt) - Date.parse(rotated.credential.renewalDueAt), 7 * 24 * 60 * 60_000);
   const rotatedResponse = await requestViaProxy(rotated.proxyUrls.http, target.url);
-  assert.equal(rotatedResponse.headers["x-mock-endpoint-id"], firstResponse.headers["x-mock-endpoint-id"]);
+  assert.equal(rotatedResponse.headers["x-mock-city"], "New York");
 
   const compromiseRotation = await controlRequest(testApp.application, `/v1/grants/${first.accessGrant.id}/credentials/emergency-rotate`, {
     method: "POST",
@@ -428,16 +545,13 @@ test("mobile device leases are isolated by access grant and survive credential r
   issuedSecrets.push(decodeURIComponent(new URL(emergency.proxyUrls.http).password));
   assert.equal((await requestViaProxy(first.proxyUrls.http, target.url)).status, 407);
   assert.equal((await requestViaProxy(rotated.proxyUrls.http, target.url)).status, 407);
-  assert.equal(
-    (await requestViaProxy(emergency.proxyUrls.http, target.url)).headers["x-mock-endpoint-id"],
-    firstResponse.headers["x-mock-endpoint-id"],
-  );
+  assert.equal((await requestViaProxy(emergency.proxyUrls.http, target.url)).headers["x-mock-city"], "New York");
 
   const list = await controlRequest(testApp.application, `/v1/profiles/${first.profile.id}/grants`);
   assert.equal(list.status, 200);
   const listed = (await list.json()) as { data: Array<Record<string, unknown>> };
   assert.equal(listed.data.length, 3);
-  assert.equal(listed.data.filter((grant) => grant.status === "revoked").length, 1);
+  assert.equal(listed.data.filter((grant) => grant.status === "revoked").length, 0);
   const listedText = JSON.stringify(listed);
   assert.doesNotMatch(listedText, /proxyUrl|proxyPassword|tokenHash|tokenSalt/i);
   assert.match(listedText, /lastUsedAt|renewalDueAt|expiresAt/);
@@ -461,10 +575,10 @@ test("mobile device leases are isolated by access grant and survive credential r
   assert.equal(release.status, 204);
   const replacement = await issueGrant();
   const replacementResponse = await requestViaProxy(replacement.proxyUrls.http, target.url);
-  assert.equal(replacementResponse.headers["x-mock-endpoint-id"], secondResponse.headers["x-mock-endpoint-id"]);
+  assert.equal(replacementResponse.headers["x-mock-city"], "New York");
 });
 
-test("an unhealthy assigned mobile device fails over within the route's exact city", async (t) => {
+test("an unhealthy mobile slot is excluded while exact-city routing remains mandatory", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -477,14 +591,16 @@ test("an unhealthy assigned mobile device fails over within the route's exact ci
     rotation: { mode: "manual" },
   });
   const before = await requestViaProxy(route.proxyUrls.http, target.url);
-  assert.equal(before.headers["x-mock-endpoint-id"], "px-us-ny-1");
-  testApp.application.simulators?.proxidize.setDeviceHealth("px-us-ny-1", false);
+  const selected = String(before.headers["x-mock-endpoint-id"]);
+  const alternate = selected === "px-us-ny-1" ? "px-us-ny-2" : "px-us-ny-1";
+  assert.ok(selected === "px-us-ny-1" || selected === "px-us-ny-2");
+  testApp.application.simulators?.proxidize.setDeviceHealth(selected, false);
   const response = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(response.status, 200);
-  assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-2");
+  assert.equal(response.headers["x-mock-endpoint-id"], alternate);
   assert.equal(response.headers["x-mock-city"], "New York");
   const publicRoute = await controlRequest(testApp.application, `/v1/profiles/${route.profile.id}`);
-  assert.doesNotMatch(await publicRoute.text(), /px-us-ny-1|endpointId/);
+  assert.doesNotMatch(await publicRoute.text(), /px-us-ny-[12]|endpointId/);
 });
 
 test("HTTPS CONNECT tunnels bytes through the selected provider", async (t) => {

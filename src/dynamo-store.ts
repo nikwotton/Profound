@@ -2,38 +2,63 @@ import { scryptSync, timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
   UpdateCommand,
-  TransactWriteCommand,
   type QueryCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { NotFoundError } from "./errors.js";
+import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capacity-circuit.js";
+import { expectRecord } from "./decoding.js";
+import {
+  decodeActiveTunnel,
+  decodeCapacityCircuitState,
+  decodeCapabilityHealthSnapshot,
+  decodeDeploymentDrainState,
+  decodeHealthAlertDelivery,
+  decodeHealthAlertEvent,
+  decodeHealthAlertState,
+  decodeProviderHealth,
+  decodeProviderInventorySnapshot,
+  decodeStoredAccessGrant,
+  decodeStoredRoute,
+  decodeUsageReconciliation,
+  decodeUsageAlertEvent,
+  decodeUsageRecord,
+  decodeUsageRollup,
+} from "./storage-decoding.js";
 import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
-import { DEVICE_LEASE_IDLE_TIMEOUT_MS } from "./types.js";
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
+  CapacityCircuitReason,
+  CapacityCircuitState,
   ActiveTunnel,
   DeploymentDrainState,
-  DeviceLease,
   HealthAlertDelivery,
   HealthAlertEvent,
   HealthAlertState,
   ProviderHealth,
+  ProviderInventorySnapshot,
   RouteProfile,
   RouteStatus,
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredRoute,
   UsageRecord,
+  UsageAlertEvent,
   UsageReconciliation,
   UsageRollup,
 } from "./types.js";
 
 const ENTITY_INDEX = "EntityCreatedAt";
 const ASSIGNMENT_INDEX = "EndpointAssignments";
+
+function itemField(item: unknown, field: string, context: string): unknown {
+  return expectRecord(item, context)[field];
+}
 
 interface RouteItem {
   pk: string;
@@ -65,6 +90,14 @@ interface HealthItem {
   entity: "health";
   createdAt: string;
   health: ProviderHealth;
+}
+
+interface ProviderInventoryItem {
+  pk: string;
+  sk: "LATEST";
+  entity: "provider_inventory";
+  createdAt: string;
+  snapshot: ProviderInventorySnapshot;
 }
 
 interface CapabilityHealthItem {
@@ -99,26 +132,6 @@ interface HealthAlertDeliveryItem {
   delivery: HealthAlertDelivery;
 }
 
-interface DeviceLeaseItem {
-  pk: string;
-  sk: "STATE";
-  entity: "device_lease";
-  createdAt: string;
-  leaseKey: string;
-  expiresAtMs: number;
-  lease: DeviceLease;
-}
-
-interface DeviceLeaseLockItem {
-  pk: string;
-  sk: "LEASE";
-  entity: "device_lease_lock";
-  createdAt: string;
-  leaseKey: string;
-  endpointId: string;
-  expiresAtMs: number;
-}
-
 interface ActiveTunnelItem {
   pk: string;
   sk: "STATE";
@@ -128,6 +141,15 @@ interface ActiveTunnelItem {
   gsi1sk: string;
   expiresAtSeconds: number;
   tunnel: ActiveTunnel;
+}
+
+interface CapacityCircuitItem {
+  pk: string;
+  sk: "STATE";
+  entity: "capacity_circuit";
+  createdAt: string;
+  expiresAtSeconds: number;
+  state: CapacityCircuitState;
 }
 
 interface DeploymentDrainItem {
@@ -162,6 +184,14 @@ interface UsageReconciliationItem {
   reconciliation: UsageReconciliation;
 }
 
+interface UsageAlertEventItem {
+  pk: string;
+  sk: "EVENT";
+  entity: "usage_alert_event";
+  createdAt: string;
+  event: UsageAlertEvent;
+}
+
 function routeKey(id: string): { pk: string; sk: string } {
   return { pk: `ROUTE#${id}`, sk: "STATE" };
 }
@@ -170,16 +200,8 @@ function accessGrantKey(id: string): { pk: string; sk: "STATE" } {
   return { pk: `ACCESS_GRANT#${id}`, sk: "STATE" };
 }
 
-function deviceLeaseKey(leaseKey: string): { pk: string; sk: "STATE" } {
-  return { pk: `DEVICE_LEASE#${leaseKey}`, sk: "STATE" };
-}
-
-function deviceLockKey(endpointId: string): { pk: string; sk: "LEASE" } {
-  return { pk: `DEVICE#${endpointId}`, sk: "LEASE" };
-}
-
-function leaseExpiry(lease: DeviceLease, idleTimeoutMs: number): number {
-  return Math.max(Date.parse(lease.lastActivityAt) + idleTimeoutMs, Date.parse(lease.activeUntil));
+function capacityCircuitKey(provider: StoredRoute["provider"], candidateKey: string): { pk: string; sk: "STATE" } {
+  return { pk: `CAPACITY_CIRCUIT#${provider}#${candidateKey}`, sk: "STATE" };
 }
 
 function conditionalNotFound(error: unknown): never {
@@ -204,12 +226,6 @@ function grantItem(grant: StoredAccessGrant): AccessGrantItem {
     routeId: grant.routeId,
     principalId: grant.principalId,
     grant,
-    ...(grant.endpointId === undefined
-      ? {}
-      : {
-          gsi1pk: `ENDPOINT#${grant.endpointId}`,
-          gsi1sk: `${grant.createdAt}#${grant.id}`,
-        }),
   };
 }
 
@@ -227,6 +243,45 @@ export class DynamoRouteStore implements RouteStore {
       });
   }
 
+  async #withCapacityCircuitLock<T>(provider: StoredRoute["provider"], candidateKey: string, action: () => Promise<T>): Promise<T> {
+    const key = capacityCircuitKey(provider, candidateKey);
+    const lockKey = { pk: key.pk, sk: "LOCK" };
+    const owner = `${Date.now()}-${Math.random()}`;
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const nowSeconds = Math.floor(Date.now() / 1_000);
+      try {
+        await this.#client.send(
+          new PutCommand({
+            TableName: this.tableName,
+            Item: { ...lockKey, owner, expiresAtSeconds: nowSeconds + 10 },
+            ConditionExpression: "attribute_not_exists(pk) OR expiresAtSeconds < :now",
+            ExpressionAttributeValues: { ":now": nowSeconds },
+          }),
+        );
+        break;
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "ConditionalCheckFailedException") || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+    try {
+      return await action();
+    } finally {
+      await this.#client
+        .send(
+          new DeleteCommand({
+            TableName: this.tableName,
+            Key: lockKey,
+            ConditionExpression: "#owner = :owner",
+            ExpressionAttributeNames: { "#owner": "owner" },
+            ExpressionAttributeValues: { ":owner": owner },
+          }),
+        )
+        .catch(() => undefined);
+    }
+  }
+
   async create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
     const route: StoredRoute = {
@@ -239,6 +294,7 @@ export class DynamoRouteStore implements RouteStore {
       customerId: profile.customerId,
       ...(profile.geography === undefined ? {} : { geography: profile.geography }),
       ...(profile.carrier === undefined ? {} : { carrier: profile.carrier }),
+      ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
       isTargetAuthenticated: profile.isTargetAuthenticated,
       allowConnectionRetry: profile.allowConnectionRetry,
       userId: profile.userId,
@@ -275,9 +331,19 @@ export class DynamoRouteStore implements RouteStore {
   async update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute> {
     const previous = await this.get(id);
     const now = new Date().toISOString();
-    const { endpointId: _endpointId, lastError: _lastError, ...retained } = previous;
+    const {
+      endpointId: _endpointId,
+      lastError: _lastError,
+      geography: _geography,
+      carrier: _carrier,
+      providerOverride: _providerOverride,
+      ...retained
+    } = previous;
     void _endpointId;
     void _lastError;
+    void _geography;
+    void _carrier;
+    void _providerOverride;
     const route: StoredRoute = {
       ...retained,
       ...profile,
@@ -310,9 +376,10 @@ export class DynamoRouteStore implements RouteStore {
         ConsistentRead: true,
       }),
     );
-    const item = result.Item as RouteItem | undefined;
-    if (item === undefined || (!includeRevoked && item.route.status === "revoked")) throw new NotFoundError();
-    return item.route;
+    if (result.Item === undefined) throw new NotFoundError();
+    const route = decodeStoredRoute(itemField(result.Item, "route", "DynamoDB route item"));
+    if (!includeRevoked && route.status === "revoked") throw new NotFoundError();
+    return route;
   }
 
   async #queryAll(input: QueryCommandInput): Promise<Record<string, unknown>[]> {
@@ -340,7 +407,7 @@ export class DynamoRouteStore implements RouteStore {
       ExpressionAttributeNames: { "#entity": "entity", "#status": "status" },
       ExpressionAttributeValues: { ":entity": "route", ":revoked": "revoked" },
     });
-    return items.map((item) => (item as unknown as RouteItem).route);
+    return items.map((item) => decodeStoredRoute(itemField(item, "route", "DynamoDB route item")));
   }
 
   async createAccessGrant(
@@ -380,9 +447,10 @@ export class DynamoRouteStore implements RouteStore {
         ConsistentRead: true,
       }),
     );
-    const item = result.Item as AccessGrantItem | undefined;
-    if (item === undefined || (!includeRevoked && item.grant.status === "revoked")) throw new NotFoundError();
-    return item.grant;
+    if (result.Item === undefined) throw new NotFoundError();
+    const grant = decodeStoredAccessGrant(itemField(result.Item, "grant", "DynamoDB access-grant item"));
+    if (!includeRevoked && grant.status === "revoked") throw new NotFoundError();
+    return grant;
   }
 
   async listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]> {
@@ -399,7 +467,7 @@ export class DynamoRouteStore implements RouteStore {
         ...(principalId === undefined ? {} : { ":principalId": principalId }),
       },
     });
-    return items.map((item) => (item as unknown as AccessGrantItem).grant);
+    return items.map((item) => decodeStoredAccessGrant(itemField(item, "grant", "DynamoDB access-grant item")));
   }
 
   async authenticateAccessGrant(username: string, token: string): Promise<StoredAccessGrant | undefined> {
@@ -411,7 +479,7 @@ export class DynamoRouteStore implements RouteStore {
       ExpressionAttributeValues: { ":entity": "access_grant" },
     });
     const grant = items
-      .map((item) => (item as unknown as AccessGrantItem).grant)
+      .map((item) => decodeStoredAccessGrant(itemField(item, "grant", "DynamoDB access-grant item")))
       .find(
         (candidate) =>
           candidate.status !== "revoked" && candidate.credentials.some((credential) => credentialUsername(credential.id) === username),
@@ -529,40 +597,6 @@ export class DynamoRouteStore implements RouteStore {
     }
   }
 
-  async setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant> {
-    const now = new Date().toISOString();
-    const update =
-      endpointId === undefined
-        ? "SET #grant.updatedAt = :now REMOVE #grant.endpointId, gsi1pk, gsi1sk"
-        : "SET #grant.endpointId = :endpointId, #grant.updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk";
-    try {
-      const result = await this.#client.send(
-        new UpdateCommand({
-          TableName: this.tableName,
-          Key: accessGrantKey(id),
-          UpdateExpression: update,
-          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-          ExpressionAttributeNames: { "#status": "status", "#grant": "grant" },
-          ExpressionAttributeValues: {
-            ":now": now,
-            ":revoked": "revoked",
-            ...(endpointId === undefined
-              ? {}
-              : {
-                  ":endpointId": endpointId,
-                  ":gsi1pk": `ENDPOINT#${endpointId}`,
-                  ":gsi1sk": `${now}#${id}`,
-                }),
-          },
-          ReturnValues: "ALL_NEW",
-        }),
-      );
-      return (result.Attributes as unknown as AccessGrantItem).grant;
-    } catch (error) {
-      conditionalNotFound(error);
-    }
-  }
-
   async revoke(id: string, terminateActive = false): Promise<void> {
     const now = new Date().toISOString();
     try {
@@ -611,6 +645,59 @@ export class DynamoRouteStore implements RouteStore {
     );
   }
 
+  async claimActiveTunnelSlot(
+    candidateEndpointIds: readonly string[],
+    selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
+    createTunnel: (endpointId: string) => ActiveTunnel,
+  ): Promise<{ tunnel: ActiveTunnel; activeConnections: number }> {
+    if (candidateEndpointIds.length === 0) throw new Error("no_slot_candidates");
+    const owner = `${Date.now()}-${Math.random()}`;
+    const lockKey = { pk: "PROXY_SLOT_SELECTION#GLOBAL", sk: "LOCK" };
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const nowSeconds = Math.floor(Date.now() / 1_000);
+      try {
+        await this.#client.send(
+          new PutCommand({
+            TableName: this.tableName,
+            Item: { ...lockKey, owner, expiresAtSeconds: nowSeconds + 10 },
+            ConditionExpression: "attribute_not_exists(pk) OR expiresAtSeconds < :now",
+            ExpressionAttributeValues: { ":now": nowSeconds },
+          }),
+        );
+        break;
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "ConditionalCheckFailedException") || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+    try {
+      const candidates = new Set(candidateEndpointIds);
+      const loads = new Map<string, number>();
+      for (const tunnel of await this.listAllActiveTunnels()) {
+        if (tunnel.provider !== "proxidize" || tunnel.endpointId === undefined || !candidates.has(tunnel.endpointId)) continue;
+        loads.set(tunnel.endpointId, (loads.get(tunnel.endpointId) ?? 0) + 1);
+      }
+      const endpointId = selectEndpoint(loads);
+      if (!candidates.has(endpointId)) throw new Error("invalid_slot_selection");
+      const tunnel = createTunnel(endpointId);
+      await this.registerActiveTunnel(tunnel);
+      return { tunnel, activeConnections: (loads.get(endpointId) ?? 0) + 1 };
+    } finally {
+      await this.#client
+        .send(
+          new DeleteCommand({
+            TableName: this.tableName,
+            Key: lockKey,
+            ConditionExpression: "#owner = :owner",
+            ExpressionAttributeNames: { "#owner": "owner" },
+            ExpressionAttributeValues: { ":owner": owner },
+          }),
+        )
+        .catch(() => undefined);
+    }
+  }
+
   async heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
     try {
       await this.#client.send(
@@ -643,6 +730,77 @@ export class DynamoRouteStore implements RouteStore {
     );
   }
 
+  async getCapacityCircuit(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    now = new Date().toISOString(),
+  ): Promise<CapacityCircuitState | undefined> {
+    const key = capacityCircuitKey(provider, candidateKey);
+    const result = await this.#client.send(new GetCommand({ TableName: this.tableName, Key: key, ConsistentRead: true }));
+    if (result.Item === undefined) return undefined;
+    const state = decodeCapacityCircuitState(itemField(result.Item, "state", "DynamoDB capacity-circuit item"));
+    if (state.expiresAt > now) return state;
+    await this.#client.send(new DeleteCommand({ TableName: this.tableName, Key: key })).catch(() => undefined);
+    return undefined;
+  }
+
+  async claimCapacityCircuit(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    now: string,
+  ): Promise<{ allowed: boolean; state?: CapacityCircuitState }> {
+    return this.#withCapacityCircuitLock(provider, candidateKey, async () => {
+      const previous = await this.getCapacityCircuit(provider, candidateKey, now);
+      const claim = claimCapacityCircuitProbe(previous, Date.parse(now));
+      if (claim.allowed && claim.state !== undefined && claim.state !== previous) {
+        await this.#saveCapacityCircuit(claim.state);
+      }
+      return claim;
+    });
+  }
+
+  async recordCapacityCircuitFailure(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    reason: CapacityCircuitReason,
+    now: string,
+  ): Promise<CapacityCircuitState> {
+    return this.#withCapacityCircuitLock(provider, candidateKey, async () => {
+      const previous = await this.getCapacityCircuit(provider, candidateKey, now);
+      const state = recordCapacityCircuitFailure(previous, provider, candidateKey, reason, Date.parse(now));
+      await this.#saveCapacityCircuit(state);
+      return state;
+    });
+  }
+
+  async #saveCapacityCircuit(state: CapacityCircuitState): Promise<void> {
+    const item: CapacityCircuitItem = {
+      ...capacityCircuitKey(state.provider, state.candidateKey),
+      entity: "capacity_circuit",
+      createdAt: state.updatedAt,
+      expiresAtSeconds: Math.ceil(Date.parse(state.expiresAt) / 1_000),
+      state,
+    };
+    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  }
+
+  async resetCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string): Promise<void> {
+    await this.#client.send(new DeleteCommand({ TableName: this.tableName, Key: capacityCircuitKey(provider, candidateKey) }));
+  }
+
+  async listCapacityCircuits(now = new Date().toISOString()): Promise<CapacityCircuitState[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity",
+      ExpressionAttributeNames: { "#entity": "entity" },
+      ExpressionAttributeValues: { ":entity": "capacity_circuit" },
+    });
+    return items
+      .map((item) => decodeCapacityCircuitState(itemField(item, "state", "DynamoDB capacity-circuit item")))
+      .filter((state) => state.expiresAt > now);
+  }
+
   async listActiveTunnels(deploymentId: string, now = new Date().toISOString()): Promise<ActiveTunnel[]> {
     const items = await this.#queryAll({
       TableName: this.tableName,
@@ -650,7 +808,9 @@ export class DynamoRouteStore implements RouteStore {
       KeyConditionExpression: "gsi1pk = :deployment",
       ExpressionAttributeValues: { ":deployment": `DEPLOYMENT#${deploymentId}` },
     });
-    return items.map((item) => (item as unknown as ActiveTunnelItem).tunnel).filter((tunnel) => tunnel.expiresAt > now);
+    return items
+      .map((item) => decodeActiveTunnel(itemField(item, "tunnel", "DynamoDB active-tunnel item")))
+      .filter((tunnel) => tunnel.expiresAt > now);
   }
 
   async listAllActiveTunnels(now = new Date().toISOString()): Promise<ActiveTunnel[]> {
@@ -661,7 +821,9 @@ export class DynamoRouteStore implements RouteStore {
       ExpressionAttributeNames: { "#entity": "entity" },
       ExpressionAttributeValues: { ":entity": "active_tunnel" },
     });
-    return items.map((item) => (item as unknown as ActiveTunnelItem).tunnel).filter((tunnel) => tunnel.expiresAt > now);
+    return items
+      .map((item) => decodeActiveTunnel(itemField(item, "tunnel", "DynamoDB active-tunnel item")))
+      .filter((tunnel) => tunnel.expiresAt > now);
   }
 
   async getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined> {
@@ -672,7 +834,9 @@ export class DynamoRouteStore implements RouteStore {
         ConsistentRead: true,
       }),
     );
-    return (result.Item as DeploymentDrainItem | undefined)?.state;
+    return result.Item === undefined
+      ? undefined
+      : decodeDeploymentDrainState(itemField(result.Item, "state", "DynamoDB deployment-drain item"));
   }
 
   async saveDeploymentDrain(state: DeploymentDrainState): Promise<void> {
@@ -718,188 +882,10 @@ export class DynamoRouteStore implements RouteStore {
           ReturnValues: "ALL_NEW",
         }),
       );
-      return (result.Attributes as unknown as RouteItem).route;
+      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
     } catch (error) {
       conditionalNotFound(error);
     }
-  }
-
-  async acquireDeviceLease(
-    leaseKey: string,
-    routeId: string,
-    candidateEndpointIds: readonly string[],
-    now: string,
-    idleTimeoutMs: number,
-  ): Promise<DeviceLease | undefined> {
-    if (candidateEndpointIds.length === 0) return undefined;
-    const nowMs = Date.parse(now);
-    const existingResult = await this.#client.send(
-      new GetCommand({
-        TableName: this.tableName,
-        Key: deviceLeaseKey(leaseKey),
-        ConsistentRead: true,
-      }),
-    );
-    const existing = existingResult.Item as DeviceLeaseItem | undefined;
-    if (existing !== undefined && existing.expiresAtMs > nowMs) {
-      if (candidateEndpointIds.includes(existing.lease.endpointId)) {
-        return this.renewDeviceLease(leaseKey, now, existing.lease.activeUntil, true);
-      }
-    }
-
-    for (const endpointId of candidateEndpointIds) {
-      const lease: DeviceLease = {
-        leaseKey,
-        routeId,
-        endpointId,
-        lastActivityAt: now,
-        activeUntil: now,
-        createdAt: existing?.lease.createdAt ?? now,
-        updatedAt: now,
-      };
-      const expiresAtMs = leaseExpiry(lease, idleTimeoutMs);
-      const leaseItem: DeviceLeaseItem = {
-        ...deviceLeaseKey(leaseKey),
-        entity: "device_lease",
-        createdAt: lease.createdAt,
-        leaseKey,
-        expiresAtMs,
-        lease,
-      };
-      const lockItem: DeviceLeaseLockItem = {
-        ...deviceLockKey(endpointId),
-        entity: "device_lease_lock",
-        createdAt: now,
-        leaseKey,
-        endpointId,
-        expiresAtMs,
-      };
-      try {
-        await this.#client.send(
-          new TransactWriteCommand({
-            TransactItems: [
-              {
-                Put: {
-                  TableName: this.tableName,
-                  Item: leaseItem,
-                  ConditionExpression: "attribute_not_exists(pk) OR expiresAtMs <= :now OR leaseKey = :leaseKey",
-                  ExpressionAttributeValues: { ":now": nowMs, ":leaseKey": leaseKey },
-                },
-              },
-              {
-                Put: {
-                  TableName: this.tableName,
-                  Item: lockItem,
-                  ConditionExpression: "attribute_not_exists(pk) OR expiresAtMs <= :now OR leaseKey = :leaseKey",
-                  ExpressionAttributeValues: { ":now": nowMs, ":leaseKey": leaseKey },
-                },
-              },
-              ...(existing === undefined || existing.lease.endpointId === endpointId
-                ? []
-                : [
-                    {
-                      Delete: {
-                        TableName: this.tableName,
-                        Key: deviceLockKey(existing.lease.endpointId),
-                        ConditionExpression: "leaseKey = :leaseKey",
-                        ExpressionAttributeValues: { ":leaseKey": leaseKey },
-                      },
-                    },
-                  ]),
-            ],
-          }),
-        );
-        return lease;
-      } catch (error) {
-        if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
-      }
-    }
-    return undefined;
-  }
-
-  async renewDeviceLease(leaseKey: string, now: string, activeUntil: string, recordActivity: boolean): Promise<DeviceLease | undefined> {
-    const existing = await this.getDeviceLease(leaseKey);
-    if (existing === undefined) return undefined;
-    const lease: DeviceLease = {
-      ...existing,
-      ...(recordActivity ? { lastActivityAt: now } : {}),
-      activeUntil,
-      updatedAt: now,
-    };
-    const expiresAtMs = leaseExpiry(lease, DEVICE_LEASE_IDLE_TIMEOUT_MS);
-    try {
-      await this.#client.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: deviceLeaseKey(leaseKey),
-                UpdateExpression: "SET #lease = :lease, expiresAtMs = :expiresAtMs",
-                ConditionExpression: "leaseKey = :leaseKey",
-                ExpressionAttributeNames: { "#lease": "lease" },
-                ExpressionAttributeValues: { ":lease": lease, ":expiresAtMs": expiresAtMs, ":leaseKey": leaseKey },
-              },
-            },
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: deviceLockKey(lease.endpointId),
-                UpdateExpression: "SET expiresAtMs = :expiresAtMs",
-                ConditionExpression: "leaseKey = :leaseKey",
-                ExpressionAttributeValues: { ":expiresAtMs": expiresAtMs, ":leaseKey": leaseKey },
-              },
-            },
-          ],
-        }),
-      );
-      return lease;
-    } catch (error) {
-      if (error instanceof Error && error.name === "TransactionCanceledException") return undefined;
-      throw error;
-    }
-  }
-
-  async getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined> {
-    const result = await this.#client.send(
-      new GetCommand({
-        TableName: this.tableName,
-        Key: deviceLeaseKey(leaseKey),
-        ConsistentRead: true,
-      }),
-    );
-    return (result.Item as DeviceLeaseItem | undefined)?.lease;
-  }
-
-  async releaseDeviceLease(leaseKey: string): Promise<void> {
-    const existing = await this.getDeviceLease(leaseKey);
-    if (existing === undefined) return;
-    await this.#client
-      .send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Delete: {
-                TableName: this.tableName,
-                Key: deviceLeaseKey(leaseKey),
-                ConditionExpression: "leaseKey = :leaseKey",
-                ExpressionAttributeValues: { ":leaseKey": leaseKey },
-              },
-            },
-            {
-              Delete: {
-                TableName: this.tableName,
-                Key: deviceLockKey(existing.endpointId),
-                ConditionExpression: "leaseKey = :leaseKey",
-                ExpressionAttributeValues: { ":leaseKey": leaseKey },
-              },
-            },
-          ],
-        }),
-      )
-      .catch((error: unknown) => {
-        if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
-      });
   }
 
   async setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute> {
@@ -925,7 +911,7 @@ export class DynamoRouteStore implements RouteStore {
           ReturnValues: "ALL_NEW",
         }),
       );
-      return (result.Attributes as unknown as RouteItem).route;
+      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
     } catch (error) {
       conditionalNotFound(error);
     }
@@ -951,7 +937,7 @@ export class DynamoRouteStore implements RouteStore {
           ReturnValues: "ALL_NEW",
         }),
       );
-      return (result.Attributes as unknown as RouteItem).route;
+      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
     } catch (error) {
       if (error instanceof Error && error.name === "ConditionalCheckFailedException") return undefined;
       throw error;
@@ -973,7 +959,7 @@ export class DynamoRouteStore implements RouteStore {
           ReturnValues: "ALL_NEW",
         }),
       );
-      return (result.Attributes as unknown as RouteItem).route;
+      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
     } catch (error) {
       conditionalNotFound(error);
     }
@@ -993,30 +979,10 @@ export class DynamoRouteStore implements RouteStore {
           ReturnValues: "ALL_NEW",
         }),
       );
-      return (result.Attributes as unknown as RouteItem).route;
+      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
     } catch (error) {
       conditionalNotFound(error);
     }
-  }
-
-  async assignmentCount(endpointId: string): Promise<number> {
-    let count = 0;
-    let exclusiveStartKey: Record<string, unknown> | undefined;
-    do {
-      const result = await this.#client.send(
-        new QueryCommand({
-          TableName: this.tableName,
-          IndexName: ASSIGNMENT_INDEX,
-          KeyConditionExpression: "gsi1pk = :endpoint",
-          ExpressionAttributeValues: { ":endpoint": `ENDPOINT#${endpointId}` },
-          Select: "COUNT",
-          ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
-        }),
-      );
-      count += result.Count ?? 0;
-      exclusiveStartKey = result.LastEvaluatedKey;
-    } while (exclusiveStartKey !== undefined);
-    return count;
   }
 
   async saveHealth(health: ProviderHealth): Promise<void> {
@@ -1038,7 +1004,31 @@ export class DynamoRouteStore implements RouteStore {
       ExpressionAttributeNames: { "#entity": "entity" },
       ExpressionAttributeValues: { ":entity": "health" },
     });
-    return items.map((item) => (item as unknown as HealthItem).health);
+    return items.map((item) => decodeProviderHealth(itemField(item, "health", "DynamoDB provider-health item")));
+  }
+
+  async saveProviderInventory(snapshot: ProviderInventorySnapshot): Promise<void> {
+    const item: ProviderInventoryItem = {
+      pk: `PROVIDER_INVENTORY#${snapshot.provider}`,
+      sk: "LATEST",
+      entity: "provider_inventory",
+      createdAt: snapshot.capturedAt,
+      snapshot,
+    };
+    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  }
+
+  async latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined> {
+    const result = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk: `PROVIDER_INVENTORY#${provider}`, sk: "LATEST" },
+        ConsistentRead: true,
+      }),
+    );
+    return result.Item === undefined
+      ? undefined
+      : decodeProviderInventorySnapshot(itemField(result.Item, "snapshot", "DynamoDB provider-inventory item"));
   }
 
   async saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
@@ -1062,8 +1052,8 @@ export class DynamoRouteStore implements RouteStore {
         Limit: 1,
       }),
     );
-    const item = result.Items?.[0] as CapabilityHealthItem | undefined;
-    return item?.snapshot;
+    const item = result.Items?.[0];
+    return item === undefined ? undefined : decodeCapabilityHealthSnapshot(itemField(item, "snapshot", "DynamoDB capability-health item"));
   }
 
   async capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]> {
@@ -1076,7 +1066,9 @@ export class DynamoRouteStore implements RouteStore {
         Limit: limit,
       }),
     );
-    return (result.Items ?? []).map((item) => (item as CapabilityHealthItem).snapshot);
+    return (result.Items ?? []).map((item) =>
+      decodeCapabilityHealthSnapshot(itemField(item, "snapshot", "DynamoDB capability-health item")),
+    );
   }
 
   async getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined> {
@@ -1087,7 +1079,9 @@ export class DynamoRouteStore implements RouteStore {
         ConsistentRead: true,
       }),
     );
-    return (result.Item as HealthAlertStateItem | undefined)?.state;
+    return result.Item === undefined
+      ? undefined
+      : decodeHealthAlertState(itemField(result.Item, "state", "DynamoDB health-alert state item"));
   }
 
   async saveHealthAlertState(state: HealthAlertState): Promise<void> {
@@ -1129,9 +1123,8 @@ export class DynamoRouteStore implements RouteStore {
             ConsistentRead: true,
           }),
         );
-        const existingItem = existing.Item as HealthAlertEventItem | undefined;
-        if (existingItem === undefined) throw new Error("Health alert deduplication state is missing");
-        persistedEvent = existingItem.event;
+        if (existing.Item === undefined) throw new Error("Health alert deduplication state is missing");
+        persistedEvent = decodeHealthAlertEvent(itemField(existing.Item, "event", "DynamoDB health-alert event item"));
       } else throw error;
     }
     for (const destinationId of destinationIds) {
@@ -1179,7 +1172,9 @@ export class DynamoRouteStore implements RouteStore {
         Limit: limit,
       }),
     );
-    return (result.Items ?? []).map((entry) => (entry as HealthAlertDeliveryItem).delivery);
+    return (result.Items ?? []).map((entry) =>
+      decodeHealthAlertDelivery(itemField(entry, "delivery", "DynamoDB health-alert delivery item")),
+    );
   }
 
   async saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void> {
@@ -1205,7 +1200,7 @@ export class DynamoRouteStore implements RouteStore {
         Limit: limit,
       }),
     );
-    return (result.Items ?? []).map((entry) => (entry as HealthAlertEventItem).event);
+    return (result.Items ?? []).map((entry) => decodeHealthAlertEvent(itemField(entry, "event", "DynamoDB health-alert event item")));
   }
 
   async recordUsage(record: UsageRecord): Promise<boolean> {
@@ -1240,7 +1235,7 @@ export class DynamoRouteStore implements RouteStore {
       ScanIndexForward: true,
     });
     return items
-      .map((item) => (item as unknown as UsageRecordItem).record)
+      .map((item) => decodeUsageRecord(itemField(item, "record", "DynamoDB usage-record item")))
       .filter((record) => record.completedAt >= from && record.completedAt < to);
   }
 
@@ -1266,7 +1261,7 @@ export class DynamoRouteStore implements RouteStore {
       ExpressionAttributeValues: { ":pk": `USAGE_ROLLUP#${interval}`, ":from": from, ":to": `${to}~` },
       ScanIndexForward: true,
     });
-    return items.map((item) => (item as unknown as UsageRollupItem).rollup);
+    return items.map((item) => decodeUsageRollup(itemField(item, "rollup", "DynamoDB usage-rollup item")));
   }
 
   async saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
@@ -1301,8 +1296,44 @@ export class DynamoRouteStore implements RouteStore {
       ScanIndexForward: true,
     });
     return items
-      .map((item) => (item as unknown as UsageReconciliationItem).reconciliation)
+      .map((item) => decodeUsageReconciliation(itemField(item, "reconciliation", "DynamoDB usage-reconciliation item")))
       .filter((record) => record.periodStartedAt >= from && record.periodStartedAt < to);
+  }
+
+  async saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean> {
+    try {
+      await this.#client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: `USAGE_ALERT#${event.id}`,
+            sk: "EVENT",
+            entity: "usage_alert_event",
+            createdAt: event.periodStartedAt,
+            event,
+          } satisfies UsageAlertEventItem,
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+      throw error;
+    }
+  }
+
+  async listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
+      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
+      ExpressionAttributeValues: { ":entity": "usage_alert_event", ":from": from, ":to": to },
+      ScanIndexForward: true,
+    });
+    return items
+      .map((item) => decodeUsageAlertEvent(itemField(item, "event", "DynamoDB usage-alert event item")))
+      .filter((event) => event.periodStartedAt >= from && event.periodStartedAt < to);
   }
 
   async close(): Promise<void> {

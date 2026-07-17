@@ -4,7 +4,7 @@ export type DataPlaneProtocol = "http" | "https" | "socks5";
 export type UpstreamProxyProtocol = "http" | "socks5";
 export type DnsResolutionBehavior = "provider_configurable" | "provider_remote" | "unverified";
 export type ExactCitySupport = "provider_guaranteed" | "verifiable" | "unsupported";
-export const DEVICE_LEASE_IDLE_TIMEOUT_MS = 15 * 60_000;
+export const ACTIVE_CONNECTION_TTL_MS = 2 * 60_000;
 
 export interface ProxyTarget {
   host: string;
@@ -37,6 +37,7 @@ export interface RouteProfileInput {
     city?: string;
   };
   carrier?: string;
+  providerOverride?: ProviderId | null;
   isTargetAuthenticated: boolean;
   allowConnectionRetry: boolean;
 }
@@ -47,6 +48,7 @@ export interface RouteProfile {
   customerId: string;
   geography?: RouteProfileInput["geography"];
   carrier?: string;
+  providerOverride?: ProviderId;
   isTargetAuthenticated: boolean;
   allowConnectionRetry: boolean;
   userId: string;
@@ -110,7 +112,6 @@ export interface StoredAccessGrant {
   routeId: string;
   principalId: string;
   credentials: StoredAccessGrantCredential[];
-  endpointId?: string;
   status: AccessGrantStatus;
   /** Set only by an explicit emergency revocation. */
   terminateActive: boolean;
@@ -134,6 +135,7 @@ export interface AuthenticatedRoute extends StoredRoute {
 
 export interface PublicRoute extends RouteProfileInput {
   profileId: string;
+  providerOverride: ProviderId | null;
   status: RouteStatus;
   createdAt: string;
   updatedAt: string;
@@ -150,15 +152,48 @@ export interface MobileEndpoint {
   city?: string;
   carrier: string;
   publicKey: string;
+  deviceId?: string;
   healthy: boolean;
   egressIp?: string;
 }
 
+export interface ProviderInventorySnapshot {
+  provider: "proxidize";
+  providerAccountId: string;
+  slots: Array<{
+    proxySlotId: string;
+    deviceId?: string;
+    country: string;
+    region: string;
+    city?: string;
+    carrier: string;
+    healthy: boolean;
+    egressIp?: string;
+  }>;
+  capturedAt: string;
+}
+
 export type AssignmentMode = "provider_guaranteed" | "service_verified" | "unverified";
 export type CandidateChangeReason = "selection" | "retry" | "failover" | "rotation" | "provider_initiated";
+export type CapacityCircuitStatus = "closed" | "open" | "half_open";
+export type CapacityCircuitReason = "provider_hard_limit" | "capacity_failure" | "establishment_failure" | "timeout";
+
+export interface CapacityCircuitState {
+  provider: ProviderId;
+  candidateKey: string;
+  status: CapacityCircuitStatus;
+  consecutiveFailures: number;
+  openCount: number;
+  reason?: CapacityCircuitReason;
+  cooldownUntil?: string;
+  probeExpiresAt?: string;
+  updatedAt: string;
+  expiresAt: string;
+}
 
 export interface AssignmentEvidence {
   candidateId: string;
+  proxySlotId?: string;
   assignmentMode: AssignmentMode;
   providerManagedReassignmentDisabled: boolean;
   changeReason: CandidateChangeReason;
@@ -181,19 +216,28 @@ export interface UpstreamEndpoint {
   port: number;
   username: string;
   password: string;
-  /** Internal opaque key for a service-owned device lease. Never returned or logged. */
-  deviceLeaseKey?: string;
+  /** Internal Proxidize inventory identity. Never returned through caller-facing APIs. */
+  proxySlotId?: string;
+  upstreamConnectionId?: string;
+  upstreamConnectionStartedAt?: string;
+  selectedSlotLoad?: number;
+  capacityPressure?: boolean;
+  capacityPolicyVersion?: string;
+  activeLoadClaimId?: string;
+  capacityCircuitKey?: string;
+  capacityCircuitState?: CapacityCircuitStatus;
+  capacityCircuitReason?: CapacityCircuitReason;
+  capacityCircuitCooldownUntil?: string;
+  routingPolicyVersion?: string;
+  routingScore?: number;
+  routingScoreComponents?: {
+    reliability: number;
+    headroom: number;
+    performance: number;
+    costEfficiency: number;
+    stability: number;
+  };
   assignment: AssignmentEvidence;
-}
-
-export interface DeviceLease {
-  leaseKey: string;
-  routeId: string;
-  endpointId: string;
-  lastActivityAt: string;
-  activeUntil: string;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface ActiveTunnel {
@@ -201,9 +245,11 @@ export interface ActiveTunnel {
   deploymentId: string;
   routeId: string;
   accessGrantId: string;
-  protocol: "https" | "socks5";
+  protocol: DataPlaneProtocol;
   provider: ProviderId;
   endpointId?: string;
+  routingPolicyVersion?: string;
+  routingScore?: number;
   startedAt: string;
   lastHeartbeatAt: string;
   expiresAt: string;
@@ -280,9 +326,28 @@ export interface UsageRecord {
   country?: string;
   city?: string;
   endpointId?: string;
-  deviceLeaseKey?: string;
-  leaseWindowStartedAt?: string;
-  leaseWindowEndsAt?: string;
+  proxySlotId?: string;
+  upstreamConnectionId?: string;
+  connectionStartedAt?: string;
+  connectionEndedAt?: string;
+  selectedSlotLoad?: number;
+  capacityPressure?: boolean;
+  capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
+  establishmentWaitMs?: number;
+  capacityPolicyVersion?: string;
+  providerOverride?: ProviderId;
+  capacityCircuitState?: CapacityCircuitStatus;
+  capacityCircuitReason?: CapacityCircuitReason;
+  capacityCircuitCooldownUntil?: string;
+  routingPolicyVersion?: string;
+  routingScore?: number;
+  routingScoreComponents?: {
+    reliability: number;
+    headroom: number;
+    performance: number;
+    costEfficiency: number;
+    stability: number;
+  };
   pricingVersion?: string;
   pricingModel?: "per_gib" | "per_device_month";
   priceUsd?: number;
@@ -303,12 +368,25 @@ export interface UsageRollup {
   failoverCount: number;
   bytesSent: number;
   bytesReceived: number;
-  deviceLeaseMs: number;
-  provisionedDeviceMs: number;
-  healthyIdleDeviceMs: number;
-  unhealthyDeviceMs: number;
-  allocationUtilization: number;
-  currentAllocationUtilization: number;
+  activeConnectionMs: number;
+  provisionedSlotMs: number;
+  healthyIdleSlotMs: number;
+  unhealthySlotMs: number;
+  slotOccupancy: number;
+  currentSlotOccupancy: number;
+  provisionedSlots: number;
+  activeConnections: number;
+  peakConcurrentConnections: number;
+  p95ConcurrentConnections: number;
+  concurrencyUtilization: number;
+  throughputUtilization: number;
+  prioritizedGbUsed: number;
+  prioritizedGbForecast: number;
+  capacityDrivenFallbackCount: number;
+  capacityFailureCount: number;
+  capacityWaitMs: number;
+  capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
+  capacityPolicyVersion: string;
   providerSpendUsd: number;
   attributedCostUsd: number;
   estimatedCostUsd: number;
@@ -329,6 +407,24 @@ export interface UsageReconciliation {
   varianceAttribution: "Unallocated";
   severity: "normal" | "warning" | "error";
   sourceVersion: string;
+  createdAt: string;
+}
+
+export interface UsageAlertEvent {
+  id: string;
+  kind: "capacity_pressure" | "reconciliation_variance";
+  severity: "warning" | "error";
+  provider: ProviderId;
+  periodStartedAt: string;
+  periodEndsAt: string;
+  relatedRecordId: string;
+  capacityPolicyVersion?: string;
+  capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
+  capacityDrivenFallbackCount?: number;
+  capacityFailureCount?: number;
+  capacityWaitMs?: number;
+  varianceUsd?: number;
+  relativeVariance?: number;
   createdAt: string;
 }
 

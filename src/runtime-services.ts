@@ -19,12 +19,13 @@ import { ProxidizeSimulator } from "./simulators/proxidize.js";
 import { SqliteRouteStore, type RouteStore } from "./store.js";
 import { StatusApplicationServer } from "./status-app.js";
 import {
-  unallocatedDeviceCapacityRecord,
+  decodeProviderCostTotal,
+  decodeProvisionedProxySlotCapacity,
+  provisionedProxySlotCapacityRecord,
   UsageAccountingWorker,
-  type ProviderCostTotal,
-  type UnallocatedDeviceCapacity,
   type UsageVarianceThresholds,
 } from "./usage-accounting.js";
+import { expectArray, expectRecord, parseJson } from "./decoding.js";
 
 export interface RunningService {
   stop(): Promise<void>;
@@ -325,11 +326,9 @@ export async function startStatusApplicationService(logger: Logger, env: NodeJS.
   }
 }
 
-function jsonArray<T>(value: string | undefined, name: string): T[] {
+function jsonArray<T>(value: string | undefined, name: string, decode: (value: unknown, context: string) => T): T[] {
   if (value?.trim() === undefined || value.trim() === "") return [];
-  const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed)) throw new Error(`${name} must be a JSON array`);
-  return parsed as T[];
+  return expectArray(parseJson(value, name), name).map((item, index) => decode(item, `${name}[${index}]`));
 }
 
 export async function startUsageAccountingService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
@@ -342,8 +341,12 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
     store = new SqliteRouteStore(path);
   } else throw new Error("PERSISTENCE_BACKEND must be sqlite or dynamodb");
 
-  let providerTotals = jsonArray<ProviderCostTotal>(env.PROVIDER_COST_TOTALS_JSON, "PROVIDER_COST_TOTALS_JSON");
-  let capacity = jsonArray<UnallocatedDeviceCapacity>(env.UNALLOCATED_DEVICE_CAPACITY_JSON, "UNALLOCATED_DEVICE_CAPACITY_JSON");
+  let providerTotals = jsonArray(env.PROVIDER_COST_TOTALS_JSON, "PROVIDER_COST_TOTALS_JSON", decodeProviderCostTotal);
+  let capacity = jsonArray(
+    env.PROVISIONED_PROXY_SLOT_CAPACITY_JSON,
+    "PROVISIONED_PROXY_SLOT_CAPACITY_JSON",
+    decodeProvisionedProxySlotCapacity,
+  );
   const sourceUrl = env.USAGE_ACCOUNTING_SOURCE_URL?.trim() || undefined;
   const thresholds: UsageVarianceThresholds = {
     absoluteFloorUsd: nonnegativeNumber(env.USAGE_VARIANCE_ABSOLUTE_FLOOR_USD, 1, "USAGE_VARIANCE_ABSOLUTE_FLOOR_USD"),
@@ -371,6 +374,25 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
       else if (record.severity === "warning") logger.warn("Usage reconciliation variance exceeded a warning threshold", attributes);
       else logger.info("Usage reconciliation completed", attributes);
     },
+    (rollup) => {
+      const attributes = {
+        "event.name": "profound.usage.capacity_pressure",
+        periodStartedAt: rollup.periodStartedAt,
+        periodEndsAt: rollup.periodEndsAt,
+        provisionedSlots: rollup.provisionedSlots,
+        peakConcurrentConnections: rollup.peakConcurrentConnections,
+        p95ConcurrentConnections: rollup.p95ConcurrentConnections,
+        concurrencyUtilization: rollup.concurrencyUtilization,
+        throughputUtilization: rollup.throughputUtilization,
+        capacityDrivenFallbackCount: rollup.capacityDrivenFallbackCount,
+        capacityFailureCount: rollup.capacityFailureCount,
+        capacityWaitMs: rollup.capacityWaitMs,
+        capacityConstraint: rollup.capacityConstraint,
+        capacityPolicyVersion: rollup.capacityPolicyVersion,
+      };
+      if (rollup.capacityFailureCount > 0) logger.error("Proxy-slot capacity caused connection failures", attributes);
+      else logger.warn("Proxy-slot capacity pressure exceeded policy", attributes);
+    },
   );
   const intervalMs = integer(env.USAGE_ACCOUNTING_INTERVAL_MS, 60_000, "USAGE_ACCOUNTING_INTERVAL_MS", 1_000);
   let lastError: string | undefined;
@@ -385,19 +407,31 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
           signal: AbortSignal.timeout(integer(env.USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS, 10_000, "USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS")),
         });
         if (!response.ok) throw new Error(`usage_accounting_source_${response.status}`);
-        const published = (await response.json()) as {
-          providerTotals?: ProviderCostTotal[];
-          unallocatedDeviceCapacity?: UnallocatedDeviceCapacity[];
-        };
-        if (published.providerTotals !== undefined) providerTotals = published.providerTotals;
-        if (published.unallocatedDeviceCapacity !== undefined) capacity = published.unallocatedDeviceCapacity;
+        const published = expectRecord(await response.json(), "usage-accounting source response");
+        if (published.providerTotals !== undefined) {
+          providerTotals = expectArray(published.providerTotals, "usage-accounting source response.providerTotals").map((item, index) =>
+            decodeProviderCostTotal(item, `usage-accounting source response.providerTotals[${index}]`),
+          );
+        }
+        if (published.provisionedProxySlotCapacity !== undefined) {
+          capacity = expectArray(
+            published.provisionedProxySlotCapacity,
+            "usage-accounting source response.provisionedProxySlotCapacity",
+          ).map((item, index) =>
+            decodeProvisionedProxySlotCapacity(item, `usage-accounting source response.provisionedProxySlotCapacity[${index}]`),
+          );
+        }
       }
-      for (const item of capacity) await store.recordUsage(unallocatedDeviceCapacityRecord(item));
+      for (const item of capacity) await store.recordUsage(provisionedProxySlotCapacityRecord(item));
       const to = new Date().toISOString();
       const from = new Date(Date.now() - 32 * 86_400_000).toISOString();
       const rollupCount = await worker.run(from, to);
       lastError = undefined;
-      logger.info("Usage accounting rollups completed", { rollupCount, costTotals: providerTotals.length });
+      logger.info("Usage accounting rollups completed", {
+        rollupCount,
+        costTotals: providerTotals.length,
+        provisionedProxySlots: capacity.length,
+      });
     } catch (error) {
       lastError = error instanceof Error ? error.message : "unknown";
       logger.error("Usage accounting rollups failed", { error: lastError });

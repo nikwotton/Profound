@@ -1,8 +1,22 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { CAPACITY_POLICY, recommendCapacity, type CapacityRecommendation } from "./capacity-policy.js";
 import type { Logger } from "./logger.js";
+import { ROUTING_POLICY } from "./routing-policy.js";
 import type { RouteStore } from "./store.js";
-import type { CapabilityHealthSnapshot, ListenAddress, UsageGroupBy, UsageInterval, UsageProvider, UsageRollup } from "./types.js";
+import type {
+  CapabilityHealthSnapshot,
+  CapacityCircuitState,
+  ListenAddress,
+  ProviderInventorySnapshot,
+  StoredRoute,
+  UsageGroupBy,
+  UsageInterval,
+  UsageProvider,
+  UsageRollup,
+} from "./types.js";
 import { summarizeUsage, type UsageQuery } from "./usage-accounting.js";
+
+const PROXIDIZE_MONTHLY_PRICE_PER_SLOT_USD = 59;
 
 export interface StatusApplicationOptions {
   host: string;
@@ -56,7 +70,40 @@ function withFreshness(snapshot: CapabilityHealthSnapshot | undefined, now: numb
   };
 }
 
-function page(snapshot: CapabilityHealthSnapshot | undefined, usage: readonly UsageRollup[], now: number, staleAfterMs: number): string {
+function capacityRecommendation(
+  usage: readonly UsageRollup[],
+  now: number,
+  provisionedSlots?: number,
+): { latest?: UsageRollup; recommendation?: CapacityRecommendation } {
+  const latest = usage.filter((rollup) => rollup.provisionedSlots > 0).at(-1);
+  if (latest === undefined) return {};
+  return {
+    latest,
+    recommendation: recommendCapacity(
+      {
+        provisionedSlots: provisionedSlots ?? latest.provisionedSlots,
+        peakConcurrentConnections: latest.peakConcurrentConnections,
+        observedMbps: latest.throughputUtilization * latest.provisionedSlots * CAPACITY_POLICY.plannedMbpsPerSlot,
+        prioritizedGbForecast: latest.prioritizedGbForecast,
+        ...(latest.capacityConstraint === undefined ? {} : { limitingConstraint: latest.capacityConstraint }),
+        monthlyPricePerSlotUsd: PROXIDIZE_MONTHLY_PRICE_PER_SLOT_USD,
+      },
+      CAPACITY_POLICY,
+      () => now,
+    ),
+  };
+}
+
+function page(
+  snapshot: CapabilityHealthSnapshot | undefined,
+  usage: readonly UsageRollup[],
+  capacityUsage: readonly UsageRollup[],
+  inventory: ProviderInventorySnapshot | undefined,
+  profiles: readonly StoredRoute[],
+  capacityCircuits: readonly CapacityCircuitState[],
+  now: number,
+  staleAfterMs: number,
+): string {
   const ageMs = snapshot === undefined ? undefined : Math.max(0, now - Date.parse(snapshot.generatedAt));
   const stale = ageMs === undefined || ageMs > staleAfterMs;
   const cards =
@@ -89,15 +136,30 @@ function page(snapshot: CapabilityHealthSnapshot | undefined, usage: readonly Us
     (total, rollup) => ({
       requests: total.requests + rollup.requestCount,
       bytes: total.bytes + rollup.bytesSent + rollup.bytesReceived,
-      leaseMs: total.leaseMs + rollup.deviceLeaseMs,
-      provisionedMs: total.provisionedMs + (rollup.provisionedDeviceMs ?? rollup.deviceLeaseMs),
-      unhealthyMs: total.unhealthyMs + (rollup.unhealthyDeviceMs ?? 0),
+      connectionMs: total.connectionMs + rollup.activeConnectionMs,
+      provisionedMs: total.provisionedMs + rollup.provisionedSlotMs,
+      unhealthyMs: total.unhealthyMs + rollup.unhealthySlotMs,
       cost: total.cost + rollup.attributedCostUsd,
     }),
-    { requests: 0, bytes: 0, leaseMs: 0, provisionedMs: 0, unhealthyMs: 0, cost: 0 },
+    { requests: 0, bytes: 0, connectionMs: 0, provisionedMs: 0, unhealthyMs: 0, cost: 0 },
   );
-  const latestUsage = usage.at(-1);
+  const capacity = capacityRecommendation(capacityUsage, now, inventory?.slots.length);
+  const latestCapacity = capacity.latest;
+  const recommendation = capacity.recommendation;
   const usageStatus = usage.length > 0 && usage.every((rollup) => rollup.costStatus === "reconciled") ? "Reconciled" : "Estimated";
+  const overrides = profiles
+    .filter((profile) => profile.providerOverride !== undefined)
+    .map(
+      (profile) =>
+        `<tr><td>${escaped(profile.id)}</td><td>${escaped(profile.customerId)}</td><td>${escaped(profile.providerOverride)}</td><td>${escaped(profile.status)}</td></tr>`,
+    )
+    .join("");
+  const circuits = capacityCircuits
+    .map(
+      (circuit) =>
+        `<tr><td>${escaped(circuit.provider)}</td><td>${escaped(circuit.candidateKey)}</td><td>${escaped(circuit.status)}</td><td>${escaped(circuit.reason ?? "None")}</td><td>${escaped(circuit.cooldownUntil ?? "Ready")}</td></tr>`,
+    )
+    .join("");
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Proxy routing dashboard</title><style>
@@ -112,15 +174,24 @@ table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td
 <h2>Usage and cost · last 30 days</h2><section class="metrics">
 <div class="metric"><span>Requests</span><strong>${usageTotal.requests.toLocaleString("en-US")}</strong></div>
 <div class="metric"><span>Transfer</span><strong>${(usageTotal.bytes / 1024 ** 3).toFixed(3)} GiB</strong></div>
-<div class="metric"><span>Device lease time</span><strong>${(usageTotal.leaseMs / 3_600_000).toFixed(1)} h</strong></div>
-<div class="metric"><span>Allocation utilization</span><strong>${(usageTotal.provisionedMs === 0 ? 0 : (usageTotal.leaseMs / usageTotal.provisionedMs) * 100).toFixed(1)}%</strong><small>current ${((latestUsage?.currentAllocationUtilization ?? 0) * 100).toFixed(1)}%</small></div>
-<div class="metric"><span>Unhealthy paid capacity</span><strong>${(usageTotal.unhealthyMs / 3_600_000).toFixed(1)} h</strong></div>
+<div class="metric"><span>Upstream connection time</span><strong>${(usageTotal.connectionMs / 3_600_000).toFixed(1)} h</strong></div>
+<div class="metric"><span>Proxy-slot occupancy</span><strong>${((latestCapacity?.slotOccupancy ?? 0) * 100).toFixed(1)}%</strong><small>current ${((latestCapacity?.currentSlotOccupancy ?? 0) * 100).toFixed(1)}%</small></div>
+<div class="metric"><span>Provisioned slots</span><strong>${inventory?.slots.length ?? latestCapacity?.provisionedSlots ?? 0}</strong><small>${inventory?.slots.filter((slot) => !slot.healthy).length ?? 0} unhealthy</small></div>
+<div class="metric"><span>Active connections</span><strong>${latestCapacity?.activeConnections ?? 0}</strong><small>peak ${latestCapacity?.peakConcurrentConnections ?? 0} · p95 ${latestCapacity?.p95ConcurrentConnections ?? 0}</small></div>
+<div class="metric"><span>Unhealthy paid slot capacity</span><strong>${(usageTotal.unhealthyMs / 3_600_000).toFixed(1)} h</strong></div>
 <div class="metric"><span>Attributed cost</span><strong>$${usageTotal.cost.toFixed(2)}</strong><small>${usageStatus}</small></div>
+<div class="metric"><span>Capacity recommendation</span><strong>${recommendation === undefined ? "No data" : `${recommendation.slotDelta >= 0 ? "+" : ""}${recommendation.slotDelta} slots`}</strong><small>${recommendation?.suppressed === true ? "suppressed by location constraint" : `operator action · ${CAPACITY_POLICY.version}`}</small></div>
 </section><p>Use <code>/api/usage</code> to change the interval, time range, grouping, or filters.</p>
 <h2>Capability health</h2>
 <p>Validation freshness is reported separately from availability. Quiet traffic can leave validation stale without creating an outage.</p>
 <section class="grid">${cards}</section><h2>Geography validation</h2>
 <table><thead><tr><th>Country</th><th>City</th><th>Status</th><th>Validated</th><th>Source</th></tr></thead><tbody>${geographies}</tbody></table>
+<h2>Explicit provider overrides</h2>
+<p>Only profiles with an explicit override are listed; ordinary profiles remain provider-neutral.</p>
+<table><thead><tr><th>Profile</th><th>Customer</th><th>Override</th><th>Status</th></tr></thead><tbody>${overrides || '<tr><td colspan="4">No provider overrides</td></tr>'}</tbody></table>
+<h2>Hard-capacity circuits</h2>
+<p>Open circuits are excluded from routing until their cooldown permits one half-open probe.</p>
+<table><thead><tr><th>Provider</th><th>Candidate</th><th>State</th><th>Failure class</th><th>Cooldown</th></tr></thead><tbody>${circuits || '<tr><td colspan="5">No capacity circuits</td></tr>'}</tbody></table>
 </main></body></html>`;
 }
 
@@ -215,14 +286,95 @@ export class StatusApplicationServer {
             ? rollup.group.customer !== undefined && (query.customerId === undefined || rollup.group.customer === query.customerId)
             : Object.keys(rollup.group).length === 0,
         );
-        const recordFrom = new Date(Date.parse(query.from) - 15 * 60_000).toISOString();
-        const rollups = data.length > 0 ? data : summarizeUsage(await this.store.listUsageRecords(recordFrom, query.to), query);
+        const rollups = data.length > 0 ? data : summarizeUsage(await this.store.listUsageRecords(query.from, query.to), query);
         json(response, 200, { from: query.from, to: query.to, interval: query.interval, groupBy: query.groupBy ?? null, data: rollups });
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/usage/reconciliations") {
         const query = usageQuery(url, now);
         json(response, 200, { from: query.from, to: query.to, data: await this.store.listUsageReconciliations(query.from, query.to) });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/usage/alerts") {
+        const query = usageQuery(url, now);
+        json(response, 200, { from: query.from, to: query.to, data: await this.store.listUsageAlertEvents(query.from, query.to) });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/capacity") {
+        const to = new Date(now).toISOString();
+        const from = new Date(now - 30 * 86_400_000).toISOString();
+        const records = await this.store.listUsageRecords(from, to);
+        const data = summarizeUsage(records, {
+          from,
+          to,
+          interval: "day",
+          provider: "proxidize",
+        });
+        const inventory = await this.store.latestProviderInventory("proxidize");
+        const capacityCircuits = await this.store.listCapacityCircuits(to);
+        const activeConnections = (await this.store.listAllActiveTunnels(to)).filter(
+          (connection) => connection.provider === "proxidize" && connection.endpointId !== undefined,
+        );
+        const slotLoads = new Map<string, number>();
+        for (const connection of activeConnections) {
+          if (connection.endpointId !== undefined) {
+            slotLoads.set(connection.endpointId, (slotLoads.get(connection.endpointId) ?? 0) + 1);
+          }
+        }
+        const compatibleSlots =
+          inventory?.slots.filter(
+            (slot) =>
+              (url.searchParams.get("country") === null || slot.country === url.searchParams.get("country")?.toUpperCase()) &&
+              (url.searchParams.get("city") === null || slot.city?.toLowerCase() === url.searchParams.get("city")?.toLowerCase()) &&
+              (url.searchParams.get("carrier") === null || slot.carrier.toLowerCase() === url.searchParams.get("carrier")?.toLowerCase()),
+          ) ?? [];
+        const capacity = capacityRecommendation(data, now, inventory?.slots.length);
+        json(response, 200, {
+          policy: CAPACITY_POLICY,
+          routingPolicy: ROUTING_POLICY,
+          recentCandidateScores: records
+            .filter((record) => record.routingPolicyVersion !== undefined && record.routingScoreComponents !== undefined)
+            .slice(-100)
+            .map((record) => ({
+              completedAt: record.completedAt,
+              provider: record.provider,
+              ...(record.proxySlotId === undefined ? {} : { proxySlotId: record.proxySlotId }),
+              routingPolicyVersion: record.routingPolicyVersion,
+              routingScore: record.routingScore,
+              routingScoreComponents: record.routingScoreComponents,
+              ...(record.providerOverride === undefined ? {} : { providerOverride: record.providerOverride }),
+              ...(record.capacityCircuitState === undefined
+                ? {}
+                : {
+                    capacityCircuitState: record.capacityCircuitState,
+                    capacityCircuitReason: record.capacityCircuitReason,
+                    capacityCircuitCooldownUntil: record.capacityCircuitCooldownUntil,
+                  }),
+            })),
+          capacityCircuits,
+          inventory:
+            inventory === undefined
+              ? null
+              : {
+                  ...inventory,
+                  slots: inventory.slots.map((slot) => ({
+                    ...slot,
+                    activeConnections: slotLoads.get(slot.proxySlotId) ?? 0,
+                    capacityPressure: (slotLoads.get(slot.proxySlotId) ?? 0) >= CAPACITY_POLICY.softConnectionsPerSlot,
+                  })),
+                },
+          compatibleCapacity: {
+            slots: compatibleSlots.length,
+            healthySlots: compatibleSlots.filter((slot) => slot.healthy).length,
+            unhealthySlots: compatibleSlots.filter((slot) => !slot.healthy).length,
+            activeConnections: activeConnections.filter((connection) =>
+              compatibleSlots.some((slot) => slot.proxySlotId === connection.endpointId),
+            ).length,
+          },
+          current: capacity.latest ?? null,
+          recommendation: capacity.recommendation ?? null,
+          operatorActionRequired: capacity.recommendation !== undefined && capacity.recommendation.slotDelta !== 0,
+        });
         return;
       }
       if (url.pathname === "/api/status/history") {
@@ -262,15 +414,21 @@ export class StatusApplicationServer {
         const to = new Date(now).toISOString();
         const from = new Date(now - 30 * 86_400_000).toISOString();
         const storedUsage = (await this.store.listUsageRollups(from, to, "day")).filter((rollup) => Object.keys(rollup.group).length === 0);
-        const usage =
-          storedUsage.length > 0
-            ? storedUsage
-            : summarizeUsage(await this.store.listUsageRecords(new Date(Date.parse(from) - 15 * 60_000).toISOString(), to), {
-                from,
-                to,
-                interval: "day",
-              });
-        const html = Buffer.from(page(await this.store.latestCapabilityHealth(), usage, now, this.options.staleAfterMs));
+        const records = await this.store.listUsageRecords(from, to);
+        const usage = storedUsage.length > 0 ? storedUsage : summarizeUsage(records, { from, to, interval: "day" });
+        const capacityUsage = summarizeUsage(records, { from, to, interval: "day", provider: "proxidize" });
+        const html = Buffer.from(
+          page(
+            await this.store.latestCapabilityHealth(),
+            usage,
+            capacityUsage,
+            await this.store.latestProviderInventory("proxidize"),
+            await this.store.list(),
+            await this.store.listCapacityCircuits(to),
+            now,
+            this.options.staleAfterMs,
+          ),
+        );
         response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": html.length, "cache-control": "no-store" });
         response.end(html);
         return;

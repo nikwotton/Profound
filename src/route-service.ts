@@ -1,11 +1,15 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { CAPACITY_POLICY } from "./capacity-policy.js";
+import { capacityCircuitAllowsCandidate } from "./capacity-circuit.js";
 import {
   AppError,
   AuthenticationError,
   NotFoundError,
+  ProviderOverrideUnsatisfiedError,
   ProviderUnavailableError,
   attributeAssignment,
   attributeProvider,
+  isRetryableUpstreamFailure,
   safeErrorMessage,
 } from "./errors.js";
 import { abortReason } from "./establishment-budget.js";
@@ -13,11 +17,22 @@ import type { Logger } from "./logger.js";
 import type { ProviderAdapter } from "./providers/provider.js";
 import { ProxidizeAdapter } from "./providers/proxidize.js";
 import { DEPLOYMENT_POLL_INTERVAL_MS } from "./release-policy.js";
+import {
+  historicalRoutingEvidence,
+  ROUTING_POLICY,
+  scoreRoutingCandidate,
+  selectTopBandCandidate,
+  type RoutingScoreComponents,
+  type ScoredRoutingCandidate,
+} from "./routing-policy.js";
 import { toPublicAccessGrant, toPublicRoute, type RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
+import { ACTIVE_CONNECTION_TTL_MS } from "./types.js";
 import type {
   AuthenticatedRoute,
   ActiveTunnel,
+  CapacityCircuitReason,
+  CapacityCircuitState,
   DataPlaneProtocol,
   ListenAddress,
   ProviderDescriptor,
@@ -50,11 +65,15 @@ export interface ResolutionState {
   readonly excludedEndpointIds: Set<string>;
   previousCandidateId?: string;
   previousProvider?: ProviderId;
+  capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
+  establishmentWaitMs: number;
+  capacityPolicyVersion?: string;
 }
 
 const MAX_PROVIDERS_PER_OPERATION = 3;
 const MAX_PEERS_PER_PROVIDER = 2;
-const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = 2;
+const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = 3;
+const SLOT_MONTH_SECONDS = (365.25 / 12) * 24 * 60 * 60;
 
 export interface ResolutionContext {
   logicalOperationId: string;
@@ -116,7 +135,7 @@ export class RouteService {
   readonly #providers: ReadonlyMap<ProviderId, ProviderAdapter>;
   readonly #activeByRoute = new Map<string, Set<() => void>>();
   readonly #activeByGrant = new Map<string, Set<() => void>>();
-  readonly #activeByLease = new Map<string, Set<() => void>>();
+  readonly #rotationDisabledSlots = new Set<string>();
 
   constructor(
     private readonly store: RouteStore,
@@ -128,57 +147,294 @@ export class RouteService {
     private readonly logger: Logger,
     private readonly telemetry: Telemetry,
     private readonly retryDefaults: RetryPolicy,
-    private readonly deviceLeaseIdleTimeoutMs: number,
+    _legacyDeviceLeaseIdleTimeoutMs: number,
     private readonly deploymentId: string,
     private readonly now: () => number = Date.now,
+    private readonly random: () => number = Math.random,
   ) {
+    void _legacyDeviceLeaseIdleTimeoutMs;
     this.#providers = new Map([
       [brightData.descriptor.id, brightData],
       [proxidize.descriptor.id, proxidize],
     ]);
   }
 
-  #leaseKey(route: Pick<AuthenticatedRoute, "accessGrantId" | "session">): string {
-    const identity =
-      route.session.mode === "sticky" && route.session.id !== undefined
-        ? `grant\0${route.accessGrantId}\0session\0${route.session.id}`
-        : `grant\0${route.accessGrantId}`;
-    return createHash("sha256").update(identity).digest("hex");
+  #scoreCandidate(
+    provider: ProviderAdapter,
+    records: readonly UsageRecord[],
+    activeConnections: number,
+    slotCapacity: boolean,
+  ): Omit<ScoredRoutingCandidate<never>, "candidate"> {
+    const evidence = historicalRoutingEvidence(records, this.now(), ROUTING_POLICY);
+    const expectedCostUsd =
+      provider.descriptor.pricing.model === "per_gib"
+        ? (evidence.expectedBytes / 1024 ** 3) * provider.descriptor.pricing.amountUsd
+        : (evidence.expectedConnectionSeconds / SLOT_MONTH_SECONDS) * provider.descriptor.pricing.amountUsd;
+    return scoreRoutingCandidate({
+      reliability: evidence.reliability,
+      activeConnections,
+      softConnections: slotCapacity ? CAPACITY_POLICY.softConnectionsPerSlot : Number.MAX_SAFE_INTEGER,
+      observedMbps: evidence.observedMbps,
+      plannedMbps: slotCapacity ? CAPACITY_POLICY.plannedMbpsPerSlot : Number.MAX_SAFE_INTEGER,
+      projectedPeriodGb: slotCapacity ? evidence.projectedPeriodGb * ((30 * 24 * 60 * 60_000) / ROUTING_POLICY.evidenceWindowMs) : 0,
+      prioritizedPeriodGb: slotCapacity ? CAPACITY_POLICY.prioritizedGbPerSlotPerBillingPeriod : Number.MAX_SAFE_INTEGER,
+      performance: evidence.performance,
+      expectedCostUsd,
+      stability: evidence.stability,
+    });
   }
 
-  #routeForGrant(route: StoredRoute, grant: { id: string; principalId: string; endpointId?: string }): AuthenticatedRoute {
+  async #capacityCircuitEligible(provider: ProviderId, candidateKey: string): Promise<boolean> {
+    const state = await this.store.getCapacityCircuit(provider, candidateKey, new Date(this.now()).toISOString());
+    return capacityCircuitAllowsCandidate(state, this.now());
+  }
+
+  #capacityFailureReason(error: unknown): CapacityCircuitReason | undefined {
+    if (!isRetryableUpstreamFailure(error)) return undefined;
+    if (error instanceof AppError && /hard_limit|capacity_limit/.test(error.code)) return "provider_hard_limit";
+    if (error instanceof AppError && /capacity/.test(error.code)) return "capacity_failure";
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ETIMEDOUT") return "timeout";
+    if (error instanceof ProviderUnavailableError && /timed out|timeout/i.test(error.message)) return "timeout";
+    return "establishment_failure";
+  }
+
+  async #recordCapacityFailure(provider: ProviderId, candidateKey: string, error: unknown): Promise<CapacityCircuitState | undefined> {
+    const reason = this.#capacityFailureReason(error);
+    if (reason === undefined) return undefined;
+    const state = await this.store.recordCapacityCircuitFailure(provider, candidateKey, reason, new Date(this.now()).toISOString());
+    this.logger.warn("Capacity circuit failure recorded", {
+      provider,
+      candidateKey,
+      reason,
+      circuitState: state.status,
+      consecutiveFailures: state.consecutiveFailures,
+      openCount: state.openCount,
+      cooldownUntil: state.cooldownUntil,
+      routingPolicyVersion: ROUTING_POLICY.version,
+    });
+    return state;
+  }
+
+  async #rankProviders(
+    providers: readonly ProviderAdapter[],
+    route: AuthenticatedRoute,
+    state: ResolutionState,
+    recentRecords: readonly UsageRecord[],
+    activeConnections: readonly ActiveTunnel[],
+    signal: AbortSignal,
+  ): Promise<ProviderAdapter[]> {
+    const preferredClass = preferredProviderClass(route);
+    const scored: Array<ScoredRoutingCandidate<ProviderAdapter>> = [];
+    for (const provider of providers) {
+      const providerRecords = recentRecords.filter((record) => record.provider === provider.descriptor.id);
+      if (provider.descriptor.id === "proxidize") {
+        const compatibleEndpoints = (await this.proxidize.listEndpoints(true, signal)).filter(
+          (endpoint) => endpoint.healthy && !state.excludedEndpointIds.has(endpoint.id) && this.proxidize.matches(endpoint, route),
+        );
+        const endpoints = [] as typeof compatibleEndpoints;
+        for (const endpoint of compatibleEndpoints) {
+          if (await this.#capacityCircuitEligible("proxidize", endpoint.id)) endpoints.push(endpoint);
+          else state.capacityConstraint = "capacity_circuit";
+        }
+        if (endpoints.length === 0) continue;
+        const candidates = endpoints.map((endpoint): ScoredRoutingCandidate<string> => {
+          const load = activeConnections.filter(
+            (connection) => connection.provider === "proxidize" && connection.endpointId === endpoint.id,
+          ).length;
+          return {
+            candidate: endpoint.id,
+            ...this.#scoreCandidate(
+              provider,
+              providerRecords.filter((record) => record.proxySlotId === endpoint.id),
+              load,
+              true,
+            ),
+          };
+        });
+        const unsaturated = candidates.filter((candidate) => !candidate.saturated);
+        const best = [...(unsaturated.length > 0 ? unsaturated : candidates)].sort((left, right) => right.score - left.score)[0];
+        if (best !== undefined)
+          scored.push({ candidate: provider, score: best.score, components: best.components, saturated: unsaturated.length === 0 });
+      } else {
+        if (!(await this.#capacityCircuitEligible(provider.descriptor.id, provider.descriptor.id))) {
+          state.capacityConstraint = "capacity_circuit";
+          continue;
+        }
+        const load = activeConnections.filter((connection) => connection.provider === provider.descriptor.id).length;
+        scored.push({ candidate: provider, ...this.#scoreCandidate(provider, providerRecords, load, false) });
+      }
+    }
+    const previous = scored.find(({ candidate }) => candidate.descriptor.id === state.previousProvider);
+    if (previous !== undefined) {
+      const attempts = state.attemptsByProvider.get(previous.candidate.descriptor.id) ?? 0;
+      const limit =
+        route.isAuthenticated && previous.candidate.descriptor.capabilities.exactCity === "verifiable"
+          ? MAX_VERIFICATION_CANDIDATES_PER_PROVIDER
+          : MAX_PEERS_PER_PROVIDER;
+      if (attempts < limit) {
+        return [
+          previous.candidate,
+          ...scored
+            .filter((candidate) => candidate !== previous)
+            .sort((a, b) => b.score - a.score)
+            .map(({ candidate }) => candidate),
+        ];
+      }
+    }
+    const preferredTier = scored.filter(({ candidate }) => candidate.descriptor.providerClass === preferredClass);
+    const primaryTier = preferredTier.length > 0 ? preferredTier : scored;
+    const unsaturatedPrimary = primaryTier.filter(({ saturated }) => !saturated);
+    const selectionTier = unsaturatedPrimary.length > 0 ? unsaturatedPrimary : primaryTier;
+    const selected = selectTopBandCandidate(selectionTier, ROUTING_POLICY, this.random);
+    return [
+      ...(selected === undefined ? [] : [selected.candidate]),
+      ...primaryTier
+        .filter((candidate) => candidate !== selected)
+        .sort((left, right) => Number(left.saturated) - Number(right.saturated) || right.score - left.score)
+        .map(({ candidate }) => candidate),
+      ...scored
+        .filter((candidate) => !primaryTier.includes(candidate))
+        .sort((left, right) => Number(left.saturated) - Number(right.saturated) || right.score - left.score)
+        .map(({ candidate }) => candidate),
+    ];
+  }
+
+  #routeForGrant(route: StoredRoute, grant: { id: string; principalId: string }): AuthenticatedRoute {
     const { endpointId: _routeEndpointId, ...profile } = route;
     void _routeEndpointId;
     return {
       ...profile,
       userId: grant.principalId,
       accessGrantId: grant.id,
-      ...(grant.endpointId === undefined ? {} : { endpointId: grant.endpointId }),
     };
   }
 
-  async #ensureDeviceLease(route: AuthenticatedRoute): Promise<{ route: AuthenticatedRoute; leaseKey: string }> {
-    const leaseKey = this.#leaseKey(route);
-    const endpoints = (await this.proxidize.listEndpoints(true))
-      .filter((endpoint) => endpoint.healthy && this.proxidize.matches(endpoint, route))
-      .sort((left, right) => left.id.localeCompare(right.id));
-    const lease = await this.store.acquireDeviceLease(
-      leaseKey,
-      route.id,
-      endpoints.map((endpoint) => endpoint.id),
-      new Date(this.now()).toISOString(),
-      this.deviceLeaseIdleTimeoutMs,
+  async #selectProxySlot(
+    route: AuthenticatedRoute,
+    protocol: DataPlaneProtocol,
+    excludedEndpointIds: ReadonlySet<string>,
+    signal: AbortSignal,
+    state: ResolutionState,
+    recentRecords: readonly UsageRecord[],
+  ): Promise<{
+    endpointId: string;
+    activeConnections: number;
+    capacityPressure: boolean;
+    rotationDisabled: boolean;
+    activeLoadClaimId: string;
+    routingScore: number;
+    routingScoreComponents: RoutingScoreComponents;
+  }> {
+    const inventory = await this.proxidize.listEndpoints(true, signal);
+    const capturedAt = new Date(this.now()).toISOString();
+    await this.store
+      .saveProviderInventory({
+        provider: "proxidize",
+        providerAccountId: this.proxidize.providerAccountId,
+        slots: inventory.map((endpoint) => ({
+          proxySlotId: endpoint.id,
+          ...(endpoint.deviceId === undefined ? {} : { deviceId: endpoint.deviceId }),
+          country: endpoint.country,
+          region: endpoint.region,
+          ...(endpoint.city === undefined ? {} : { city: endpoint.city }),
+          carrier: endpoint.carrier,
+          healthy: endpoint.healthy,
+          ...(endpoint.egressIp === undefined ? {} : { egressIp: endpoint.egressIp }),
+        })),
+        capturedAt,
+      })
+      .catch((error: unknown) =>
+        this.logger.error("Provider inventory persistence failed", {
+          provider: "proxidize",
+          error: safeErrorMessage(error),
+        }),
+      );
+    const compatibleEndpoints = inventory.filter(
+      (endpoint) => endpoint.healthy && !excludedEndpointIds.has(endpoint.id) && this.proxidize.matches(endpoint, route),
     );
-    if (lease === undefined) {
-      throw new ProviderUnavailableError("No healthy unleased mobile device matches the route policy");
+    const endpoints = [] as typeof compatibleEndpoints;
+    for (const endpoint of compatibleEndpoints) {
+      if (await this.#capacityCircuitEligible("proxidize", endpoint.id)) endpoints.push(endpoint);
+      else state.capacityConstraint = "capacity_circuit";
     }
-    if (route.endpointId !== lease.endpointId) await this.proxidize.setRotationInterval(lease.endpointId, undefined);
-    let current = route;
-    if (route.endpointId !== lease.endpointId) {
-      const grant = await this.store.setAccessGrantEndpoint(route.accessGrantId, lease.endpointId);
-      current = this.#routeForGrant(await this.store.get(route.id), grant);
+    if (signal.aborted) throw abortReason(signal);
+    if (endpoints.length === 0) {
+      state.capacityConstraint ??=
+        route.targeting.carrier !== undefined
+          ? "carrier"
+          : route.targeting.country !== undefined || route.targeting.region !== undefined || route.targeting.city !== undefined
+            ? "geography"
+            : "slot_exhaustion";
+      throw new ProviderUnavailableError("No healthy compatible mobile proxy slot is available");
     }
-    return { route: current, leaseKey };
+    let selected: ScoredRoutingCandidate<(typeof endpoints)[number]> | undefined;
+    const claimedAt = new Date(this.now()).toISOString();
+    const claimed = await this.store.claimActiveTunnelSlot(
+      endpoints.map((endpoint) => endpoint.id),
+      (loads) => {
+        const candidates = endpoints.map((endpoint) => {
+          const activeConnections = loads.get(endpoint.id) ?? 0;
+          return {
+            candidate: endpoint,
+            activeConnections,
+            ...this.#scoreCandidate(
+              this.proxidize,
+              recentRecords.filter((record) => record.provider === "proxidize" && record.proxySlotId === endpoint.id),
+              activeConnections,
+              true,
+            ),
+          };
+        });
+        const unsaturated = candidates.filter((candidate) => !candidate.saturated);
+        selected = selectTopBandCandidate(unsaturated.length > 0 ? unsaturated : candidates, ROUTING_POLICY, this.random);
+        if (selected === undefined) throw new ProviderUnavailableError("No scored mobile proxy slot is available");
+        return selected.candidate.id;
+      },
+      (endpointId) => ({
+        id: randomUUID(),
+        deploymentId: this.deploymentId,
+        routeId: route.id,
+        accessGrantId: route.accessGrantId,
+        protocol,
+        provider: "proxidize",
+        endpointId,
+        routingPolicyVersion: ROUTING_POLICY.version,
+        ...(selected === undefined ? {} : { routingScore: selected.score }),
+        startedAt: claimedAt,
+        lastHeartbeatAt: claimedAt,
+        expiresAt: new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString(),
+      }),
+    );
+    const endpoint = endpoints.find((candidate) => candidate.id === claimed.tunnel.endpointId);
+    if (endpoint === undefined || selected === undefined) {
+      await this.store.removeActiveTunnel(claimed.tunnel.id).catch(() => undefined);
+      throw new ProviderUnavailableError("The selected mobile proxy slot disappeared");
+    }
+    let rotationDisabled = this.#rotationDisabledSlots.has(endpoint.id);
+    if (!rotationDisabled) {
+      try {
+        await this.proxidize.setRotationInterval(endpoint.id, undefined);
+        this.#rotationDisabledSlots.add(endpoint.id);
+        rotationDisabled = true;
+      } catch (error) {
+        this.logger.warn("Provider-managed proxy-slot reassignment could not be disabled", {
+          provider: "proxidize",
+          proxySlotId: endpoint.id,
+          error: safeErrorMessage(error),
+        });
+      }
+    }
+    const activeConnections = claimed.activeConnections;
+    if (activeConnections >= CAPACITY_POLICY.softConnectionsPerSlot) state.capacityConstraint = "slot_exhaustion";
+    return {
+      endpointId: endpoint.id,
+      activeConnections,
+      capacityPressure: activeConnections >= CAPACITY_POLICY.softConnectionsPerSlot,
+      rotationDisabled,
+      activeLoadClaimId: claimed.tunnel.id,
+      routingScore: selected.score,
+      routingScoreComponents: selected.components,
+    };
   }
 
   descriptors(): ProviderDescriptor[] {
@@ -189,10 +445,14 @@ export class RouteService {
     const profile = validateRouteProfile(input, userId, this.retryDefaults);
     const id = randomUUID();
     const candidates = [...this.#providers.values()]
-      .filter((provider) => compatible(provider, profile))
+      .filter(
+        (provider) =>
+          compatible(provider, profile) && (profile.providerOverride === undefined || provider.descriptor.id === profile.providerOverride),
+      )
       .sort((left, right) => compareProviders(left, right, profile));
     const providerAdapter = candidates[0];
     if (providerAdapter === undefined) {
+      if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
       throw new ProviderUnavailableError("No configured provider is compatible with the proxy policy");
     }
     const provider = providerAdapter.descriptor.id;
@@ -202,6 +462,7 @@ export class RouteService {
       userId,
       customerId: profile.customerId,
       provider,
+      ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
       isTargetAuthenticated: profile.isTargetAuthenticated,
     });
     return toPublicRoute(stored);
@@ -211,25 +472,24 @@ export class RouteService {
     const existing = await this.#ownedRoute(id, userId);
     const profile = validateRouteProfile(input, existing.userId, this.retryDefaults);
     const candidates = [...this.#providers.values()]
-      .filter((provider) => compatible(provider, profile))
+      .filter(
+        (provider) =>
+          compatible(provider, profile) && (profile.providerOverride === undefined || provider.descriptor.id === profile.providerOverride),
+      )
       .sort((left, right) => compareProviders(left, right, profile, existing.provider));
     const provider = candidates[0]?.descriptor.id;
     if (provider === undefined) {
+      if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
       throw new ProviderUnavailableError("No configured provider is compatible with the profile policy");
     }
 
-    const grants = await this.store.listAccessGrants(id);
-    for (const grant of grants) {
-      const leaseKey = this.#leaseKey(this.#routeForGrant(existing, grant));
-      await this.store.releaseDeviceLease(leaseKey);
-      if (grant.endpointId !== undefined) await this.store.setAccessGrantEndpoint(grant.id, undefined);
-    }
     const updated = await this.store.update(id, profile, provider);
     this.logger.info("Route profile updated", {
       routeId: id,
       customerId: profile.customerId,
       userId: existing.userId,
       provider,
+      ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
     });
     return toPublicRoute(updated);
   }
@@ -252,14 +512,6 @@ export class RouteService {
     const publicGrant = toPublicAccessGrant(grant);
     const credential = publicGrant.credentials.find((candidate) => candidate.credentialId === credentialId);
     if (credential === undefined) throw new Error("New access-grant credential was not persisted");
-    if ((await this.store.get(routeId)).provider === "proxidize") {
-      try {
-        await this.#ensureDeviceLease(this.#routeForGrant(await this.store.get(routeId), grant));
-      } catch (error) {
-        await this.store.revokeAccessGrant(grantId, false).catch(() => undefined);
-        throw error;
-      }
-    }
     this.logger.info("Access grant issued", { routeId, accessGrantId: grantId, userId: principalId });
     return {
       grant: publicGrant,
@@ -318,8 +570,6 @@ export class RouteService {
 
   async revokeAccessGrant(id: string, principalId: string, terminateActive = false): Promise<void> {
     const grant = await this.#ownedAccessGrant(id, principalId, true);
-    const route = this.#routeForGrant(await this.store.get(grant.routeId, true), grant);
-    await this.store.releaseDeviceLease(this.#leaseKey(route));
     await this.store.revokeAccessGrant(id, terminateActive);
     if (terminateActive) this.#terminate(this.#activeByGrant.get(id));
     this.logger.info("Access grant revoked", {
@@ -351,9 +601,8 @@ export class RouteService {
   }
 
   async delete(id: string, userId: string): Promise<void> {
-    const route = await this.#ownedRoute(id, userId);
+    await this.#ownedRoute(id, userId);
     for (const grant of await this.store.listAccessGrants(id)) {
-      await this.store.releaseDeviceLease(this.#leaseKey(this.#routeForGrant(route, grant)));
       await this.store.revokeAccessGrant(grant.id, false);
     }
     await this.store.revoke(id, false);
@@ -364,16 +613,6 @@ export class RouteService {
     await this.store.revoke(id, true);
     this.#terminate(this.#activeByRoute.get(id));
     this.logger.warn("Route emergency-revoked; active connections terminated", { routeId: id });
-  }
-
-  async releaseDeviceLease(id: string, principalId: string): Promise<void> {
-    const grant = await this.#ownedAccessGrant(id, principalId);
-    const route = this.#routeForGrant(await this.store.get(grant.routeId, true), grant);
-    const leaseKey = this.#leaseKey(route);
-    await this.store.releaseDeviceLease(leaseKey);
-    if (grant.status !== "revoked") await this.store.setAccessGrantEndpoint(id, undefined);
-    this.#terminate(this.#activeByLease.get(leaseKey));
-    this.logger.info("Device lease explicitly released", { routeId: route.id, accessGrantId: id });
   }
 
   #terminate(callbacks: Set<() => void> | undefined): void {
@@ -387,42 +626,36 @@ export class RouteService {
     upstream: UpstreamEndpoint,
     terminate: () => void,
   ): Promise<() => void> {
-    const tunnelProtocol = protocol === "http" ? undefined : protocol;
-    let activeTunnelId: string | undefined;
-    if (tunnelProtocol !== undefined) {
-      activeTunnelId = randomUUID();
-      const now = new Date(this.now()).toISOString();
-      const tunnel: ActiveTunnel = {
-        id: activeTunnelId,
-        deploymentId: this.deploymentId,
-        routeId,
-        accessGrantId,
-        protocol: tunnelProtocol,
-        provider: upstream.provider,
-        endpointId: upstream.endpointId,
-        startedAt: now,
-        lastHeartbeatAt: now,
-        expiresAt: new Date(this.now() + 120_000).toISOString(),
-      };
-      await this.store.registerActiveTunnel(tunnel);
-    }
+    const activeConnectionId = upstream.activeLoadClaimId ?? randomUUID();
+    const now = new Date(this.now()).toISOString();
+    const connection: ActiveTunnel = {
+      id: activeConnectionId,
+      deploymentId: this.deploymentId,
+      routeId,
+      accessGrantId,
+      protocol,
+      provider: upstream.provider,
+      endpointId: upstream.endpointId,
+      ...(upstream.routingPolicyVersion === undefined ? {} : { routingPolicyVersion: upstream.routingPolicyVersion }),
+      ...(upstream.routingScore === undefined ? {} : { routingScore: upstream.routingScore }),
+      startedAt: now,
+      lastHeartbeatAt: now,
+      expiresAt: new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString(),
+    };
+    if (upstream.activeLoadClaimId === undefined) await this.store.registerActiveTunnel(connection);
+    else await this.store.heartbeatActiveTunnel(activeConnectionId, now, connection.expiresAt);
+    upstream.upstreamConnectionId = activeConnectionId;
+    upstream.upstreamConnectionStartedAt = now;
     const routeCallbacks = this.#activeByRoute.get(routeId) ?? new Set<() => void>();
     routeCallbacks.add(terminate);
     this.#activeByRoute.set(routeId, routeCallbacks);
     const grantCallbacks = this.#activeByGrant.get(accessGrantId) ?? new Set<() => void>();
     grantCallbacks.add(terminate);
     this.#activeByGrant.set(accessGrantId, grantCallbacks);
-    const leaseKey = upstream.deviceLeaseKey;
-    if (leaseKey !== undefined) {
-      const leaseCallbacks = this.#activeByLease.get(leaseKey) ?? new Set<() => void>();
-      leaseCallbacks.add(terminate);
-      this.#activeByLease.set(leaseKey, leaseCallbacks);
-    }
     let finished = false;
-    let nextHeartbeatAt = 0;
     let nextTunnelHeartbeatAt = 0;
     let nextDeploymentCheckAt = 0;
-    const heartbeatIntervalMs = Math.min(30_000, Math.max(1_000, Math.floor(this.deviceLeaseIdleTimeoutMs / 3)));
+    const heartbeatIntervalMs = 30_000;
     const check = async (): Promise<void> => {
       if (finished) return;
       if (await this.store.shouldTerminateActive(routeId, accessGrantId)) {
@@ -436,19 +669,14 @@ export class RouteService {
           return;
         }
       }
-      if (activeTunnelId !== undefined && this.now() >= nextTunnelHeartbeatAt) {
+      if (this.now() >= nextTunnelHeartbeatAt) {
         nextTunnelHeartbeatAt = this.now() + 30_000;
         const heartbeat = new Date(this.now()).toISOString();
-        await this.store.heartbeatActiveTunnel(activeTunnelId, heartbeat, new Date(this.now() + 120_000).toISOString());
-      }
-      if (leaseKey !== undefined && this.now() >= nextHeartbeatAt) {
-        nextHeartbeatAt = this.now() + heartbeatIntervalMs;
-        const now = new Date(this.now()).toISOString();
-        const activeUntil = new Date(this.now() + Math.max(60_000, heartbeatIntervalMs * 2)).toISOString();
-        const lease = await this.store.renewDeviceLease(leaseKey, now, activeUntil, false);
-        if (lease === undefined) terminate();
-      } else if (leaseKey !== undefined && (await this.store.getDeviceLease(leaseKey)) === undefined) {
-        terminate();
+        await this.store.heartbeatActiveTunnel(
+          activeConnectionId,
+          heartbeat,
+          new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString(),
+        );
       }
     };
     void check().catch(() => terminate());
@@ -462,15 +690,15 @@ export class RouteService {
       if (routeCallbacks.size === 0) this.#activeByRoute.delete(routeId);
       grantCallbacks.delete(terminate);
       if (grantCallbacks.size === 0) this.#activeByGrant.delete(accessGrantId);
-      if (leaseKey !== undefined) {
-        const leaseCallbacks = this.#activeByLease.get(leaseKey);
-        leaseCallbacks?.delete(terminate);
-        if (leaseCallbacks?.size === 0) this.#activeByLease.delete(leaseKey);
-        const now = new Date(this.now()).toISOString();
-        void this.store.renewDeviceLease(leaseKey, now, now, true).catch(() => undefined);
-      }
-      if (activeTunnelId !== undefined) void this.store.removeActiveTunnel(activeTunnelId).catch(() => undefined);
+      void this.store.removeActiveTunnel(activeConnectionId).catch(() => undefined);
     };
+  }
+
+  async releaseCandidate(upstream: UpstreamEndpoint | undefined): Promise<void> {
+    if (upstream?.activeLoadClaimId === undefined) return;
+    const claimId = upstream.activeLoadClaimId;
+    delete upstream.activeLoadClaimId;
+    await this.store.removeActiveTunnel(claimId);
   }
 
   async recordUsage(record: Omit<UsageRecord, "kind" | "pricingVersion" | "pricingModel" | "priceUsd">): Promise<boolean> {
@@ -495,7 +723,7 @@ export class RouteService {
   }
 
   createResolutionState(): ResolutionState {
-    return { attemptsByProvider: new Map(), excludedEndpointIds: new Set() };
+    return { attemptsByProvider: new Map(), excludedEndpointIds: new Set(), establishmentWaitMs: 0 };
   }
 
   assertProtocolAllowed(route: StoredRoute, protocol: DataPlaneProtocol): void {
@@ -526,11 +754,26 @@ export class RouteService {
       await this.store.getAccessGrant(route.accessGrantId),
     );
     this.assertProtocolAllowed(current, protocol);
-    const compatibleProviders = [...this.#providers.values()]
-      .filter((provider) => compatible(provider, current, protocol, target))
-      .sort((left, right) => compareProviders(left, right, current, current.provider))
-      .slice(0, MAX_PROVIDERS_PER_OPERATION);
+    const recentTo = new Date(this.now()).toISOString();
+    const recentFrom = new Date(this.now() - ROUTING_POLICY.evidenceWindowMs).toISOString();
+    const recentRecords = await this.store.listUsageRecords(recentFrom, recentTo);
+    const activeConnections = await this.store.listAllActiveTunnels(recentTo);
+    const compatibleProviders = (
+      await this.#rankProviders(
+        [...this.#providers.values()].filter(
+          (provider) =>
+            compatible(provider, current, protocol, target) &&
+            (current.providerOverride === undefined || provider.descriptor.id === current.providerOverride),
+        ),
+        current,
+        state,
+        recentRecords,
+        activeConnections,
+        context.signal,
+      )
+    ).slice(0, MAX_PROVIDERS_PER_OPERATION);
     if (compatibleProviders.length === 0) {
+      if (current.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
       throw new ProviderUnavailableError("No compatible provider is available");
     }
     for (const provider of compatibleProviders) {
@@ -547,15 +790,42 @@ export class RouteService {
         continue;
       }
       state.attemptsByProvider.set(provider.descriptor.id, attempts + 1);
-      let deviceLeaseKey: string | undefined;
+      let providerRoute: StoredRoute = current;
+      let slotSelection:
+        | {
+            endpointId: string;
+            activeConnections: number;
+            capacityPressure: boolean;
+            rotationDisabled: boolean;
+            activeLoadClaimId: string;
+            routingScore: number;
+            routingScoreComponents: RoutingScoreComponents;
+          }
+        | undefined;
       if (provider.descriptor.id === "proxidize") {
-        const leased = await this.#ensureDeviceLease(current);
-        current = leased.route;
-        deviceLeaseKey = leased.leaseKey;
+        state.capacityPolicyVersion = CAPACITY_POLICY.version;
+        const selectionStartedAt = this.now();
+        try {
+          slotSelection = await this.#selectProxySlot(current, protocol, state.excludedEndpointIds, context.signal, state, recentRecords);
+        } finally {
+          state.establishmentWaitMs += Math.max(0, this.now() - selectionStartedAt);
+        }
+        providerRoute = { ...current, endpointId: slotSelection.endpointId };
+        if (slotSelection.capacityPressure) {
+          this.logger.info("Proxy-slot selection exceeded the soft capacity limit", {
+            logicalOperationId: context.logicalOperationId,
+            routeId: current.id,
+            provider: "proxidize",
+            proxySlotId: slotSelection.endpointId,
+            activeConnections: slotSelection.activeConnections,
+            softConnectionsPerSlot: CAPACITY_POLICY.softConnectionsPerSlot,
+            capacityPolicyVersion: CAPACITY_POLICY.version,
+          });
+        }
       }
       let endpoint: UpstreamEndpoint;
       try {
-        endpoint = await provider.resolve(current, {
+        endpoint = await provider.resolve(providerRoute, {
           dataPlaneProtocol: protocol,
           target,
           logicalOperationId: context.logicalOperationId,
@@ -564,12 +834,26 @@ export class RouteService {
           excludedEndpointIds: state.excludedEndpointIds,
         });
       } catch (error) {
+        if (slotSelection !== undefined) await this.store.removeActiveTunnel(slotSelection.activeLoadClaimId).catch(() => undefined);
+        await this.#recordCapacityFailure(provider.descriptor.id, slotSelection?.endpointId ?? provider.descriptor.id, error).catch(
+          () => undefined,
+        );
         throw attributeProvider(error, provider.descriptor.id);
       }
       if (!provider.descriptor.capabilities.upstreamProtocols.has(endpoint.protocol)) {
         throw new ProviderUnavailableError("Provider returned an undeclared upstream proxy protocol");
       }
-      if (deviceLeaseKey !== undefined) endpoint.deviceLeaseKey = deviceLeaseKey;
+      if (slotSelection !== undefined) {
+        endpoint.proxySlotId = slotSelection.endpointId;
+        endpoint.selectedSlotLoad = slotSelection.activeConnections;
+        endpoint.capacityPressure = slotSelection.capacityPressure;
+        endpoint.capacityPolicyVersion = CAPACITY_POLICY.version;
+        endpoint.activeLoadClaimId = slotSelection.activeLoadClaimId;
+        endpoint.routingPolicyVersion = ROUTING_POLICY.version;
+        endpoint.routingScore = slotSelection.routingScore;
+        endpoint.routingScoreComponents = slotSelection.routingScoreComponents;
+        endpoint.assignment.providerManagedReassignmentDisabled = slotSelection.rotationDisabled;
+      }
       if (current.isAuthenticated && provider.descriptor.capabilities.exactCity === "verifiable") {
         const expected = endpoint.assignment.expectedCity;
         const observed = endpoint.assignment.observedCity;
@@ -579,6 +863,7 @@ export class RouteService {
           observed === undefined ||
           canonicalCity(expected) !== canonicalCity(observed)
         ) {
+          await this.releaseCandidate(endpoint).catch(() => undefined);
           state.excludedEndpointIds.add(endpoint.endpointId);
           state.previousCandidateId = endpoint.assignment.candidateId;
           state.previousProvider = endpoint.provider;
@@ -587,6 +872,49 @@ export class RouteService {
             provider.descriptor.id,
           );
         }
+      }
+      const capacityCircuitKey = slotSelection?.endpointId ?? provider.descriptor.id;
+      const circuitClaim = await this.store.claimCapacityCircuit(
+        provider.descriptor.id,
+        capacityCircuitKey,
+        new Date(this.now()).toISOString(),
+      );
+      if (!circuitClaim.allowed) {
+        await this.releaseCandidate(endpoint).catch(() => undefined);
+        state.capacityConstraint = "capacity_circuit";
+        state.excludedEndpointIds.add(endpoint.endpointId);
+        throw attributeProvider(new ProviderUnavailableError("Candidate capacity circuit is open"), provider.descriptor.id);
+      }
+      endpoint.capacityCircuitKey = capacityCircuitKey;
+      endpoint.capacityCircuitState = circuitClaim.state?.status ?? "closed";
+      if (circuitClaim.state?.reason !== undefined) endpoint.capacityCircuitReason = circuitClaim.state.reason;
+      if (circuitClaim.state?.cooldownUntil !== undefined) {
+        endpoint.capacityCircuitCooldownUntil = circuitClaim.state.cooldownUntil;
+      }
+      if (endpoint.activeLoadClaimId === undefined) {
+        const providerRecords = recentRecords.filter((record) => record.provider === provider.descriptor.id);
+        const providerLoad = activeConnections.filter((connection) => connection.provider === provider.descriptor.id).length;
+        const scored = this.#scoreCandidate(provider, providerRecords, providerLoad, false);
+        const claimId = randomUUID();
+        const claimedAt = new Date(this.now()).toISOString();
+        await this.store.registerActiveTunnel({
+          id: claimId,
+          deploymentId: this.deploymentId,
+          routeId: current.id,
+          accessGrantId: current.accessGrantId,
+          protocol,
+          provider: endpoint.provider,
+          endpointId: endpoint.endpointId,
+          routingPolicyVersion: ROUTING_POLICY.version,
+          routingScore: scored.score,
+          startedAt: claimedAt,
+          lastHeartbeatAt: claimedAt,
+          expiresAt: new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString(),
+        });
+        endpoint.activeLoadClaimId = claimId;
+        endpoint.routingPolicyVersion = ROUTING_POLICY.version;
+        endpoint.routingScore = scored.score;
+        endpoint.routingScoreComponents = scored.components;
       }
       if (state.previousCandidateId !== undefined) {
         endpoint.assignment.previousCandidateId = state.previousCandidateId;
@@ -597,7 +925,39 @@ export class RouteService {
       state.previousProvider = endpoint.provider;
       return endpoint;
     }
+    if (current.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
     throw new ProviderUnavailableError("No compatible healthy provider is available");
+  }
+
+  async recordCandidateFailure(upstream: UpstreamEndpoint | undefined, error: unknown): Promise<void> {
+    if (upstream === undefined) return;
+    const state = await this.#recordCapacityFailure(
+      upstream.provider,
+      upstream.capacityCircuitKey ?? upstream.proxySlotId ?? upstream.provider,
+      error,
+    );
+    if (state === undefined) return;
+    upstream.capacityCircuitState = state.status;
+    if (state.reason === undefined) delete upstream.capacityCircuitReason;
+    else upstream.capacityCircuitReason = state.reason;
+    if (state.cooldownUntil === undefined) delete upstream.capacityCircuitCooldownUntil;
+    else upstream.capacityCircuitCooldownUntil = state.cooldownUntil;
+  }
+
+  async recordCandidateSuccess(upstream: UpstreamEndpoint): Promise<void> {
+    const candidateKey = upstream.capacityCircuitKey ?? upstream.proxySlotId ?? upstream.provider;
+    const previous = await this.store.getCapacityCircuit(upstream.provider, candidateKey, new Date(this.now()).toISOString());
+    if (previous === undefined) return;
+    await this.store.resetCapacityCircuit(upstream.provider, candidateKey);
+    upstream.capacityCircuitState = "closed";
+    delete upstream.capacityCircuitReason;
+    delete upstream.capacityCircuitCooldownUntil;
+    this.logger.info("Capacity circuit reset after successful establishment", {
+      provider: upstream.provider,
+      candidateKey,
+      previousState: previous.status,
+      routingPolicyVersion: ROUTING_POLICY.version,
+    });
   }
 
   async #applyScheduledRotation(route: StoredRoute, context: ResolutionContext): Promise<StoredRoute> {
@@ -664,8 +1024,10 @@ export class RouteService {
   async rotate(id: string, principalId: string): Promise<PublicRoute> {
     const grant = (await this.store.listAccessGrants(id, principalId))[0];
     if (grant === undefined) throw new NotFoundError();
-    let route: AuthenticatedRoute = this.#routeForGrant(await this.store.get(id), grant);
-    if (route.provider === "proxidize") route = (await this.#ensureDeviceLease(route)).route;
+    const route: AuthenticatedRoute = this.#routeForGrant(await this.store.get(id), grant);
+    if (route.provider === "proxidize") {
+      throw new AppError("Device-backed slot assignment and rerouting are internal", "rotation_not_supported", 409);
+    }
     await this.store.setStatus(id, "rotating");
     setImmediate(() => void this.#performRotation(route));
     return toPublicRoute(await this.store.get(id));

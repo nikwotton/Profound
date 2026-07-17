@@ -15,15 +15,10 @@ import {
 import type { Logger } from "./logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "./net-utils.js";
 import { RouteService } from "./route-service.js";
+import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
-import {
-  DEVICE_LEASE_IDLE_TIMEOUT_MS,
-  type AuthenticatedRoute,
-  type ListenAddress,
-  type UpstreamEndpoint,
-  type UsageOutcome,
-} from "./types.js";
+import { type AuthenticatedRoute, type ListenAddress, type UpstreamEndpoint, type UsageOutcome } from "./types.js";
 import { openUpstreamTunnel } from "./upstream-tunnel.js";
 
 export interface ForwardProxyOptions {
@@ -157,12 +152,10 @@ export class ForwardProxyServer {
     });
     let route: AuthenticatedRoute | undefined;
     let finished = false;
-    let clientCancelled = false;
     const establishmentDeadline = operationDeadline(startedAt, this.options.operationEstablishmentTimeoutMs);
     let initialBudget: ReturnType<typeof beginAttemptBudget> | undefined;
     const callerController = new AbortController();
     const cancel = (): void => {
-      clientCancelled = true;
       callerController.abort();
     };
     request.once("aborted", cancel);
@@ -302,18 +295,39 @@ export class ForwardProxyServer {
                 bytesReceived,
                 ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                 ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
+                ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
                 ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
-                ...(upstream?.deviceLeaseKey === undefined
+                ...(upstream?.proxySlotId === undefined
                   ? {}
                   : {
-                      deviceLeaseKey: upstream.deviceLeaseKey,
-                      leaseWindowStartedAt: new Date(attemptStartedAt).toISOString(),
-                      leaseWindowEndsAt: new Date(Date.parse(completedAt) + DEVICE_LEASE_IDLE_TIMEOUT_MS).toISOString(),
+                      proxySlotId: upstream.proxySlotId,
+                      ...(upstream.upstreamConnectionId === undefined ? {} : { upstreamConnectionId: upstream.upstreamConnectionId }),
+                      connectionStartedAt: upstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
+                      connectionEndedAt: completedAt,
+                      selectedSlotLoad: upstream.selectedSlotLoad,
+                      capacityPressure: upstream.capacityPressure,
+                      capacityPolicyVersion: upstream.capacityPolicyVersion,
                     }),
+                ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
+                ...(upstream?.capacityCircuitState === undefined
+                  ? {}
+                  : {
+                      capacityCircuitState: upstream.capacityCircuitState,
+                      capacityCircuitReason: upstream.capacityCircuitReason,
+                      capacityCircuitCooldownUntil: upstream.capacityCircuitCooldownUntil,
+                    }),
+                ...(upstream?.routingPolicyVersion === undefined
+                  ? {}
+                  : {
+                      routingPolicyVersion: upstream.routingPolicyVersion,
+                      routingScore: upstream.routingScore,
+                      routingScoreComponents: upstream.routingScoreComponents,
+                    }),
+                establishmentWaitMs: resolutionState.establishmentWaitMs,
                 startedAt: new Date(attemptStartedAt).toISOString(),
                 completedAt,
               })
-              .catch((usageError) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
+              .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
           }
         };
         const retry = async (error?: unknown): Promise<void> => {
@@ -333,6 +347,8 @@ export class ForwardProxyServer {
             provider: upstream.provider,
             "proxy.endpoint.id": upstream.endpointId,
             ...assignmentAttributes(upstream.assignment),
+            ...routingScoreTelemetryAttributes(upstream),
+            ...(route.providerOverride === undefined ? {} : { "proxy.routing.provider_override": route.providerOverride }),
           });
           this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "selected", upstream.assignment);
           if (upstream.assignment.previousCandidateId !== undefined) {
@@ -347,7 +363,9 @@ export class ForwardProxyServer {
             routeId: route.id,
             accessGrantId: route.accessGrantId,
             provider: upstream.provider,
+            ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
             ...assignmentLogContext(upstream.assignment),
+            ...routingScoreLogContext(upstream),
           });
           await this.routes.assertNewConnectionAllowed(route.id, route.accessGrantId);
           const outboundHeaders = forwardHeaders(request.headers, upstream);
@@ -364,6 +382,7 @@ export class ForwardProxyServer {
             },
             (upstreamResponse) => {
               budget.finish();
+              if (upstream !== undefined) void this.routes.recordCandidateSuccess(upstream).catch(() => undefined);
               const status = upstreamResponse.statusCode ?? 502;
               bytesReceived += Buffer.byteLength(`HTTP/1.1 ${status}\r\n`) + headerBytes(upstreamResponse.headers);
               const providerMetadata = (() => {
@@ -466,22 +485,25 @@ export class ForwardProxyServer {
             budget.signal.removeEventListener("abort", abortUpstream);
           });
           upstreamRequest.once("error", (error) => {
-            budget.finish();
-            budget.signal.removeEventListener("abort", abortUpstream);
-            const applicationBytesForwarded = upstreamConnected && (upstreamRequest.socket?.bytesWritten ?? 0) > 0;
-            if (
-              attemptIndex + 1 < maxAttempts &&
-              !response.headersSent &&
-              !clientCancelled &&
-              !applicationBytesForwarded &&
-              isRetryableUpstreamFailure(error)
-            ) {
-              void retry(error);
-              return;
-            }
-            finishAttempt("failure", error);
-            this.#sendError(response, new ProviderUnavailableError("Upstream provider connection failed"));
-            finishOperation("failure", error);
+            void (async () => {
+              budget.finish();
+              budget.signal.removeEventListener("abort", abortUpstream);
+              const applicationBytesForwarded = upstreamConnected && (upstreamRequest.socket?.bytesWritten ?? 0) > 0;
+              if (!applicationBytesForwarded) await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
+              if (
+                attemptIndex + 1 < maxAttempts &&
+                !response.headersSent &&
+                !callerController.signal.aborted &&
+                !applicationBytesForwarded &&
+                isRetryableUpstreamFailure(error)
+              ) {
+                await retry(error);
+                return;
+              }
+              finishAttempt("failure", error);
+              this.#sendError(response, new ProviderUnavailableError("Upstream provider connection failed"));
+              finishOperation("failure", error);
+            })();
           });
           if (canReplay) {
             upstreamRequest.end();
@@ -496,6 +518,8 @@ export class ForwardProxyServer {
           }
         } catch (error) {
           budget.finish();
+          await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
+          if (stopTracking === undefined) await this.routes.releaseCandidate(upstream).catch(() => undefined);
           const failedAssignment = assignmentFromError(error);
           if (failedAssignment !== undefined) {
             attemptSpan.setAttributes(assignmentAttributes(failedAssignment));
@@ -514,7 +538,12 @@ export class ForwardProxyServer {
               ...assignmentLogContext(failedAssignment),
             });
           }
-          if (attemptIndex + 1 < maxAttempts && !response.headersSent && !clientCancelled && isRetryableUpstreamFailure(error)) {
+          if (
+            attemptIndex + 1 < maxAttempts &&
+            !response.headersSent &&
+            !callerController.signal.aborted &&
+            isRetryableUpstreamFailure(error)
+          ) {
             await retry(error);
             return;
           }
@@ -537,12 +566,10 @@ export class ForwardProxyServer {
     const operationSpan = this.options.telemetry.startSpan("proxy.connect", { "proxy.operation.id": operationId });
     let route: AuthenticatedRoute | undefined;
     let operationFinished = false;
-    let clientCancelled = false;
     const establishmentDeadline = operationDeadline(startedAt, this.options.operationEstablishmentTimeoutMs);
     let initialBudget: ReturnType<typeof beginAttemptBudget> | undefined;
     const callerController = new AbortController();
     clientSocket.once("close", () => {
-      clientCancelled = true;
       callerController.abort();
     });
     const finishOperation = (outcome: "success" | "failure", error?: unknown): void => {
@@ -588,7 +615,7 @@ export class ForwardProxyServer {
 
       for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
         const budget =
-          attemptIndex === 0 && initialBudget !== undefined
+          attemptIndex === 0
             ? initialBudget
             : beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
         const attemptId = randomUUID();
@@ -610,7 +637,11 @@ export class ForwardProxyServer {
             logicalOperationId: operationId,
             signal: budget.signal,
           });
-          attemptSpan.setAttributes(assignmentAttributes(upstream.assignment));
+          attemptSpan.setAttributes({
+            ...assignmentAttributes(upstream.assignment),
+            ...routingScoreTelemetryAttributes(upstream),
+            ...(route.providerOverride === undefined ? {} : { "proxy.routing.provider_override": route.providerOverride }),
+          });
           this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "selected", upstream.assignment);
           if (upstream.assignment.previousCandidateId !== undefined) {
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "changed", upstream.assignment);
@@ -618,6 +649,16 @@ export class ForwardProxyServer {
           if (upstream.assignment.expectedCity !== undefined) {
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "verification", upstream.assignment);
           }
+          this.options.logger.info("Upstream candidate selected", {
+            logicalOperationId: operationId,
+            upstreamAttemptId: attemptId,
+            routeId: route.id,
+            accessGrantId: route.accessGrantId,
+            provider: upstream.provider,
+            ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
+            ...assignmentLogContext(upstream.assignment),
+            ...routingScoreLogContext(upstream),
+          });
           const opened = await openUpstreamTunnel(target, upstream, {
             connectTimeoutMs: budget.remainingMs(),
             maxHandshakeBytes: this.options.maxHeaderBytes,
@@ -647,6 +688,7 @@ export class ForwardProxyServer {
             opened.socket.destroy();
             throw error;
           }
+          await this.routes.recordCandidateSuccess(upstream);
           if (opened.providerMetadata.opaqueIpId !== undefined) {
             upstream.assignment.opaqueIpId = opened.providerMetadata.opaqueIpId;
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "identity_observed", upstream.assignment);
@@ -659,7 +701,7 @@ export class ForwardProxyServer {
               ...assignmentLogContext(upstream.assignment),
             });
           }
-          if (clientCancelled || clientSocket.destroyed) {
+          if (callerController.signal.aborted || clientSocket.destroyed) {
             opened.socket.destroy();
             throw new AppError("Caller disconnected during tunnel establishment", "caller_cancelled", 499);
           }
@@ -760,18 +802,41 @@ export class ForwardProxyServer {
                 bytesReceived,
                 ...(activeRoute.targeting.country === undefined ? {} : { country: activeRoute.targeting.country }),
                 ...(activeRoute.targeting.city === undefined ? {} : { city: activeRoute.targeting.city }),
-                ...(activeUpstream.endpointId === undefined ? {} : { endpointId: activeUpstream.endpointId }),
-                ...(activeUpstream.deviceLeaseKey === undefined
+                ...(activeRoute.providerOverride === undefined ? {} : { providerOverride: activeRoute.providerOverride }),
+                endpointId: activeUpstream.endpointId,
+                ...(activeUpstream.proxySlotId === undefined
                   ? {}
                   : {
-                      deviceLeaseKey: activeUpstream.deviceLeaseKey,
-                      leaseWindowStartedAt: new Date(attemptStartedAt).toISOString(),
-                      leaseWindowEndsAt: new Date(Date.parse(completedAt) + DEVICE_LEASE_IDLE_TIMEOUT_MS).toISOString(),
+                      proxySlotId: activeUpstream.proxySlotId,
+                      ...(activeUpstream.upstreamConnectionId === undefined
+                        ? {}
+                        : { upstreamConnectionId: activeUpstream.upstreamConnectionId }),
+                      connectionStartedAt: activeUpstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
+                      connectionEndedAt: completedAt,
+                      selectedSlotLoad: activeUpstream.selectedSlotLoad,
+                      capacityPressure: activeUpstream.capacityPressure,
+                      capacityPolicyVersion: activeUpstream.capacityPolicyVersion,
                     }),
+                ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
+                ...(activeUpstream.capacityCircuitState === undefined
+                  ? {}
+                  : {
+                      capacityCircuitState: activeUpstream.capacityCircuitState,
+                      capacityCircuitReason: activeUpstream.capacityCircuitReason,
+                      capacityCircuitCooldownUntil: activeUpstream.capacityCircuitCooldownUntil,
+                    }),
+                ...(activeUpstream.routingPolicyVersion === undefined
+                  ? {}
+                  : {
+                      routingPolicyVersion: activeUpstream.routingPolicyVersion,
+                      routingScore: activeUpstream.routingScore,
+                      routingScoreComponents: activeUpstream.routingScoreComponents,
+                    }),
+                establishmentWaitMs: resolutionState.establishmentWaitMs,
                 startedAt: new Date(attemptStartedAt).toISOString(),
                 completedAt,
               })
-              .catch((usageError) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
+              .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
             finishOperation(outcome, error);
           };
           clientSocket.once("close", () => finishTunnel("success"));
@@ -794,6 +859,8 @@ export class ForwardProxyServer {
           return;
         } catch (error) {
           budget.finish();
+          await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
+          await this.routes.releaseCandidate(upstream).catch(() => undefined);
           lastError = error;
           const failedAssignment = assignmentFromError(error);
           if (failedAssignment !== undefined) {
@@ -814,7 +881,7 @@ export class ForwardProxyServer {
             });
           }
           if (upstream !== undefined) resolutionState.excludedEndpointIds.add(upstream.endpointId);
-          const retry = !clientCancelled && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
+          const retry = !callerController.signal.aborted && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
           const attemptedProvider = upstream?.provider ?? providerIdFromError(error);
           this.options.telemetry.finishAttempt(
             attemptSpan,
@@ -868,15 +935,35 @@ export class ForwardProxyServer {
               bytesReceived: 0,
               ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
               ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
+              ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
               ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
+              ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
+              ...(upstream?.capacityCircuitState === undefined
+                ? {}
+                : {
+                    capacityCircuitState: upstream.capacityCircuitState,
+                    capacityCircuitReason: upstream.capacityCircuitReason,
+                    capacityCircuitCooldownUntil: upstream.capacityCircuitCooldownUntil,
+                  }),
+              ...(resolutionState.capacityPolicyVersion === undefined
+                ? {}
+                : { capacityPolicyVersion: resolutionState.capacityPolicyVersion }),
+              ...(upstream?.routingPolicyVersion === undefined
+                ? {}
+                : {
+                    routingPolicyVersion: upstream.routingPolicyVersion,
+                    routingScore: upstream.routingScore,
+                    routingScoreComponents: upstream.routingScoreComponents,
+                  }),
+              establishmentWaitMs: resolutionState.establishmentWaitMs,
               startedAt: new Date(attemptStartedAt).toISOString(),
               completedAt,
             })
-            .catch((usageError) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
+            .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
           if (!retry) break;
         }
       }
-      throw lastError ?? new ProviderUnavailableError("No provider could establish the tunnel");
+      throw lastError instanceof Error ? lastError : new ProviderUnavailableError("No provider could establish the tunnel");
     } catch (error) {
       initialBudget?.finish();
       finishOperation("failure", error);

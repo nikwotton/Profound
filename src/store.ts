@@ -1,16 +1,37 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { expectNumber, expectRecord, expectString, parseJson } from "./decoding.js";
+import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capacity-circuit.js";
 import { NotFoundError } from "./errors.js";
+import {
+  decodeActiveTunnel,
+  decodeCapacityCircuitState,
+  decodeCapabilityHealthSnapshot,
+  decodeDeploymentDrainState,
+  decodeHealthAlertDelivery,
+  decodeHealthAlertEvent,
+  decodeHealthAlertState,
+  decodeProviderHealth,
+  decodeProviderInventorySnapshot,
+  decodeStoredAccessGrant,
+  decodeStoredRoute,
+  decodeUsageReconciliation,
+  decodeUsageAlertEvent,
+  decodeUsageRecord,
+  decodeUsageRollup,
+} from "./storage-decoding.js";
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
+  CapacityCircuitReason,
+  CapacityCircuitState,
   ActiveTunnel,
   DeploymentDrainState,
-  DeviceLease,
   HealthAlertDelivery,
   HealthAlertEvent,
   HealthAlertState,
   ProviderHealth,
+  ProviderInventorySnapshot,
   PublicAccessGrant,
   PublicRoute,
   RouteProfile,
@@ -19,6 +40,7 @@ import type {
   StoredAccessGrantCredential,
   StoredRoute,
   UsageRecord,
+  UsageAlertEvent,
   UsageReconciliation,
   UsageRollup,
 } from "./types.js";
@@ -59,114 +81,56 @@ function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number
   );
 }
 
-interface RouteRow {
-  id: string;
-  name: string;
-  targeting_json: string;
-  rotation_json: string;
-  policy_json: string;
-  provider: StoredRoute["provider"];
-  endpoint_id: string | null;
-  status: RouteStatus;
-  terminate_active: number;
-  last_error: string | null;
-  rotation_epoch: number;
-  last_rotation_at: string;
-  created_at: string;
-  updated_at: string;
+function nullableString(value: unknown, context: string): string | undefined {
+  return value === null ? undefined : expectString(value, context);
 }
 
-interface HealthRow {
-  provider: ProviderHealth["provider"];
-  state: ProviderHealth["state"];
-  checked_at: string;
-  message: string | null;
+function rowField(row: Record<string, unknown>, name: string, context: string): unknown {
+  if (!(name in row)) throw new TypeError(`${context}.${name} is required`);
+  return row[name];
 }
 
-interface AccessGrantRow {
-  id: string;
-  route_id: string;
-  principal_id: string;
-  credentials_json: string;
-  endpoint_id: string | null;
-  status: StoredAccessGrant["status"];
-  terminate_active: number;
-  created_at: string;
-  updated_at: string;
+function jsonColumn(rowValue: unknown, name: string, context: string): unknown {
+  const row = expectRecord(rowValue, context);
+  return parseJson(expectString(rowField(row, name, context), `${context}.${name}`), `${context}.${name}`);
 }
 
-function accessGrantFromRow(row: AccessGrantRow): StoredAccessGrant {
-  return {
-    id: row.id,
-    routeId: row.route_id,
-    principalId: row.principal_id,
-    credentials: JSON.parse(row.credentials_json) as StoredAccessGrantCredential[],
-    ...(row.endpoint_id === null ? {} : { endpointId: row.endpoint_id }),
-    status: row.status,
-    terminateActive: row.terminate_active === 1,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function accessGrantFromRow(rowValue: unknown): StoredAccessGrant {
+  const context = "SQLite access-grant row";
+  const row = expectRecord(rowValue, context);
+  return decodeStoredAccessGrant({
+    id: rowField(row, "id", context),
+    routeId: rowField(row, "route_id", context),
+    principalId: rowField(row, "principal_id", context),
+    credentials: jsonColumn(row, "credentials_json", context),
+    status: rowField(row, "status", context),
+    terminateActive: expectNumber(rowField(row, "terminate_active", context), `${context}.terminate_active`) === 1,
+    createdAt: rowField(row, "created_at", context),
+    updatedAt: rowField(row, "updated_at", context),
+  });
 }
 
-interface CapabilityHealthRow {
-  snapshot_json: string;
-}
-
-interface DeviceLeaseRow {
-  lease_key: string;
-  route_id: string;
-  endpoint_id: string;
-  last_activity_at: string;
-  active_until: string;
-  created_at: string;
-  updated_at: string;
-}
-
-function leaseFromRow(row: DeviceLeaseRow): DeviceLease {
-  return {
-    leaseKey: row.lease_key,
-    routeId: row.route_id,
-    endpointId: row.endpoint_id,
-    lastActivityAt: row.last_activity_at,
-    activeUntil: row.active_until,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function routeFromRow(row: RouteRow): StoredRoute {
-  type StoredPolicy = Pick<
-    StoredRoute,
-    | "allowedProtocols"
-    | "session"
-    | "customerId"
-    | "geography"
-    | "carrier"
-    | "isTargetAuthenticated"
-    | "allowConnectionRetry"
-    | "userId"
-    | "isAuthenticated"
-    | "shouldRetry"
-    | "retryPolicy"
-  >;
-  const policy = JSON.parse(row.policy_json) as StoredPolicy;
-  return {
-    id: row.id,
-    name: row.name,
-    targeting: JSON.parse(row.targeting_json) as StoredRoute["targeting"],
-    rotation: JSON.parse(row.rotation_json) as StoredRoute["rotation"],
-    ...policy,
-    provider: row.provider,
-    ...(row.endpoint_id === null ? {} : { endpointId: row.endpoint_id }),
-    status: row.status,
-    terminateActive: row.terminate_active === 1,
-    ...(row.last_error === null ? {} : { lastError: row.last_error }),
-    rotationEpoch: row.rotation_epoch,
-    lastRotationAt: row.last_rotation_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function routeFromRow(rowValue: unknown): StoredRoute {
+  const context = "SQLite route row";
+  const row = expectRecord(rowValue, context);
+  const endpointId = nullableString(rowField(row, "endpoint_id", context), `${context}.endpoint_id`);
+  const lastError = nullableString(rowField(row, "last_error", context), `${context}.last_error`);
+  return decodeStoredRoute({
+    ...expectRecord(jsonColumn(row, "policy_json", context), `${context}.policy_json`),
+    id: rowField(row, "id", context),
+    name: rowField(row, "name", context),
+    targeting: jsonColumn(row, "targeting_json", context),
+    rotation: jsonColumn(row, "rotation_json", context),
+    provider: rowField(row, "provider", context),
+    ...(endpointId === undefined ? {} : { endpointId }),
+    status: rowField(row, "status", context),
+    terminateActive: expectNumber(rowField(row, "terminate_active", context), `${context}.terminate_active`) === 1,
+    ...(lastError === undefined ? {} : { lastError }),
+    rotationEpoch: rowField(row, "rotation_epoch", context),
+    lastRotationAt: rowField(row, "last_rotation_at", context),
+    createdAt: rowField(row, "created_at", context),
+    updatedAt: rowField(row, "updated_at", context),
+  });
 }
 
 export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant {
@@ -204,6 +168,7 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
     customerId: route.customerId,
     ...(route.geography === undefined ? {} : { geography: route.geography }),
     ...(route.carrier === undefined ? {} : { carrier: route.carrier }),
+    providerOverride: route.providerOverride ?? null,
     isTargetAuthenticated: route.isTargetAuthenticated,
     allowConnectionRetry: route.allowConnectionRetry,
     status: route.status,
@@ -224,35 +189,44 @@ export interface RouteStore {
   rotateAccessGrantCredential(id: string, credentialId: string, token: string, suspectedCompromise?: boolean): Promise<StoredAccessGrant>;
   revokeAccessGrantCredential(id: string, credentialId: string): Promise<void>;
   revokeAccessGrant(id: string, terminateActive?: boolean): Promise<void>;
-  setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant>;
   revoke(id: string, terminateActive?: boolean): Promise<void>;
   shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean>;
   registerActiveTunnel(tunnel: ActiveTunnel): Promise<void>;
+  claimActiveTunnelSlot(
+    candidateEndpointIds: readonly string[],
+    selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
+    createTunnel: (endpointId: string) => ActiveTunnel,
+  ): Promise<{ tunnel: ActiveTunnel; activeConnections: number }>;
   heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void>;
   removeActiveTunnel(id: string): Promise<void>;
   listActiveTunnels(deploymentId: string, now?: string): Promise<ActiveTunnel[]>;
   listAllActiveTunnels(now?: string): Promise<ActiveTunnel[]>;
+  getCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string, now?: string): Promise<CapacityCircuitState | undefined>;
+  claimCapacityCircuit(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    now: string,
+  ): Promise<{ allowed: boolean; state?: CapacityCircuitState }>;
+  recordCapacityCircuitFailure(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    reason: CapacityCircuitReason,
+    now: string,
+  ): Promise<CapacityCircuitState>;
+  resetCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string): Promise<void>;
+  listCapacityCircuits(now?: string): Promise<CapacityCircuitState[]>;
   getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined>;
   saveDeploymentDrain(state: DeploymentDrainState): Promise<void>;
   shouldTerminateDeployment(deploymentId: string): Promise<boolean>;
   setEndpoint(id: string, endpointId?: string): Promise<StoredRoute>;
-  acquireDeviceLease(
-    leaseKey: string,
-    routeId: string,
-    candidateEndpointIds: readonly string[],
-    now: string,
-    idleTimeoutMs: number,
-  ): Promise<DeviceLease | undefined>;
-  renewDeviceLease(leaseKey: string, now: string, activeUntil: string, recordActivity: boolean): Promise<DeviceLease | undefined>;
-  getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined>;
-  releaseDeviceLease(leaseKey: string): Promise<void>;
   setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute>;
   claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined>;
   completeRotation(id: string): Promise<StoredRoute>;
   incrementRotationEpoch(id: string): Promise<StoredRoute>;
-  assignmentCount(endpointId: string): Promise<number>;
   saveHealth(health: ProviderHealth): Promise<void>;
   listHealth(): Promise<ProviderHealth[]>;
+  saveProviderInventory(snapshot: ProviderInventorySnapshot): Promise<void>;
+  latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined>;
   saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void>;
   latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined>;
   capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]>;
@@ -268,6 +242,8 @@ export interface RouteStore {
   listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]>;
   saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean>;
   listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]>;
+  saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean>;
+  listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]>;
   close(): Promise<void>;
 }
 
@@ -300,7 +276,6 @@ export class SqliteRouteStore implements RouteStore {
         route_id TEXT NOT NULL,
         principal_id TEXT NOT NULL,
         credentials_json TEXT NOT NULL,
-        endpoint_id TEXT,
         status TEXT NOT NULL CHECK(status IN ('ready', 'revoked')),
         terminate_active INTEGER NOT NULL DEFAULT 0 CHECK(terminate_active IN (0, 1)),
         created_at TEXT NOT NULL,
@@ -309,24 +284,18 @@ export class SqliteRouteStore implements RouteStore {
       );
       CREATE INDEX IF NOT EXISTS access_grants_route_principal
         ON access_grants(route_id, principal_id, created_at);
-      CREATE INDEX IF NOT EXISTS access_grants_endpoint
-        ON access_grants(endpoint_id) WHERE status != 'revoked';
-      CREATE TABLE IF NOT EXISTS device_leases (
-        lease_key TEXT PRIMARY KEY,
-        route_id TEXT NOT NULL,
-        endpoint_id TEXT NOT NULL UNIQUE,
-        last_activity_at TEXT NOT NULL,
-        active_until TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS device_leases_expiry
-        ON device_leases(last_activity_at, active_until);
+      DROP INDEX IF EXISTS access_grants_endpoint;
+      DROP TABLE IF EXISTS device_leases;
       CREATE TABLE IF NOT EXISTS provider_health (
         provider TEXT PRIMARY KEY,
         state TEXT NOT NULL CHECK(state IN ('healthy', 'degraded', 'unhealthy')),
         checked_at TEXT NOT NULL,
         message TEXT
+      );
+      CREATE TABLE IF NOT EXISTS provider_inventory (
+        provider TEXT PRIMARY KEY,
+        captured_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS capability_health_snapshots (
         id TEXT PRIMARY KEY,
@@ -368,6 +337,14 @@ export class SqliteRouteStore implements RouteStore {
       );
       CREATE INDEX IF NOT EXISTS active_tunnels_deployment_expiry
         ON active_tunnels(deployment_id, expires_at);
+      CREATE TABLE IF NOT EXISTS capacity_circuits (
+        provider TEXT NOT NULL,
+        candidate_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        circuit_json TEXT NOT NULL,
+        PRIMARY KEY(provider, candidate_key)
+      );
+      CREATE INDEX IF NOT EXISTS capacity_circuits_expiry ON capacity_circuits(expires_at);
       CREATE TABLE IF NOT EXISTS deployment_drains (
         deployment_id TEXT PRIMARY KEY,
         state_json TEXT NOT NULL
@@ -394,6 +371,13 @@ export class SqliteRouteStore implements RouteStore {
       );
       CREATE INDEX IF NOT EXISTS usage_reconciliations_period
         ON usage_reconciliations(period_started_at);
+      CREATE TABLE IF NOT EXISTS usage_alert_events (
+        id TEXT PRIMARY KEY,
+        period_started_at TEXT NOT NULL,
+        event_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS usage_alert_events_period
+        ON usage_alert_events(period_started_at);
     `);
   }
 
@@ -419,6 +403,7 @@ export class SqliteRouteStore implements RouteStore {
           customerId: profile.customerId,
           ...(profile.geography === undefined ? {} : { geography: profile.geography }),
           ...(profile.carrier === undefined ? {} : { carrier: profile.carrier }),
+          ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
           isTargetAuthenticated: profile.isTargetAuthenticated,
           allowConnectionRetry: profile.allowConnectionRetry,
           userId: profile.userId,
@@ -457,6 +442,7 @@ export class SqliteRouteStore implements RouteStore {
           customerId: profile.customerId,
           ...(profile.geography === undefined ? {} : { geography: profile.geography }),
           ...(profile.carrier === undefined ? {} : { carrier: profile.carrier }),
+          ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
           isTargetAuthenticated: profile.isTargetAuthenticated,
           allowConnectionRetry: profile.allowConnectionRetry,
           userId: profile.userId,
@@ -473,15 +459,13 @@ export class SqliteRouteStore implements RouteStore {
 
   async get(id: string, includeRevoked = false): Promise<StoredRoute> {
     const sql = includeRevoked ? "SELECT * FROM routes WHERE id = ?" : "SELECT * FROM routes WHERE id = ? AND status != 'revoked'";
-    const row = this.#database.prepare(sql).get(id) as unknown as RouteRow | undefined;
+    const row = this.#database.prepare(sql).get(id);
     if (row === undefined) throw new NotFoundError();
     return routeFromRow(row);
   }
 
   async list(): Promise<StoredRoute[]> {
-    const rows = this.#database
-      .prepare("SELECT * FROM routes WHERE status != 'revoked' ORDER BY created_at ASC")
-      .all() as unknown as RouteRow[];
+    const rows = this.#database.prepare("SELECT * FROM routes WHERE status != 'revoked' ORDER BY created_at ASC").all();
     return rows.map(routeFromRow);
   }
 
@@ -511,23 +495,24 @@ export class SqliteRouteStore implements RouteStore {
     const sql = includeRevoked
       ? "SELECT * FROM access_grants WHERE id = ?"
       : "SELECT * FROM access_grants WHERE id = ? AND status != 'revoked'";
-    const row = this.#database.prepare(sql).get(id) as unknown as AccessGrantRow | undefined;
+    const row = this.#database.prepare(sql).get(id);
     if (row === undefined) throw new NotFoundError();
     return accessGrantFromRow(row);
   }
 
   async listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]> {
     await this.get(routeId);
-    const rows = (principalId === undefined
-      ? this.#database.prepare("SELECT * FROM access_grants WHERE route_id = ? ORDER BY created_at").all(routeId)
-      : this.#database
-          .prepare("SELECT * FROM access_grants WHERE route_id = ? AND principal_id = ? ORDER BY created_at")
-          .all(routeId, principalId)) as unknown as AccessGrantRow[];
+    const rows =
+      principalId === undefined
+        ? this.#database.prepare("SELECT * FROM access_grants WHERE route_id = ? ORDER BY created_at").all(routeId)
+        : this.#database
+            .prepare("SELECT * FROM access_grants WHERE route_id = ? AND principal_id = ? ORDER BY created_at")
+            .all(routeId, principalId);
     return rows.map(accessGrantFromRow);
   }
 
   async authenticateAccessGrant(username: string, token: string): Promise<StoredAccessGrant | undefined> {
-    const rows = this.#database.prepare("SELECT * FROM access_grants WHERE status != 'revoked'").all() as unknown as AccessGrantRow[];
+    const rows = this.#database.prepare("SELECT * FROM access_grants WHERE status != 'revoked'").all();
     const grant = rows
       .map(accessGrantFromRow)
       .find((candidate) => candidate.credentials.some((credential) => credentialUsername(credential.id) === username));
@@ -615,19 +600,6 @@ export class SqliteRouteStore implements RouteStore {
     if (result.changes === 0) throw new NotFoundError();
   }
 
-  async setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant> {
-    const now = new Date().toISOString();
-    const result = this.#database
-      .prepare(
-        `
-      UPDATE access_grants SET endpoint_id = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
-    `,
-      )
-      .run(endpointId ?? null, now, id);
-    if (result.changes === 0) throw new NotFoundError();
-    return this.getAccessGrant(id);
-  }
-
   async revoke(id: string, terminateActive = false): Promise<void> {
     const now = new Date().toISOString();
     const result = this.#database
@@ -661,11 +633,48 @@ export class SqliteRouteStore implements RouteStore {
       .run(tunnel.id, tunnel.deploymentId, tunnel.routeId, tunnel.accessGrantId, tunnel.expiresAt, JSON.stringify(tunnel));
   }
 
+  async claimActiveTunnelSlot(
+    candidateEndpointIds: readonly string[],
+    selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
+    createTunnel: (endpointId: string) => ActiveTunnel,
+  ): Promise<{ tunnel: ActiveTunnel; activeConnections: number }> {
+    if (candidateEndpointIds.length === 0) throw new Error("no_slot_candidates");
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const now = new Date().toISOString();
+      const candidates = new Set(candidateEndpointIds);
+      const loads = new Map<string, number>();
+      const rows = this.#database.prepare("SELECT tunnel_json FROM active_tunnels WHERE expires_at > ?").all(now);
+      for (const row of rows) {
+        const tunnel = decodeActiveTunnel(jsonColumn(row, "tunnel_json", "SQLite active-tunnel row"));
+        if (tunnel.provider !== "proxidize" || tunnel.endpointId === undefined || !candidates.has(tunnel.endpointId)) continue;
+        loads.set(tunnel.endpointId, (loads.get(tunnel.endpointId) ?? 0) + 1);
+      }
+      const endpointId = selectEndpoint(loads);
+      if (!candidates.has(endpointId)) throw new Error("invalid_slot_selection");
+      const tunnel = createTunnel(endpointId);
+      this.#database
+        .prepare(
+          `INSERT INTO active_tunnels(id, deployment_id, route_id, access_grant_id, expires_at, tunnel_json)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(tunnel.id, tunnel.deploymentId, tunnel.routeId, tunnel.accessGrantId, tunnel.expiresAt, JSON.stringify(tunnel));
+      this.#database.exec("COMMIT");
+      return { tunnel, activeConnections: (loads.get(endpointId) ?? 0) + 1 };
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   async heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
-    const row = this.#database.prepare("SELECT tunnel_json FROM active_tunnels WHERE id = ?").get(id) as
-      { tunnel_json: string } | undefined;
+    const row = this.#database.prepare("SELECT tunnel_json FROM active_tunnels WHERE id = ?").get(id);
     if (row === undefined) return;
-    const tunnel = { ...(JSON.parse(row.tunnel_json) as ActiveTunnel), lastHeartbeatAt, expiresAt };
+    const tunnel = {
+      ...decodeActiveTunnel(jsonColumn(row, "tunnel_json", "SQLite active-tunnel row")),
+      lastHeartbeatAt,
+      expiresAt,
+    };
     this.#database
       .prepare("UPDATE active_tunnels SET expires_at = ?, tunnel_json = ? WHERE id = ?")
       .run(expiresAt, JSON.stringify(tunnel), id);
@@ -675,6 +684,86 @@ export class SqliteRouteStore implements RouteStore {
     this.#database.prepare("DELETE FROM active_tunnels WHERE id = ?").run(id);
   }
 
+  async getCapacityCircuit(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    now = new Date().toISOString(),
+  ): Promise<CapacityCircuitState | undefined> {
+    this.#database.prepare("DELETE FROM capacity_circuits WHERE expires_at <= ?").run(now);
+    const row = this.#database
+      .prepare("SELECT circuit_json FROM capacity_circuits WHERE provider = ? AND candidate_key = ?")
+      .get(provider, candidateKey);
+    return row === undefined ? undefined : decodeCapacityCircuitState(jsonColumn(row, "circuit_json", "SQLite capacity-circuit row"));
+  }
+
+  async claimCapacityCircuit(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    now: string,
+  ): Promise<{ allowed: boolean; state?: CapacityCircuitState }> {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#database.prepare("DELETE FROM capacity_circuits WHERE expires_at <= ?").run(now);
+      const row = this.#database
+        .prepare("SELECT circuit_json FROM capacity_circuits WHERE provider = ? AND candidate_key = ?")
+        .get(provider, candidateKey);
+      const previous =
+        row === undefined ? undefined : decodeCapacityCircuitState(jsonColumn(row, "circuit_json", "SQLite capacity-circuit row"));
+      const claim = claimCapacityCircuitProbe(previous, Date.parse(now));
+      if (claim.allowed && claim.state !== undefined && claim.state !== previous) {
+        this.#database
+          .prepare(
+            `INSERT INTO capacity_circuits(provider, candidate_key, expires_at, circuit_json) VALUES (?, ?, ?, ?)
+             ON CONFLICT(provider, candidate_key) DO UPDATE SET expires_at = excluded.expires_at, circuit_json = excluded.circuit_json`,
+          )
+          .run(provider, candidateKey, claim.state.expiresAt, JSON.stringify(claim.state));
+      }
+      this.#database.exec("COMMIT");
+      return claim;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async recordCapacityCircuitFailure(
+    provider: StoredRoute["provider"],
+    candidateKey: string,
+    reason: CapacityCircuitReason,
+    now: string,
+  ): Promise<CapacityCircuitState> {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.#database
+        .prepare("SELECT circuit_json FROM capacity_circuits WHERE provider = ? AND candidate_key = ?")
+        .get(provider, candidateKey);
+      const previous =
+        row === undefined ? undefined : decodeCapacityCircuitState(jsonColumn(row, "circuit_json", "SQLite capacity-circuit row"));
+      const state = recordCapacityCircuitFailure(previous, provider, candidateKey, reason, Date.parse(now));
+      this.#database
+        .prepare(
+          `INSERT INTO capacity_circuits(provider, candidate_key, expires_at, circuit_json) VALUES (?, ?, ?, ?)
+           ON CONFLICT(provider, candidate_key) DO UPDATE SET expires_at = excluded.expires_at, circuit_json = excluded.circuit_json`,
+        )
+        .run(provider, candidateKey, state.expiresAt, JSON.stringify(state));
+      this.#database.exec("COMMIT");
+      return state;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async resetCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string): Promise<void> {
+    this.#database.prepare("DELETE FROM capacity_circuits WHERE provider = ? AND candidate_key = ?").run(provider, candidateKey);
+  }
+
+  async listCapacityCircuits(now = new Date().toISOString()): Promise<CapacityCircuitState[]> {
+    this.#database.prepare("DELETE FROM capacity_circuits WHERE expires_at <= ?").run(now);
+    const rows = this.#database.prepare("SELECT circuit_json FROM capacity_circuits ORDER BY provider, candidate_key").all();
+    return rows.map((row) => decodeCapacityCircuitState(jsonColumn(row, "circuit_json", "SQLite capacity-circuit row")));
+  }
+
   async listActiveTunnels(deploymentId: string, now = new Date().toISOString()): Promise<ActiveTunnel[]> {
     const rows = this.#database
       .prepare(
@@ -682,8 +771,8 @@ export class SqliteRouteStore implements RouteStore {
       SELECT tunnel_json FROM active_tunnels WHERE deployment_id = ? AND expires_at > ? ORDER BY id
     `,
       )
-      .all(deploymentId, now) as unknown as Array<{ tunnel_json: string }>;
-    return rows.map((row) => JSON.parse(row.tunnel_json) as ActiveTunnel);
+      .all(deploymentId, now);
+    return rows.map((row) => decodeActiveTunnel(jsonColumn(row, "tunnel_json", "SQLite active-tunnel row")));
   }
 
   async listAllActiveTunnels(now = new Date().toISOString()): Promise<ActiveTunnel[]> {
@@ -693,14 +782,13 @@ export class SqliteRouteStore implements RouteStore {
       SELECT tunnel_json FROM active_tunnels WHERE expires_at > ? ORDER BY id
     `,
       )
-      .all(now) as unknown as Array<{ tunnel_json: string }>;
-    return rows.map((row) => JSON.parse(row.tunnel_json) as ActiveTunnel);
+      .all(now);
+    return rows.map((row) => decodeActiveTunnel(jsonColumn(row, "tunnel_json", "SQLite active-tunnel row")));
   }
 
   async getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined> {
-    const row = this.#database.prepare("SELECT state_json FROM deployment_drains WHERE deployment_id = ?").get(deploymentId) as
-      { state_json: string } | undefined;
-    return row === undefined ? undefined : (JSON.parse(row.state_json) as DeploymentDrainState);
+    const row = this.#database.prepare("SELECT state_json FROM deployment_drains WHERE deployment_id = ?").get(deploymentId);
+    return row === undefined ? undefined : decodeDeploymentDrainState(jsonColumn(row, "state_json", "SQLite deployment-drain row"));
   }
 
   async saveDeploymentDrain(state: DeploymentDrainState): Promise<void> {
@@ -729,103 +817,6 @@ export class SqliteRouteStore implements RouteStore {
       .run(endpointId ?? null, now, id);
     if (result.changes === 0) throw new NotFoundError();
     return this.get(id);
-  }
-
-  async acquireDeviceLease(
-    leaseKey: string,
-    routeId: string,
-    candidateEndpointIds: readonly string[],
-    now: string,
-    idleTimeoutMs: number,
-  ): Promise<DeviceLease | undefined> {
-    if (candidateEndpointIds.length === 0) return undefined;
-    const idleBefore = new Date(Date.parse(now) - idleTimeoutMs).toISOString();
-    this.#database.exec("BEGIN IMMEDIATE");
-    try {
-      const existingRow = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?").get(leaseKey) as unknown as
-        DeviceLeaseRow | undefined;
-      if (existingRow !== undefined) {
-        const expired = existingRow.last_activity_at <= idleBefore && existingRow.active_until <= now;
-        if (!expired) {
-          if (candidateEndpointIds.includes(existingRow.endpoint_id)) {
-            this.#database
-              .prepare(
-                `
-              UPDATE device_leases
-              SET route_id = ?, last_activity_at = ?, updated_at = ?
-              WHERE lease_key = ?
-            `,
-              )
-              .run(routeId, now, now, leaseKey);
-            const renewed = this.#database
-              .prepare("SELECT * FROM device_leases WHERE lease_key = ?")
-              .get(leaseKey) as unknown as DeviceLeaseRow;
-            this.#database.exec("COMMIT");
-            return leaseFromRow(renewed);
-          }
-          // The leased candidate is no longer eligible. Its lock can move because
-          // the route explicitly permits candidate failover; the new candidate is
-          // still exclusive to the same logical session.
-          this.#database.prepare("DELETE FROM device_leases WHERE lease_key = ?").run(leaseKey);
-        }
-        if (expired) this.#database.prepare("DELETE FROM device_leases WHERE lease_key = ?").run(leaseKey);
-      }
-      this.#database
-        .prepare(
-          `
-        DELETE FROM device_leases WHERE last_activity_at <= ? AND active_until <= ?
-      `,
-        )
-        .run(idleBefore, now);
-      const candidate = candidateEndpointIds.find((endpointId) => {
-        const row = this.#database.prepare("SELECT 1 FROM device_leases WHERE endpoint_id = ?").get(endpointId);
-        return row === undefined;
-      });
-      if (candidate === undefined) {
-        this.#database.exec("COMMIT");
-        return undefined;
-      }
-      this.#database
-        .prepare(
-          `
-        INSERT INTO device_leases(
-          lease_key, route_id, endpoint_id, last_activity_at, active_until, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-        )
-        .run(leaseKey, routeId, candidate, now, now, now, now);
-      const inserted = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?").get(leaseKey) as unknown as DeviceLeaseRow;
-      this.#database.exec("COMMIT");
-      return leaseFromRow(inserted);
-    } catch (error) {
-      this.#database.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  async renewDeviceLease(leaseKey: string, now: string, activeUntil: string, recordActivity: boolean): Promise<DeviceLease | undefined> {
-    const result = this.#database
-      .prepare(
-        `
-      UPDATE device_leases
-      SET last_activity_at = CASE WHEN ? THEN ? ELSE last_activity_at END,
-          active_until = ?, updated_at = ?
-      WHERE lease_key = ?
-    `,
-      )
-      .run(recordActivity ? 1 : 0, now, activeUntil, now, leaseKey);
-    if (result.changes === 0) return undefined;
-    return this.getDeviceLease(leaseKey);
-  }
-
-  async getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined> {
-    const row = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?").get(leaseKey) as unknown as
-      DeviceLeaseRow | undefined;
-    return row === undefined ? undefined : leaseFromRow(row);
-  }
-
-  async releaseDeviceLease(leaseKey: string): Promise<void> {
-    this.#database.prepare("DELETE FROM device_leases WHERE lease_key = ?").run(leaseKey);
   }
 
   async setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute> {
@@ -881,13 +872,6 @@ export class SqliteRouteStore implements RouteStore {
     return this.get(id);
   }
 
-  async assignmentCount(endpointId: string): Promise<number> {
-    const row = this.#database
-      .prepare("SELECT COUNT(*) AS count FROM access_grants WHERE endpoint_id = ? AND status != 'revoked'")
-      .get(endpointId) as { count: number };
-    return row.count;
-  }
-
   async saveHealth(health: ProviderHealth): Promise<void> {
     this.#database
       .prepare(
@@ -904,13 +888,39 @@ export class SqliteRouteStore implements RouteStore {
   }
 
   async listHealth(): Promise<ProviderHealth[]> {
-    const rows = this.#database.prepare("SELECT * FROM provider_health ORDER BY provider").all() as unknown as HealthRow[];
-    return rows.map((row) => ({
-      provider: row.provider,
-      state: row.state,
-      checkedAt: row.checked_at,
-      ...(row.message === null ? {} : { message: row.message }),
-    }));
+    const rows = this.#database.prepare("SELECT * FROM provider_health ORDER BY provider").all();
+    return rows.map((rowValue) => {
+      const context = "SQLite provider-health row";
+      const row = expectRecord(rowValue, context);
+      const message = nullableString(rowField(row, "message", context), `${context}.message`);
+      return decodeProviderHealth({
+        provider: rowField(row, "provider", context),
+        state: rowField(row, "state", context),
+        checkedAt: rowField(row, "checked_at", context),
+        ...(message === undefined ? {} : { message }),
+      });
+    });
+  }
+
+  async saveProviderInventory(snapshot: ProviderInventorySnapshot): Promise<void> {
+    this.#database
+      .prepare(
+        `
+      INSERT INTO provider_inventory(provider, captured_at, snapshot_json)
+      VALUES (?, ?, ?)
+      ON CONFLICT(provider) DO UPDATE SET
+        captured_at = excluded.captured_at,
+        snapshot_json = excluded.snapshot_json
+    `,
+      )
+      .run(snapshot.provider, snapshot.capturedAt, JSON.stringify(snapshot));
+  }
+
+  async latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined> {
+    const row = this.#database.prepare("SELECT snapshot_json FROM provider_inventory WHERE provider = ?").get(provider);
+    return row === undefined
+      ? undefined
+      : decodeProviderInventorySnapshot(jsonColumn(row, "snapshot_json", "SQLite provider-inventory row"));
   }
 
   async saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
@@ -928,22 +938,20 @@ export class SqliteRouteStore implements RouteStore {
   }
 
   async latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined> {
-    const row = this.#database.prepare("SELECT snapshot_json FROM capability_health_snapshots ORDER BY generated_at DESC LIMIT 1").get() as
-      CapabilityHealthRow | undefined;
-    return row === undefined ? undefined : (JSON.parse(row.snapshot_json) as CapabilityHealthSnapshot);
+    const row = this.#database.prepare("SELECT snapshot_json FROM capability_health_snapshots ORDER BY generated_at DESC LIMIT 1").get();
+    return row === undefined ? undefined : decodeCapabilityHealthSnapshot(jsonColumn(row, "snapshot_json", "SQLite capability-health row"));
   }
 
   async capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]> {
     const rows = this.#database
       .prepare("SELECT snapshot_json FROM capability_health_snapshots ORDER BY generated_at DESC LIMIT ?")
-      .all(limit) as unknown as CapabilityHealthRow[];
-    return rows.map((row) => JSON.parse(row.snapshot_json) as CapabilityHealthSnapshot);
+      .all(limit);
+    return rows.map((row) => decodeCapabilityHealthSnapshot(jsonColumn(row, "snapshot_json", "SQLite capability-health row")));
   }
 
   async getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined> {
-    const row = this.#database.prepare("SELECT state_json FROM health_alert_states WHERE capability = ?").get(capability) as
-      { state_json: string } | undefined;
-    return row === undefined ? undefined : (JSON.parse(row.state_json) as HealthAlertState);
+    const row = this.#database.prepare("SELECT state_json FROM health_alert_states WHERE capability = ?").get(capability);
+    return row === undefined ? undefined : decodeHealthAlertState(jsonColumn(row, "state_json", "SQLite health-alert state row"));
   }
 
   async saveHealthAlertState(state: HealthAlertState): Promise<void> {
@@ -968,20 +976,21 @@ export class SqliteRouteStore implements RouteStore {
       `,
         )
         .run(event.id, event.dedupeKey, event.createdAt, JSON.stringify(event));
-      const persistedEvent =
+      const existingEvent =
         inserted.changes > 0
-          ? event
-          : (JSON.parse(
-              (
-                this.#database
-                  .prepare(
-                    `
+          ? undefined
+          : this.#database
+              .prepare(
+                `
             SELECT event_json FROM health_alert_events WHERE dedupe_key = ?
           `,
-                  )
-                  .get(event.dedupeKey) as { event_json: string }
-              ).event_json,
-            ) as HealthAlertEvent);
+              )
+              .get(event.dedupeKey);
+      if (inserted.changes === 0 && existingEvent === undefined) throw new Error("Persisted SQLite health-alert event is missing");
+      const persistedEvent =
+        existingEvent === undefined
+          ? event
+          : decodeHealthAlertEvent(jsonColumn(existingEvent, "event_json", "SQLite health-alert event row"));
       const delivery = this.#database.prepare(`
         INSERT OR IGNORE INTO health_alert_deliveries(
           alert_id, destination_id, status, next_attempt_at, delivery_json
@@ -1015,8 +1024,8 @@ export class SqliteRouteStore implements RouteStore {
       ORDER BY next_attempt_at ASC LIMIT ?
     `,
       )
-      .all(dueBefore, limit) as unknown as Array<{ delivery_json: string }>;
-    return rows.map((row) => JSON.parse(row.delivery_json) as HealthAlertDelivery);
+      .all(dueBefore, limit);
+    return rows.map((row) => decodeHealthAlertDelivery(jsonColumn(row, "delivery_json", "SQLite health-alert delivery row")));
   }
 
   async saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void> {
@@ -1038,8 +1047,8 @@ export class SqliteRouteStore implements RouteStore {
       SELECT event_json FROM health_alert_events ORDER BY created_at DESC LIMIT ?
     `,
       )
-      .all(limit) as unknown as Array<{ event_json: string }>;
-    return rows.map((row) => JSON.parse(row.event_json) as HealthAlertEvent);
+      .all(limit);
+    return rows.map((row) => decodeHealthAlertEvent(jsonColumn(row, "event_json", "SQLite health-alert event row")));
   }
 
   async recordUsage(record: UsageRecord): Promise<boolean> {
@@ -1052,8 +1061,8 @@ export class SqliteRouteStore implements RouteStore {
   async listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
     const rows = this.#database
       .prepare("SELECT record_json FROM usage_records WHERE completed_at >= ? AND completed_at < ? ORDER BY completed_at")
-      .all(from, to) as unknown as Array<{ record_json: string }>;
-    return rows.map((row) => JSON.parse(row.record_json) as UsageRecord);
+      .all(from, to);
+    return rows.map((row) => decodeUsageRecord(jsonColumn(row, "record_json", "SQLite usage-record row")));
   }
 
   async saveUsageRollup(rollup: UsageRollup): Promise<void> {
@@ -1070,8 +1079,8 @@ export class SqliteRouteStore implements RouteStore {
       .prepare(
         "SELECT rollup_json FROM usage_rollups WHERE interval = ? AND period_started_at >= ? AND period_started_at < ? ORDER BY period_started_at",
       )
-      .all(interval, from, to) as unknown as Array<{ rollup_json: string }>;
-    return rows.map((row) => JSON.parse(row.rollup_json) as UsageRollup);
+      .all(interval, from, to);
+    return rows.map((row) => decodeUsageRollup(jsonColumn(row, "rollup_json", "SQLite usage-rollup row")));
   }
 
   async saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
@@ -1086,8 +1095,24 @@ export class SqliteRouteStore implements RouteStore {
       .prepare(
         "SELECT reconciliation_json FROM usage_reconciliations WHERE period_started_at >= ? AND period_started_at < ? ORDER BY period_started_at",
       )
-      .all(from, to) as unknown as Array<{ reconciliation_json: string }>;
-    return rows.map((row) => JSON.parse(row.reconciliation_json) as UsageReconciliation);
+      .all(from, to);
+    return rows.map((row) => decodeUsageReconciliation(jsonColumn(row, "reconciliation_json", "SQLite usage-reconciliation row")));
+  }
+
+  async saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean> {
+    const result = this.#database
+      .prepare("INSERT OR IGNORE INTO usage_alert_events(id, period_started_at, event_json) VALUES (?, ?, ?)")
+      .run(event.id, event.periodStartedAt, JSON.stringify(event));
+    return result.changes > 0;
+  }
+
+  async listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]> {
+    const rows = this.#database
+      .prepare(
+        "SELECT event_json FROM usage_alert_events WHERE period_started_at >= ? AND period_started_at < ? ORDER BY period_started_at",
+      )
+      .all(from, to);
+    return rows.map((row) => decodeUsageAlertEvent(jsonColumn(row, "event_json", "SQLite usage-alert event row")));
   }
 
   async close(): Promise<void> {

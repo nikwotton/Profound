@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import {
   axiomJson,
   awsJson,
@@ -325,8 +324,10 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
   );
   const proxyLoadBalancers = [...new Set((targetGroups.TargetGroups ?? []).flatMap(({ LoadBalancerArns }) => LoadBalancerArns ?? []))];
   assert.equal(proxyLoadBalancers.length, 1);
+  const proxyLoadBalancer = proxyLoadBalancers[0];
+  assert.ok(proxyLoadBalancer);
   const listeners = await awsJson<{ Listeners?: Array<{ ListenerArn?: string; Port?: number; Protocol?: string }> }>(
-    ["elbv2", "describe-listeners", "--load-balancer-arn", proxyLoadBalancers[0]!],
+    ["elbv2", "describe-listeners", "--load-balancer-arn", proxyLoadBalancer],
     environment.region,
   );
   assert.equal(listeners.Listeners?.length, 2);
@@ -338,8 +339,10 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
       continue;
     }
     assert.equal(listener.Protocol, "TCP");
+    const listenerArn = listener.ListenerArn;
+    assert.ok(listenerArn);
     const listenerAttributes = await awsJson<{ Attributes?: Array<{ Key?: string; Value?: string }> }>(
-      ["elbv2", "describe-listener-attributes", "--listener-arn", listener.ListenerArn!],
+      ["elbv2", "describe-listener-attributes", "--listener-arn", listenerArn],
       environment.region,
     );
     const values = Object.fromEntries(
@@ -425,7 +428,7 @@ deployedTest("deployed DynamoDB and Axiom datasets preserve durable state and re
   }
 });
 
-deployedTest("deployed access-grant credentials and mobile affinity survive an ECS replacement", async (t) => {
+deployedTest("deployed access-grant credentials and route requirements survive an ECS replacement", async (t) => {
   if (process.env.DEPLOYED_RUN_DISRUPTIVE_TESTS !== "1") {
     t.skip("set DEPLOYED_RUN_DISRUPTIVE_TESTS=1 to replace the proxy ECS task");
     return;
@@ -437,7 +440,6 @@ deployedTest("deployed access-grant credentials and mobile affinity survive an E
     name: `restart-persistence-${Date.now()}`,
     targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
     rotation: { mode: "manual" },
-    session: { mode: "sticky", id: `restart-${randomUUID()}`, requireGeographicContinuity: true },
     isAuthenticated: true,
     shouldRetry: false,
   });
@@ -445,7 +447,7 @@ deployedTest("deployed access-grant credentials and mobile affinity survive an E
   const target = new URL("/restart", environment.metadata.integrationTarget.url).toString();
   const before = await requestViaHttpProxy(route.proxyUrls.http, target);
   assert.equal(before.status, 200);
-  const endpoint = before.headers["x-mock-endpoint-id"];
+  const city = before.headers["x-mock-city"];
 
   const previousTasks = await awsJson<{ taskArns?: string[] }>(
     ["ecs", "list-tasks", "--cluster", proxyService.cluster, "--service-name", proxyService.service],
@@ -482,5 +484,5 @@ deployedTest("deployed access-grant credentials and mobile affinity survive an E
     },
     { timeoutMs: 120_000, intervalMs: 3_000 },
   );
-  assert.equal(after.headers["x-mock-endpoint-id"], endpoint);
+  assert.equal(after.headers["x-mock-city"], city);
 });

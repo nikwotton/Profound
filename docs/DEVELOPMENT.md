@@ -91,10 +91,26 @@ pnpm format
 | `pnpm test:unit`           | Vitest/Effect unit tests                                                                             |
 | `pnpm test:property`       | fast-check property tests                                                                            |
 | `pnpm test:release-policy` | Migrations, drain coordination, and release policy                                                   |
+| `pnpm test:e2e`            | Stage-independent black-box route, grant, proxy, rotation, and revocation lifecycle                  |
 | `pnpm test:live`           | Credential-gated Bright Data and Proxidize smoke tests                                               |
-| `pnpm test:deployed`       | Complete SST/AWS integration suite                                                                   |
+| `pnpm test:aws`            | AWS infrastructure, persistence, telemetry, migration, and restart acceptance suite                  |
 
 Normal tests must stay offline. A new vendor call belongs only in an environment-gated live test.
+
+### Black-box behavioral E2E suite
+
+`pnpm test:e2e` exercises only the caller-visible contract. It creates proxies through the control API, sends traffic through the issued HTTP and SOCKS5 endpoints, rotates credentials and exits, deletes proxies, and verifies that invalidated credentials stop working. Cleanup uses the same public APIs.
+
+The suite has no AWS, SSM, SST-stage, datastore, or telemetry dependency. Point it at any compatible mock-mode environment:
+
+```sh
+E2E_CONTROL_API_URL='http://127.0.0.1:8081' \
+E2E_CONTROL_API_TOKEN='change-me' \
+E2E_TARGET_URL='https://example.com/' \
+pnpm test:e2e
+```
+
+`E2E_CONTROL_API_URL`, `E2E_CONTROL_API_TOKEN`, and `E2E_TARGET_URL` default to the local values and `https://example.com/` shown above, so `pnpm test:e2e` needs no extra configuration for the basic smoke path. Override the target with a controlled recipient for stronger assertions. With an HTTP recipient, mock-provider headers additionally verify exit rotation, exact-city routing, and per-connection proxy-slot selection. With HTTPS, the suite respects TLS opacity and verifies lifecycle operations plus successful traffic before and after rotation. `E2E_EXPECTED_TARGET_STATUS` defaults to `200`.
 
 ### Controlled recipient
 
@@ -124,7 +140,7 @@ pnpm test:live
 
 These tests consume vendor service and may incur cost. Never enable them in a personal developer stage.
 
-### Deployed integration suite
+### AWS deployment acceptance suite
 
 Use an ephemeral `ci-*` stage. Set its required SST secrets and deploy:
 
@@ -156,12 +172,12 @@ DEPLOYED_HEALTH_AGGREGATOR_TOKEN='REPLACE_WITH_THE_STAGE_VALUE' \
 DEPLOYED_CANARY_SIGNING_SECRET='REPLACE_WITH_THE_STAGE_VALUE' \
 DEPLOYED_AXIOM_QUERY_TOKEN='AXIOM_DATASET_SCOPED_QUERY_TOKEN' \
 DEPLOYED_RUN_DISRUPTIVE_TESTS=1 \
-pnpm test:deployed
+pnpm test:aws
 ```
 
-The runner discovers non-secret component metadata from `/sst/profound-proxy-router/ci-manual/deployed-integration`. It exercises the internal control, HTTP proxy, SOCKS5, dashboard, and health services through the tunnel; the public signed canary and isolated recipients directly; AWS resources through service APIs; and the stage's Axiom datasets.
+The runner discovers non-secret component metadata from `/sst/profound-proxy-router/ci-manual/deployed-integration`. It verifies the deployed AWS topology, durable persistence and restart behavior, internal services, telemetry, migration safety, and environment isolation. Public lifecycle behavior is covered independently by `pnpm test:e2e`.
 
-The disruptive flag forces a proxy ECS replacement to verify DynamoDB-backed credentials and device affinity. Omit it for a non-disruptive run. Set `DEPLOYED_EXPECTED_TELEMETRY_RETENTION_DAYS` only when intentionally testing a non-default Axiom policy.
+The disruptive flag forces a proxy ECS replacement to verify DynamoDB-backed credentials and route requirements. Omit it for a non-disruptive run. Set `DEPLOYED_EXPECTED_TELEMETRY_RETENTION_DAYS` only when intentionally testing a non-default Axiom policy.
 
 Remove the stage when finished:
 
@@ -171,7 +187,7 @@ pnpm aws:remove --stage ci-manual
 
 ## OpenAPI workflow
 
-The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.5.0.json) is committed for client generation.
+The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.6.0.json) is committed for client generation.
 
 After any control schema or endpoint change:
 

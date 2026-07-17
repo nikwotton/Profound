@@ -3,8 +3,10 @@ import { test } from "node:test";
 import { silentLogger } from "../src/logger.js";
 import { SqliteRouteStore } from "../src/store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
+import { CAPACITY_POLICY, recommendCapacity } from "../src/capacity-policy.js";
+import { ROUTING_POLICY } from "../src/routing-policy.js";
 import type { UsageRecord } from "../src/types.js";
-import { summarizeUsage, unallocatedDeviceCapacityRecord, UsageAccountingWorker } from "../src/usage-accounting.js";
+import { provisionedProxySlotCapacityRecord, summarizeUsage, UsageAccountingWorker } from "../src/usage-accounting.js";
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   return {
@@ -58,38 +60,61 @@ test("usage-priced traffic is estimated from billable bytes and historical price
   assert.equal(rollup?.costStatus, "estimated");
 });
 
-test("device-priced traffic unions overlapping leases including idle time", () => {
+test("device-priced slot cost is allocated by customer connection-seconds", () => {
+  const capacity = provisionedProxySlotCapacityRecord({
+    id: "slot-1-day",
+    proxySlotId: "slot-1",
+    periodStartedAt: "2026-07-15T10:00:00.000Z",
+    periodEndsAt: "2026-07-15T11:00:00.000Z",
+    priceUsd: 59,
+    pricingVersion: "prox-2026-07",
+  });
   const records = [
     record({
       id: "mobile-1",
+      customerId: "customer-a",
       provider: "proxidize",
       pricingVersion: "prox-2026-07",
       pricingModel: "per_device_month",
       priceUsd: 59,
-      deviceLeaseKey: "device-1",
-      leaseWindowStartedAt: "2026-07-15T10:00:00.000Z",
-      leaseWindowEndsAt: "2026-07-15T10:20:00.000Z",
+      proxySlotId: "slot-1",
+      connectionStartedAt: "2026-07-15T10:00:00.000Z",
+      connectionEndedAt: "2026-07-15T10:20:00.000Z",
     }),
     record({
       id: "mobile-2",
       logicalOperationId: "operation-2",
+      customerId: "customer-b",
       provider: "proxidize",
       pricingVersion: "prox-2026-07",
       pricingModel: "per_device_month",
       priceUsd: 59,
-      deviceLeaseKey: "device-1",
-      leaseWindowStartedAt: "2026-07-15T10:10:00.000Z",
-      leaseWindowEndsAt: "2026-07-15T10:30:00.000Z",
+      proxySlotId: "slot-1",
+      connectionStartedAt: "2026-07-15T10:10:00.000Z",
+      connectionEndedAt: "2026-07-15T10:30:00.000Z",
       completedAt: "2026-07-15T10:15:00.000Z",
     }),
+    capacity,
   ];
-  const [rollup] = summarizeUsage(records, {
+  const rollups = summarizeUsage(records, {
     from: "2026-07-15T00:00:00.000Z",
     to: "2026-07-16T00:00:00.000Z",
     interval: "day",
+    groupBy: "customer",
   });
-  assert.equal(rollup?.deviceLeaseMs, 30 * 60_000);
-  assert.ok((rollup?.estimatedCostUsd ?? 0) > 0);
+  const customerA = rollups.find((rollup) => rollup.group.customer === "customer-a");
+  const customerB = rollups.find((rollup) => rollup.group.customer === "customer-b");
+  assert.equal(customerA?.activeConnectionMs, 20 * 60_000);
+  assert.equal(customerB?.activeConnectionMs, 20 * 60_000);
+  assert.equal(customerA?.estimatedCostUsd, customerB?.estimatedCostUsd);
+  assert.equal(
+    (customerA?.estimatedCostUsd ?? 0) + (customerB?.estimatedCostUsd ?? 0),
+    summarizeUsage(records, {
+      from: "2026-07-15T00:00:00.000Z",
+      to: "2026-07-16T00:00:00.000Z",
+      interval: "day",
+    })[0]?.estimatedCostUsd,
+  );
 });
 
 test("preallocated capacity reports time-weighted and current utilization with unhealthy capacity separated", () => {
@@ -98,38 +123,39 @@ test("preallocated capacity reports time-weighted and current utilization with u
     provider: "proxidize",
     pricingModel: "per_device_month",
     priceUsd: 59,
-    deviceLeaseKey: "device-1",
-    leaseWindowStartedAt: "2026-07-15T10:00:00.000Z",
-    leaseWindowEndsAt: "2026-07-15T10:30:00.000Z",
+    proxySlotId: "slot-1",
+    connectionStartedAt: "2026-07-15T10:00:00.000Z",
+    connectionEndedAt: "2026-07-15T10:30:00.000Z",
   });
-  const healthyIdle = unallocatedDeviceCapacityRecord({
+  const healthy = provisionedProxySlotCapacityRecord({
     id: "idle",
-    endpointId: "device-1",
-    periodStartedAt: "2026-07-15T10:30:00.000Z",
-    periodEndsAt: "2026-07-15T10:45:00.000Z",
+    proxySlotId: "slot-1",
+    periodStartedAt: "2026-07-15T10:00:00.000Z",
+    periodEndsAt: "2026-07-15T11:00:00.000Z",
     priceUsd: 59,
     pricingVersion: "prox-2026-07",
   });
-  const unhealthy = unallocatedDeviceCapacityRecord({
+  const unhealthy = provisionedProxySlotCapacityRecord({
     id: "unhealthy",
-    endpointId: "device-1",
-    periodStartedAt: "2026-07-15T10:45:00.000Z",
+    proxySlotId: "slot-2",
+    periodStartedAt: "2026-07-15T10:00:00.000Z",
     periodEndsAt: "2026-07-15T11:00:00.000Z",
     priceUsd: 59,
     pricingVersion: "prox-2026-07",
     health: "unhealthy",
   });
-  const [rollup] = summarizeUsage([allocated, healthyIdle, unhealthy], {
+  const [rollup] = summarizeUsage([allocated, healthy, unhealthy], {
     from: "2026-07-15T10:00:00.000Z",
     to: "2026-07-15T11:00:00.000Z",
     interval: "hour",
   });
-  assert.equal(rollup?.deviceLeaseMs, 30 * 60_000);
-  assert.equal(rollup?.provisionedDeviceMs, 60 * 60_000);
-  assert.equal(rollup?.healthyIdleDeviceMs, 15 * 60_000);
-  assert.equal(rollup?.unhealthyDeviceMs, 15 * 60_000);
-  assert.equal(rollup?.allocationUtilization, 0.5);
-  assert.equal(rollup?.currentAllocationUtilization, 0);
+  assert.equal(rollup?.activeConnectionMs, 30 * 60_000);
+  assert.equal(rollup?.provisionedSlotMs, 2 * 60 * 60_000);
+  assert.equal(rollup?.healthyIdleSlotMs, 30 * 60_000);
+  assert.equal(rollup?.unhealthySlotMs, 60 * 60_000);
+  assert.equal(rollup?.slotOccupancy, 0.25);
+  assert.equal(rollup?.currentSlotOccupancy, 0);
+  assert.equal(rollup?.capacityPolicyVersion, CAPACITY_POLICY.version);
 });
 
 test("provider totals reconcile authoritative spend while grouped attribution stays estimated", () => {
@@ -147,10 +173,10 @@ test("provider totals reconcile authoritative spend while grouped attribution st
   assert.equal(rollup?.costStatus, "reconciled");
 });
 
-test("unassigned device capacity is attributed to the synthetic Unallocated customer", () => {
-  const capacity = unallocatedDeviceCapacityRecord({
-    id: "device-1-2026-07-15",
-    endpointId: "device-1",
+test("idle proxy-slot capacity is attributed to the synthetic Unallocated customer", () => {
+  const capacity = provisionedProxySlotCapacityRecord({
+    id: "slot-1-2026-07-15",
+    proxySlotId: "slot-1",
     periodStartedAt: "2026-07-15T00:00:00.000Z",
     periodEndsAt: "2026-07-15T01:00:00.000Z",
     priceUsd: 59,
@@ -164,9 +190,38 @@ test("unassigned device capacity is attributed to the synthetic Unallocated cust
   });
   assert.equal(rollup?.group.customer, "Unallocated");
   assert.equal(rollup?.requestCount, 0);
-  assert.equal(rollup?.deviceLeaseMs, 0);
-  assert.equal(rollup?.provisionedDeviceMs, 60 * 60_000);
-  assert.equal(rollup?.healthyIdleDeviceMs, 60 * 60_000);
+  assert.equal(rollup?.activeConnectionMs, 0);
+  assert.equal(rollup?.provisionedSlotMs, 60 * 60_000);
+  assert.equal(rollup?.healthyIdleSlotMs, 60 * 60_000);
+});
+
+test("capacity recommendations use the versioned v0 policy and suppress location-limited changes", () => {
+  const recommendation = recommendCapacity(
+    {
+      provisionedSlots: 2,
+      peakConcurrentConnections: 40,
+      observedMbps: 10,
+      prioritizedGbForecast: 70,
+      monthlyPricePerSlotUsd: 59,
+    },
+    CAPACITY_POLICY,
+    () => Date.parse("2026-07-17T00:00:00.000Z"),
+  );
+  assert.equal(recommendation.policyVersion, CAPACITY_POLICY.version);
+  assert.equal(recommendation.recommendedSlots, 3);
+  assert.equal(recommendation.slotDelta, 1);
+  assert.equal(recommendation.estimatedMonthlyCostDeltaUsd, 59);
+  assert.equal(
+    recommendCapacity({
+      provisionedSlots: 2,
+      peakConcurrentConnections: 40,
+      observedMbps: 10,
+      prioritizedGbForecast: 70,
+      limitingConstraint: "geography",
+      monthlyPricePerSlotUsd: 59,
+    }).slotDelta,
+    0,
+  );
 });
 
 test("accounting worker persists hourly, daily, and customer rollups", async () => {
@@ -202,6 +257,10 @@ test("reconciliation persists variance evidence and posts unexplained difference
     assert.equal(reconciliation?.varianceUsd, 1);
     assert.equal(reconciliation?.varianceAttribution, "Unallocated");
     assert.equal(reconciliation?.severity, "warning");
+    const [alert] = await store.listUsageAlertEvents("2026-07-15T00:00:00.000Z", "2026-07-16T00:00:00.000Z");
+    assert.equal(alert?.kind, "reconciliation_variance");
+    assert.equal(alert?.severity, "warning");
+    assert.equal(alert?.relatedRecordId, reconciliation?.id);
     const daily = await store.listUsageRollups("2026-07-15T00:00:00.000Z", "2026-07-16T00:00:00.000Z", "day");
     const customer = daily.find((rollup) => rollup.group.customer === "customer-1");
     const unallocated = daily.find((rollup) => rollup.group.customer === "Unallocated");
@@ -232,9 +291,54 @@ test("reconciliation persists variance evidence and posts unexplained difference
         await fetch(`http://127.0.0.1:${address.port}/api/usage/reconciliations?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
       ).json()) as { data: Array<{ varianceAttribution: string }> };
       assert.equal(evidence.data[0]?.varianceAttribution, "Unallocated");
+      const alerts = (await (
+        await fetch(`http://127.0.0.1:${address.port}/api/usage/alerts?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
+      ).json()) as { data: Array<{ kind: string }> };
+      assert.equal(alerts.data[0]?.kind, "reconciliation_variance");
     } finally {
       await dashboard.stop();
     }
+  } finally {
+    await store.close();
+  }
+});
+
+test("capacity pressure creates one idempotent durable alert per aggregate period", async () => {
+  const store = new SqliteRouteStore(":memory:");
+  const from = "2026-07-15T10:00:00.000Z";
+  const to = "2026-07-15T12:00:00.000Z";
+  try {
+    await store.recordUsage(
+      provisionedProxySlotCapacityRecord({
+        id: "pressure-slot",
+        proxySlotId: "slot-pressure",
+        periodStartedAt: from,
+        periodEndsAt: "2026-07-15T11:00:00.000Z",
+        priceUsd: 59,
+        pricingVersion: "prox-2026-07",
+      }),
+    );
+    for (let index = 0; index < 17; index += 1) {
+      await store.recordUsage(
+        record({
+          id: `pressure-${index}`,
+          logicalOperationId: `pressure-operation-${index}`,
+          provider: "proxidize",
+          proxySlotId: "slot-pressure",
+          connectionStartedAt: "2026-07-15T10:00:00.000Z",
+          connectionEndedAt: "2026-07-15T11:00:00.000Z",
+          completedAt: `2026-07-15T10:${String(index).padStart(2, "0")}:00.000Z`,
+          capacityPressure: true,
+          capacityPolicyVersion: CAPACITY_POLICY.version,
+        }),
+      );
+    }
+    const worker = new UsageAccountingWorker(store);
+    await worker.run(from, to);
+    const first = await store.listUsageAlertEvents(from, to);
+    assert.ok(first.some((alert) => alert.kind === "capacity_pressure" && alert.provider === "proxidize"));
+    await worker.run(from, to);
+    assert.equal((await store.listUsageAlertEvents(from, to)).length, first.length);
   } finally {
     await store.close();
   }
@@ -266,9 +370,37 @@ test("variance thresholds enforce the absolute floor, 5% warning, 15% error, and
   }
 });
 
-test("internal dashboard usage API supports time presets, grouping, and filters", async (t) => {
+test("internal dashboard supports usage filters and surfaces provider overrides and capacity circuits", async (t) => {
   const store = new SqliteRouteStore(":memory:");
-  await store.recordUsage(record());
+  await store.create(
+    "overridden-profile",
+    {
+      name: "overridden-profile",
+      customerId: "customer-override",
+      providerOverride: "bright_data",
+      isTargetAuthenticated: false,
+      allowConnectionRetry: false,
+      userId: "user-override",
+      allowedProtocols: ["http", "https", "socks5"],
+      targeting: { country: "US" },
+      rotation: { mode: "per_request" },
+      session: { mode: "none", requireGeographicContinuity: false },
+      isAuthenticated: false,
+      shouldRetry: false,
+      retryPolicy: { maxAttempts: 1 },
+    },
+    "bright_data",
+  );
+  await store.recordCapacityCircuitFailure("bright_data", "bright_data", "provider_hard_limit", "2026-07-15T11:59:30.000Z");
+  await store.recordUsage(
+    record({
+      provider: "proxidize",
+      proxySlotId: "slot-a",
+      routingPolicyVersion: ROUTING_POLICY.version,
+      routingScore: 72.5,
+      routingScoreComponents: { reliability: 0.8, headroom: 0.75, performance: 0.7, costEfficiency: 0.5, stability: 0.9 },
+    }),
+  );
   const now = Date.parse("2026-07-15T12:00:00.000Z");
   const server = new StatusApplicationServer(
     store,
@@ -280,12 +412,34 @@ test("internal dashboard usage API supports time presets, grouping, and filters"
     await server.stop();
     await store.close();
   });
-  const response = await fetch(`http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=provider&provider=bright_data`);
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=provider&provider=proxidize`);
   assert.equal(response.status, 200);
   const body = (await response.json()) as { data: Array<{ group: { provider: string }; requestCount: number }> };
-  assert.equal(body.data[0]?.group.provider, "bright_data");
+  assert.equal(body.data[0]?.group.provider, "proxidize");
   assert.equal(body.data[0]?.requestCount, 1);
+  const capacity = (await (await fetch(`http://127.0.0.1:${address.port}/api/capacity`)).json()) as {
+    routingPolicy: { version: string };
+    recentCandidateScores: Array<{ routingScore: number; routingScoreComponents: { headroom: number } }>;
+    capacityCircuits: Array<{ provider: string; status: string; reason: string }>;
+  };
+  assert.equal(capacity.routingPolicy.version, ROUTING_POLICY.version);
+  assert.equal(capacity.recentCandidateScores[0]?.routingScore, 72.5);
+  assert.equal(capacity.recentCandidateScores[0]?.routingScoreComponents.headroom, 0.75);
+  assert.deepEqual(capacity.capacityCircuits[0], {
+    provider: "bright_data",
+    candidateKey: "bright_data",
+    status: "open",
+    consecutiveFailures: 1,
+    openCount: 1,
+    reason: "provider_hard_limit",
+    cooldownUntil: "2026-07-15T12:00:30.000Z",
+    updatedAt: "2026-07-15T11:59:30.000Z",
+    expiresAt: "2026-07-16T11:59:30.000Z",
+  });
   const html = await (await fetch(`http://127.0.0.1:${address.port}/`)).text();
   assert.match(html, /Proxy routing dashboard/);
   assert.match(html, /Usage and cost/);
+  assert.match(html, /overridden-profile/);
+  assert.match(html, /bright_data/);
+  assert.match(html, /provider_hard_limit/);
 });

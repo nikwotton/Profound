@@ -68,6 +68,7 @@ export const RouteProfilePayload = Schema.Unknown.annotations({
         },
       },
       carrier: { type: "string" },
+      providerOverride: { type: ["string", "null"], enum: ["bright_data", "proxidize", null] },
       isTargetAuthenticated: { type: "boolean" },
       allowConnectionRetry: { type: "boolean" },
     },
@@ -80,6 +81,7 @@ const PublicRoute = Schema.Struct({
   customerId: Schema.String,
   geography: Schema.optional(Geography),
   carrier: Schema.optional(Schema.String),
+  providerOverride: Schema.NullOr(Schema.Literal("bright_data", "proxidize")),
   isTargetAuthenticated: Schema.Boolean,
   allowConnectionRetry: Schema.Boolean,
   status: Schema.Literal("ready", "rotating", "failed", "revoked"),
@@ -191,7 +193,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
       .addError(InternalError)
       .annotate(
         OpenApi.Description,
-        "Rotate this grant's bearer credential without changing its device lease; return the replacement secret only in this response",
+        "Rotate this grant's bearer credential without creating or changing provider affinity; return the replacement secret only in this response",
       ),
   )
   .add(

@@ -2,6 +2,7 @@ import { HttpApiBuilder, HttpApiSwagger, HttpServer } from "@effect/platform";
 import { Redacted, Effect, Layer } from "effect";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { expectBufferChunk, expectOptionalString, expectRecord, parseJson } from "./decoding.js";
 import {
   AdminAuthorization,
   AuthenticatedUser,
@@ -52,7 +53,7 @@ function createError(error: unknown): RouteCreateError {
   if (error instanceof ValidationError) {
     return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
   }
-  if (error instanceof ProviderUnavailableError) {
+  if (error instanceof AppError && error.statusCode === 503) {
     return new ServiceUnavailable({ code: error.code, message: error.message, retryable: true, requestId: randomUUID() });
   }
   return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
@@ -263,7 +264,7 @@ async function readBody(request: IncomingMessage): Promise<Buffer | undefined> {
   const chunks: Buffer[] = [];
   let length = 0;
   for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const buffer = expectBufferChunk(chunk, "control API request chunk");
     length += buffer.length;
     if (length > 64 * 1024) throw new AppError("Request body exceeds 64 KiB", "payload_too_large", 413);
     chunks.push(buffer);
@@ -281,9 +282,7 @@ function requestHostname(hostHeader: string | undefined): string | undefined {
 }
 
 function rewriteIssuedCredentialHost(body: Buffer, hostname: string): Buffer {
-  const payload = JSON.parse(body.toString("utf8")) as {
-    endpoints?: { http?: string; socks5?: string };
-  };
+  const payload = expectRecord(parseJson(body.toString("utf8"), "issued-credential response"), "issued-credential response");
   const rewrite = (value: string | undefined): string | undefined => {
     if (value === undefined) return undefined;
     const url = new URL(value);
@@ -291,10 +290,11 @@ function rewriteIssuedCredentialHost(body: Buffer, hostname: string): Buffer {
     return url.toString();
   };
   if (payload.endpoints !== undefined) {
-    const http = rewrite(payload.endpoints.http);
-    const socks5 = rewrite(payload.endpoints.socks5);
-    if (http !== undefined) payload.endpoints.http = http;
-    if (socks5 !== undefined) payload.endpoints.socks5 = socks5;
+    const endpoints = expectRecord(payload.endpoints, "issued-credential response.endpoints");
+    const http = rewrite(expectOptionalString(endpoints.http, "issued-credential response.endpoints.http"));
+    const socks5 = rewrite(expectOptionalString(endpoints.socks5, "issued-credential response.endpoints.socks5"));
+    if (http !== undefined) endpoints.http = http;
+    if (socks5 !== undefined) endpoints.socks5 = socks5;
   }
   return Buffer.from(JSON.stringify(payload));
 }

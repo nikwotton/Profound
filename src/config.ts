@@ -26,7 +26,7 @@ export interface AppConfig {
   streamIdleTimeoutMs: number;
   maxHeaderBytes: number;
   retryDefaults: { maxAttempts: number };
-  proxidizeExactCity: "provider_guaranteed" | "unsupported";
+  proxidizeExactCity: "provider_guaranteed" | "verifiable" | "unsupported";
   telemetry: { serviceName: string; serviceVersion: string };
   brightData: {
     host: string;
@@ -79,11 +79,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ValidationError("ADVERTISED_HTTP_PROXY_PROTOCOL must be http or https");
   }
   const controlHost = env.CONTROL_API_HOST ?? "127.0.0.1";
-  const proxidizeExactCity = env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported");
-  if (!new Set(["provider_guaranteed", "unsupported"]).has(proxidizeExactCity)) {
-    throw new ValidationError(
-      "PROXIDIZE_EXACT_CITY_SUPPORT must be provider_guaranteed or unsupported; verifiable requires a configured canonical verifier",
-    );
+  const proxidizeExactCity = env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "verifiable");
+  if (!new Set(["provider_guaranteed", "verifiable", "unsupported"]).has(proxidizeExactCity)) {
+    throw new ValidationError("PROXIDIZE_EXACT_CITY_SUPPORT must be provider_guaranteed, verifiable, or unsupported");
   }
   const adminToken = env.CONTROL_API_TOKEN?.trim() || "change-me";
   const adminUserId = env.CONTROL_API_USER_ID?.trim() || "local-dev";

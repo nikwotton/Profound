@@ -6,7 +6,6 @@ import test from "node:test";
 import { SqliteRouteStore, toPublicAccessGrant } from "../src/store.js";
 import type { RouteProfile, StoredAccessGrant } from "../src/types.js";
 
-const minute = 60_000;
 const base = Date.parse("2026-07-15T00:00:00.000Z");
 const at = (offsetMs: number): string => new Date(base + offsetMs).toISOString();
 
@@ -25,53 +24,117 @@ const profile: RouteProfile = {
   retryPolicy: { maxAttempts: 1 },
 };
 
-test("device leases are exclusive, session-shareable, sliding, releasable, and durable", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "profound-leases-"));
+test("active proxy-slot loads are shared across callers, durable, and released with each connection", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "profound-slot-loads-"));
   const path = join(directory, "routes.db");
   const firstStore = new SqliteRouteStore(path);
   try {
-    const first = await firstStore.acquireDeviceLease("session-a", "route-a", ["device-1", "device-2"], at(0), 15 * minute);
-    assert.equal(first?.endpointId, "device-1");
-
-    const shared = await firstStore.acquireDeviceLease("session-a", "route-b", ["device-1", "device-2"], at(minute), 15 * minute);
-    assert.equal(shared?.endpointId, "device-1", "the same logical session reuses its device");
-
-    const second = await firstStore.acquireDeviceLease("session-b", "route-c", ["device-1", "device-2"], at(minute), 15 * minute);
-    assert.equal(second?.endpointId, "device-2");
-    assert.equal(
-      await firstStore.acquireDeviceLease("session-c", "route-d", ["device-1", "device-2"], at(minute), 15 * minute),
-      undefined,
-      "another logical session cannot share either leased device",
+    await firstStore.registerActiveTunnel({
+      id: "connection-a",
+      deploymentId: "deployment-a",
+      routeId: "route-a",
+      accessGrantId: "grant-a",
+      protocol: "https",
+      provider: "proxidize",
+      endpointId: "slot-1",
+      startedAt: at(0),
+      lastHeartbeatAt: at(0),
+      expiresAt: at(120_000),
+    });
+    await firstStore.registerActiveTunnel({
+      id: "connection-b",
+      deploymentId: "deployment-b",
+      routeId: "route-b",
+      accessGrantId: "grant-b",
+      protocol: "http",
+      provider: "proxidize",
+      endpointId: "slot-1",
+      startedAt: at(1_000),
+      lastHeartbeatAt: at(1_000),
+      expiresAt: at(121_000),
+    });
+    assert.equal((await firstStore.listAllActiveTunnels(at(60_000))).length, 2, "a proxy slot can serve multiple callers");
+    await firstStore.removeActiveTunnel("connection-a");
+    assert.deepEqual(
+      (await firstStore.listAllActiveTunnels(at(60_000))).map((connection) => connection.id),
+      ["connection-b"],
     );
-
-    await firstStore.renewDeviceLease("session-a", at(10 * minute), at(25 * minute), false);
-    const afterIdleExpiry = await firstStore.acquireDeviceLease(
-      "session-c",
-      "route-d",
-      ["device-1", "device-2"],
-      at(17 * minute),
-      15 * minute,
-    );
-    assert.equal(afterIdleExpiry?.endpointId, "device-2", "an idle lease expires while an active lease remains reserved");
     await firstStore.close();
 
     const restartedStore = new SqliteRouteStore(path);
     try {
-      assert.equal((await restartedStore.getDeviceLease("session-a"))?.endpointId, "device-1");
-      await restartedStore.releaseDeviceLease("session-a");
-      const replacement = await restartedStore.acquireDeviceLease(
-        "session-d",
-        "route-e",
-        ["device-1", "device-2"],
-        at(18 * minute),
-        15 * minute,
-      );
-      assert.equal(replacement?.endpointId, "device-1", "explicit release makes the device immediately available");
+      assert.equal((await restartedStore.listAllActiveTunnels(at(60_000)))[0]?.id, "connection-b");
+      assert.deepEqual(await restartedStore.listAllActiveTunnels(at(122_000)), [], "expired connection load is not retained");
     } finally {
       await restartedStore.close();
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("concurrent proxy-slot claims atomically include earlier claims in candidate load", async () => {
+  const store = new SqliteRouteStore(":memory:");
+  let sequence = 0;
+  try {
+    const claim = () =>
+      store.claimActiveTunnelSlot(
+        ["slot-a", "slot-b"],
+        (loads) =>
+          (["slot-a", "slot-b"] as const).toSorted(
+            (left, right) => (loads.get(left) ?? 0) - (loads.get(right) ?? 0) || left.localeCompare(right),
+          )[0] ?? "slot-a",
+        (endpointId) => {
+          sequence += 1;
+          return {
+            id: `claim-${sequence}`,
+            deploymentId: "deployment",
+            routeId: `route-${sequence}`,
+            accessGrantId: `grant-${sequence}`,
+            protocol: "https",
+            provider: "proxidize",
+            endpointId,
+            startedAt: new Date().toISOString(),
+            lastHeartbeatAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 120_000).toISOString(),
+          };
+        },
+      );
+    const claims = await Promise.all([claim(), claim()]);
+    assert.deepEqual(new Set(claims.map(({ tunnel }) => tunnel.endpointId)), new Set(["slot-a", "slot-b"]));
+    assert.equal((await store.listAllActiveTunnels()).length, 2);
+  } finally {
+    await store.close();
+  }
+});
+
+test("shared capacity circuits open, back off, half-open exactly one probe, and reset after success", async () => {
+  const store = new SqliteRouteStore(":memory:");
+  try {
+    const first = await store.recordCapacityCircuitFailure("bright_data", "bright_data", "establishment_failure", at(0));
+    const second = await store.recordCapacityCircuitFailure("bright_data", "bright_data", "establishment_failure", at(1));
+    const opened = await store.recordCapacityCircuitFailure("bright_data", "bright_data", "establishment_failure", at(2));
+    assert.equal(first.status, "closed");
+    assert.equal(second.status, "closed");
+    assert.equal(opened.status, "open");
+    assert.equal(opened.cooldownUntil, at(60_002));
+    assert.equal((await store.claimCapacityCircuit("bright_data", "bright_data", at(60_001))).allowed, false);
+
+    const probe = await store.claimCapacityCircuit("bright_data", "bright_data", at(60_002));
+    assert.equal(probe.allowed, true);
+    assert.equal(probe.state?.status, "half_open");
+    assert.equal((await store.claimCapacityCircuit("bright_data", "bright_data", at(60_003))).allowed, false);
+
+    const reopened = await store.recordCapacityCircuitFailure("bright_data", "bright_data", "capacity_failure", at(60_004));
+    assert.equal(reopened.status, "open");
+    assert.equal(reopened.cooldownUntil, at(180_004), "a repeated opening doubles the cooldown");
+    await store.resetCapacityCircuit("bright_data", "bright_data");
+    assert.equal(await store.getCapacityCircuit("bright_data", "bright_data", at(60_005)), undefined);
+
+    const hardLimit = await store.recordCapacityCircuitFailure("proxidize", "slot-a", "provider_hard_limit", at(70_000));
+    assert.equal(hardLimit.status, "open", "a provider hard limit opens immediately");
+  } finally {
+    await store.close();
   }
 });
 
@@ -100,7 +163,6 @@ test("route profiles contain no credential verifier and access grants rotate and
     assert.doesNotMatch(JSON.stringify(route), /tokenSalt|tokenHash/);
     const first = await store.createAccessGrant("grant-one", route.id, "user-one", "credential-one", "first-token");
     const second = await store.createAccessGrant("grant-two", route.id, "user-two", "credential-two", "second-token");
-    await store.setAccessGrantEndpoint(first.id, "device-1");
     assert.equal((await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.principalId, "user-one");
     assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.principalId, "user-two");
 
@@ -110,7 +172,10 @@ test("route profiles contain no credential verifier and access grants rotate and
       first.id,
       "ordinary rotation overlaps old and new credentials",
     );
-    assert.equal((await store.authenticateAccessGrant("pxy_credential-three", "rotated-token"))?.endpointId, "device-1");
+    assert.doesNotMatch(
+      JSON.stringify(await store.authenticateAccessGrant("pxy_credential-three", "rotated-token")),
+      /endpointId|slot|device/,
+    );
     assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.id, second.id);
     const [overlappingCredential, activeCredential] = rotated.credentials;
     assert.ok(overlappingCredential);

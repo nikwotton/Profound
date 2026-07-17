@@ -7,6 +7,7 @@ export function assignmentAttributes(evidence: AssignmentEvidence): Attributes {
     "proxy.assignment.mode": evidence.assignmentMode,
     "proxy.assignment.change_reason": evidence.changeReason,
     "proxy.assignment.provider_reassignment_disabled": evidence.providerManagedReassignmentDisabled,
+    ...(evidence.proxySlotId === undefined ? {} : { "proxy.provider.slot_id": evidence.proxySlotId }),
     ...(evidence.previousCandidateId === undefined
       ? {}
       : {
@@ -34,6 +35,7 @@ export function assignmentAttributes(evidence: AssignmentEvidence): Attributes {
 export function assignmentLogContext(evidence: AssignmentEvidence): Record<string, unknown> {
   return {
     candidateId: evidence.candidateId,
+    proxySlotId: evidence.proxySlotId,
     assignmentMode: evidence.assignmentMode,
     providerManagedReassignmentDisabled: evidence.providerManagedReassignmentDisabled,
     changeReason: evidence.changeReason,

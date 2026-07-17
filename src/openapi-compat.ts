@@ -13,6 +13,26 @@ function record(value: unknown): JsonRecord | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : undefined;
 }
 
+export function decodeOpenApiDocument(value: unknown): OpenApiDocument {
+  const document = record(value);
+  if (document === undefined) throw new TypeError("OpenAPI document must be an object");
+  const infoRecord = document.info === undefined ? undefined : record(document.info);
+  if (document.info !== undefined && infoRecord === undefined) throw new TypeError("OpenAPI info must be an object");
+  const version = infoRecord?.version;
+  if (version !== undefined && typeof version !== "string") throw new TypeError("OpenAPI info.version must be a string");
+  const paths = document.paths === undefined ? undefined : record(document.paths);
+  if (document.paths !== undefined && paths === undefined) throw new TypeError("OpenAPI paths must be an object");
+  const componentsRecord = document.components === undefined ? undefined : record(document.components);
+  if (document.components !== undefined && componentsRecord === undefined) {
+    throw new TypeError("OpenAPI components must be an object");
+  }
+  const schemas = componentsRecord?.schemas === undefined ? undefined : record(componentsRecord.schemas);
+  if (componentsRecord?.schemas !== undefined && schemas === undefined) {
+    throw new TypeError("OpenAPI components.schemas must be an object");
+  }
+  return document as OpenApiDocument;
+}
+
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.map(record).filter((item): item is JsonRecord => item !== undefined) : [];
 }

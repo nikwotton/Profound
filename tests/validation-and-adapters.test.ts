@@ -103,16 +103,15 @@ test("control API token defaults only for local mock mode", () => {
     PROXIDIZE_API_TOKEN: "provider-token",
     SQLITE_PATH: "./data/config-test.db",
   });
-  assert.equal(live.proxidizeExactCity, "unsupported");
+  assert.equal(live.proxidizeExactCity, "verifiable");
 
-  assert.throws(
-    () =>
-      loadConfig({
-        PROVIDER_MODE: "mock",
-        PROXIDIZE_EXACT_CITY_SUPPORT: "verifiable",
-        SQLITE_PATH: "./data/config-test.db",
-      }),
-    /canonical verifier/,
+  assert.equal(
+    loadConfig({
+      PROVIDER_MODE: "mock",
+      PROXIDIZE_EXACT_CITY_SUPPORT: "verifiable",
+      SQLITE_PATH: "./data/config-test.db",
+    }).proxidizeExactCity,
+    "verifiable",
   );
 
   assert.throws(
@@ -187,6 +186,11 @@ test("profile validation accepts only stable requirements and derives routing be
 
   assert.equal(mobile.isTargetAuthenticated, true);
   assert.equal(mobile.allowConnectionRetry, false);
+
+  const overridden = validate({ providerOverride: "bright_data" });
+  assert.equal(overridden.providerOverride, "bright_data");
+  assert.equal(validate({ providerOverride: null }).providerOverride, undefined);
+  assert.throws(() => validate({ providerOverride: "unknown" }), /providerOverride must be bright_data, proxidize, or null/);
 });
 
 test("profile validation rejects missing authenticated geography and every non-canonical field", () => {

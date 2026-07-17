@@ -397,6 +397,20 @@
           "profileId": {
             "type": "string"
           },
+          "providerOverride": {
+            "anyOf": [
+              {
+                "enum": [
+                  "bright_data",
+                  "proxidize"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "enum": [
               "ready",
@@ -413,6 +427,7 @@
         "required": [
           "profileId",
           "customerId",
+          "providerOverride",
           "isTargetAuthenticated",
           "allowConnectionRetry",
           "status",
@@ -450,6 +465,17 @@
           },
           "isTargetAuthenticated": {
             "type": "boolean"
+          },
+          "providerOverride": {
+            "enum": [
+              "bright_data",
+              "proxidize",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -865,7 +891,7 @@
     },
     "/v1/grants/{grantId}/credentials/rotate": {
       "post": {
-        "description": "Rotate this grant's bearer credential without changing its device lease; return the replacement secret only in this response",
+        "description": "Rotate this grant's bearer credential without creating or changing provider affinity; return the replacement secret only in this response",
         "operationId": "rotateAccessGrantCredential",
         "parameters": [
           {

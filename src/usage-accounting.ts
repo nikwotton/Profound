@@ -1,8 +1,18 @@
 import type { RouteStore } from "./store.js";
-import type { UsageGroupBy, UsageInterval, UsageProvider, UsageReconciliation, UsageRecord, UsageRollup } from "./types.js";
+import { expectEnum, expectNumber, expectOptionalString, expectRecord, expectString } from "./decoding.js";
+import { CAPACITY_POLICY } from "./capacity-policy.js";
+import type {
+  UsageAlertEvent,
+  UsageGroupBy,
+  UsageInterval,
+  UsageProvider,
+  UsageReconciliation,
+  UsageRecord,
+  UsageRollup,
+} from "./types.js";
 
 const GIB = 1024 ** 3;
-const DEVICE_MONTH_MS = (365.25 / 12) * 24 * 60 * 60_000;
+const SLOT_MONTH_MS = (365.25 / 12) * 24 * 60 * 60_000;
 
 export interface ProviderCostTotal {
   provider: Exclude<UsageProvider, "unresolved">;
@@ -26,17 +36,54 @@ export interface UsageQuery {
   outcome?: string;
 }
 
-export interface UnallocatedDeviceCapacity {
+export interface ProvisionedProxySlotCapacity {
   id: string;
-  endpointId: string;
+  proxySlotId: string;
   periodStartedAt: string;
   periodEndsAt: string;
   priceUsd: number;
   pricingVersion: string;
+  country?: string;
+  city?: string;
   health?: "healthy" | "unhealthy";
 }
 
-export function unallocatedDeviceCapacityRecord(capacity: UnallocatedDeviceCapacity): UsageRecord {
+export function decodeProviderCostTotal(value: unknown, context = "provider cost total"): ProviderCostTotal {
+  const total = expectRecord(value, context);
+  return {
+    provider: expectEnum(total.provider, ["bright_data", "proxidize"] as const, `${context}.provider`),
+    periodStartedAt: expectString(total.periodStartedAt, `${context}.periodStartedAt`),
+    periodEndsAt: expectString(total.periodEndsAt, `${context}.periodEndsAt`),
+    amountUsd: expectNumber(total.amountUsd, `${context}.amountUsd`),
+    sourceVersion: expectString(total.sourceVersion, `${context}.sourceVersion`),
+  };
+}
+
+export function decodeProvisionedProxySlotCapacity(
+  value: unknown,
+  context = "provisioned proxy-slot capacity",
+): ProvisionedProxySlotCapacity {
+  const capacity = expectRecord(value, context);
+  const health = expectOptionalString(capacity.health, `${context}.health`);
+  if (health !== undefined && health !== "healthy" && health !== "unhealthy") {
+    throw new TypeError(`${context}.health must be healthy or unhealthy`);
+  }
+  const country = expectOptionalString(capacity.country, `${context}.country`);
+  const city = expectOptionalString(capacity.city, `${context}.city`);
+  return {
+    id: expectString(capacity.id, `${context}.id`),
+    proxySlotId: expectString(capacity.proxySlotId, `${context}.proxySlotId`),
+    periodStartedAt: expectString(capacity.periodStartedAt, `${context}.periodStartedAt`),
+    periodEndsAt: expectString(capacity.periodEndsAt, `${context}.periodEndsAt`),
+    priceUsd: expectNumber(capacity.priceUsd, `${context}.priceUsd`),
+    pricingVersion: expectString(capacity.pricingVersion, `${context}.pricingVersion`),
+    ...(country === undefined ? {} : { country }),
+    ...(city === undefined ? {} : { city }),
+    ...(health === undefined ? {} : { health }),
+  };
+}
+
+export function provisionedProxySlotCapacityRecord(capacity: ProvisionedProxySlotCapacity): UsageRecord {
   if (Date.parse(capacity.periodStartedAt) >= Date.parse(capacity.periodEndsAt)) throw new Error("invalid_capacity_period");
   return {
     kind: "capacity",
@@ -53,15 +100,15 @@ export function unallocatedDeviceCapacityRecord(capacity: UnallocatedDeviceCapac
     failover: false,
     bytesSent: 0,
     bytesReceived: 0,
-    country: "US",
-    endpointId: capacity.endpointId,
-    deviceLeaseKey: `proxidize:${capacity.endpointId}`,
-    leaseWindowStartedAt: capacity.periodStartedAt,
-    leaseWindowEndsAt: capacity.periodEndsAt,
+    endpointId: capacity.proxySlotId,
+    proxySlotId: capacity.proxySlotId,
+    ...(capacity.country === undefined ? { country: "US" } : { country: capacity.country }),
+    ...(capacity.city === undefined ? {} : { city: capacity.city }),
     pricingVersion: capacity.pricingVersion,
     pricingModel: "per_device_month",
     priceUsd: capacity.priceUsd,
     capacityState: capacity.health === "unhealthy" ? "unhealthy" : "healthy_idle",
+    capacityPolicyVersion: CAPACITY_POLICY.version,
     startedAt: capacity.periodStartedAt,
     completedAt: capacity.periodEndsAt,
   };
@@ -121,16 +168,6 @@ function matches(record: UsageRecord, query: UsageQuery): boolean {
   );
 }
 
-function contributesToPeriod(record: UsageRecord, periodStartedAt: string, periodEndsAt: string): boolean {
-  if (record.kind === "attempt" && record.completedAt >= periodStartedAt && record.completedAt < periodEndsAt) return true;
-  return (
-    record.leaseWindowStartedAt !== undefined &&
-    record.leaseWindowEndsAt !== undefined &&
-    record.leaseWindowStartedAt < periodEndsAt &&
-    record.leaseWindowEndsAt > periodStartedAt
-  );
-}
-
 function unionDuration(windows: Array<{ start: number; end: number }>): number {
   const ordered = windows.filter((window) => window.end > window.start).sort((a, b) => a.start - b.start);
   let duration = 0;
@@ -146,102 +183,247 @@ function unionDuration(windows: Array<{ start: number; end: number }>): number {
   return duration + Math.max(0, currentEnd - currentStart);
 }
 
-function capacityDurations(
+function clippedWindow(
+  startedAt: string | undefined,
+  endedAt: string | undefined,
+  periodStartMs: number,
+  periodEndMs: number,
+): { start: number; end: number } | undefined {
+  if (startedAt === undefined || endedAt === undefined) return undefined;
+  const start = Math.max(periodStartMs, Date.parse(startedAt));
+  const end = Math.min(periodEndMs, Date.parse(endedAt));
+  return Number.isFinite(start) && Number.isFinite(end) && end > start ? { start, end } : undefined;
+}
+
+function peakConcurrency(windows: Array<{ start: number; end: number }>): number {
+  const events = windows.flatMap((window) => [
+    { at: window.start, delta: 1 },
+    { at: window.end, delta: -1 },
+  ]);
+  events.sort((left, right) => left.at - right.at || left.delta - right.delta);
+  let current = 0;
+  let peak = 0;
+  for (const event of events) {
+    current += event.delta;
+    peak = Math.max(peak, current);
+  }
+  return peak;
+}
+
+function concurrencyPercentile(
+  windows: Array<{ start: number; end: number }>,
+  periodStartMs: number,
+  periodEndMs: number,
+  percentile: number,
+): number {
+  const events = [
+    { at: periodStartMs, delta: 0 },
+    { at: periodEndMs, delta: 0 },
+    ...windows.flatMap((window) => [
+      { at: window.start, delta: 1 },
+      { at: window.end, delta: -1 },
+    ]),
+  ].sort((left, right) => left.at - right.at || left.delta - right.delta);
+  const durations = new Map<number, number>();
+  let current = 0;
+  let previousAt = periodStartMs;
+  for (const event of events) {
+    if (event.at > previousAt) durations.set(current, (durations.get(current) ?? 0) + event.at - previousAt);
+    current += event.delta;
+    previousAt = event.at;
+  }
+  const target = Math.max(0, periodEndMs - periodStartMs) * percentile;
+  let cumulative = 0;
+  for (const [value, duration] of [...durations.entries()].sort((left, right) => left[0] - right[0])) {
+    cumulative += duration;
+    if (cumulative >= target) return value;
+  }
+  return 0;
+}
+
+function capacityMetrics(
   records: UsageRecord[],
   periodStartedAt: string,
   periodEndsAt: string,
 ): {
-  allocatedMs: number;
-  provisionedMs: number;
-  healthyIdleMs: number;
-  unhealthyMs: number;
-  currentUtilization: number;
+  activeConnectionMs: number;
+  provisionedSlotMs: number;
+  healthyIdleSlotMs: number;
+  unhealthySlotMs: number;
+  slotOccupancy: number;
+  currentSlotOccupancy: number;
+  provisionedSlots: number;
+  activeConnections: number;
+  peakConcurrentConnections: number;
+  p95ConcurrentConnections: number;
+  concurrencyUtilization: number;
+  throughputUtilization: number;
+  prioritizedGbUsed: number;
+  prioritizedGbForecast: number;
+  capacityDrivenFallbackCount: number;
+  capacityFailureCount: number;
+  capacityWaitMs: number;
+  capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
 } {
   const periodStartMs = Date.parse(periodStartedAt);
   const periodEndMs = Date.parse(periodEndsAt);
-  const devices = new Map<
+  const slots = new Map<
     string,
     {
-      allocated: Array<{ start: number; end: number }>;
+      connections: Array<{ start: number; end: number }>;
       healthy: Array<{ start: number; end: number }>;
       unhealthy: Array<{ start: number; end: number }>;
     }
   >();
   for (const record of records) {
-    if (record.deviceLeaseKey === undefined || record.leaseWindowStartedAt === undefined || record.leaseWindowEndsAt === undefined)
-      continue;
-    const entry = devices.get(record.deviceLeaseKey) ?? { allocated: [], healthy: [], unhealthy: [] };
-    const window = {
-      start: Math.max(periodStartMs, Date.parse(record.leaseWindowStartedAt)),
-      end: Math.min(periodEndMs, Date.parse(record.leaseWindowEndsAt)),
-    };
-    if (record.kind === "attempt") entry.allocated.push(window);
+    if (record.proxySlotId === undefined) continue;
+    const entry = slots.get(record.proxySlotId) ?? { connections: [], healthy: [], unhealthy: [] };
+    const window =
+      record.kind === "attempt"
+        ? clippedWindow(record.connectionStartedAt, record.connectionEndedAt, periodStartMs, periodEndMs)
+        : clippedWindow(record.startedAt, record.completedAt, periodStartMs, periodEndMs);
+    if (window === undefined) continue;
+    if (record.kind === "attempt") entry.connections.push(window);
     else if (record.capacityState === "unhealthy") entry.unhealthy.push(window);
     else entry.healthy.push(window);
-    devices.set(record.deviceLeaseKey, entry);
+    slots.set(record.proxySlotId, entry);
   }
-  let allocatedMs = 0;
-  let provisionedMs = 0;
-  let healthyIdleMs = 0;
-  let unhealthyMs = 0;
-  let currentAllocated = 0;
+  let activeConnectionMs = 0;
+  let occupiedSlotMs = 0;
+  let provisionedSlotMs = 0;
+  let healthyIdleSlotMs = 0;
+  let unhealthySlotMs = 0;
+  let currentOccupied = 0;
+  let currentConnections = 0;
   let currentProvisioned = 0;
-  const currentAt = periodEndMs - 1;
-  for (const entry of devices.values()) {
-    allocatedMs += unionDuration(entry.allocated);
-    healthyIdleMs += unionDuration(entry.healthy);
-    unhealthyMs += unionDuration(entry.unhealthy);
-    provisionedMs += unionDuration([...entry.allocated, ...entry.healthy, ...entry.unhealthy]);
-    const isAllocated = entry.allocated.some((window) => window.start <= currentAt && window.end > currentAt);
-    const isProvisioned =
-      isAllocated || [...entry.healthy, ...entry.unhealthy].some((window) => window.start <= currentAt && window.end > currentAt);
-    if (isAllocated) currentAllocated += 1;
+  const allConnections: Array<{ start: number; end: number }> = [];
+  const currentAt = Math.min(Date.now(), periodEndMs) - 1;
+  for (const entry of slots.values()) {
+    allConnections.push(...entry.connections);
+    activeConnectionMs += entry.connections.reduce((sum, window) => sum + window.end - window.start, 0);
+    occupiedSlotMs += unionDuration(entry.connections);
+    const provisioned = [...entry.healthy, ...entry.unhealthy];
+    provisionedSlotMs += unionDuration(provisioned);
+    unhealthySlotMs += unionDuration(entry.unhealthy);
+    const healthyMs = unionDuration(entry.healthy);
+    const healthyOccupiedMs = unionDuration(
+      entry.connections.flatMap((connection) =>
+        entry.healthy.flatMap((healthy) => {
+          const start = Math.max(connection.start, healthy.start);
+          const end = Math.min(connection.end, healthy.end);
+          return end > start ? [{ start, end }] : [];
+        }),
+      ),
+    );
+    healthyIdleSlotMs += Math.max(0, healthyMs - healthyOccupiedMs);
+    const activeNow = entry.connections.filter((window) => window.start <= currentAt && window.end > currentAt).length;
+    const isProvisioned = provisioned.some((window) => window.start <= currentAt && window.end > currentAt);
+    if (activeNow > 0) currentOccupied += 1;
+    currentConnections += activeNow;
     if (isProvisioned) currentProvisioned += 1;
   }
+  const periodDurationMs = Math.max(1, periodEndMs - periodStartMs);
+  const averageProvisionedSlots = provisionedSlotMs / periodDurationMs;
+  const bytes = records
+    .filter((record) => record.kind === "attempt")
+    .reduce((sum, record) => sum + record.bytesSent + record.bytesReceived, 0);
+  const observedMbps = (bytes * 8) / periodDurationMs / 1_000;
+  const prioritizedGbUsed = bytes / GIB;
+  const peakConcurrentConnections = peakConcurrency(allConnections);
+  const p95ConcurrentConnections = concurrencyPercentile(allConnections, periodStartMs, periodEndMs, 0.95);
+  const capacityConstraints = new Set(
+    records.flatMap((record) => (record.capacityConstraint === undefined ? [] : [record.capacityConstraint])),
+  );
+  const capacityConstraint = capacityConstraints.has("geography")
+    ? "geography"
+    : capacityConstraints.has("carrier")
+      ? "carrier"
+      : capacityConstraints.has("slot_exhaustion")
+        ? "slot_exhaustion"
+        : undefined;
   return {
-    allocatedMs,
-    provisionedMs,
-    healthyIdleMs,
-    unhealthyMs,
-    currentUtilization: currentProvisioned === 0 ? 0 : currentAllocated / currentProvisioned,
+    activeConnectionMs,
+    provisionedSlotMs,
+    healthyIdleSlotMs,
+    unhealthySlotMs,
+    slotOccupancy: provisionedSlotMs === 0 ? 0 : occupiedSlotMs / provisionedSlotMs,
+    currentSlotOccupancy: currentProvisioned === 0 ? 0 : currentOccupied / currentProvisioned,
+    provisionedSlots: Math.ceil(averageProvisionedSlots),
+    activeConnections: currentConnections,
+    peakConcurrentConnections,
+    p95ConcurrentConnections,
+    concurrencyUtilization: provisionedSlotMs === 0 ? 0 : activeConnectionMs / (provisionedSlotMs * CAPACITY_POLICY.softConnectionsPerSlot),
+    throughputUtilization:
+      averageProvisionedSlots === 0 ? 0 : observedMbps / (averageProvisionedSlots * CAPACITY_POLICY.plannedMbpsPerSlot),
+    prioritizedGbUsed,
+    prioritizedGbForecast: prioritizedGbUsed * (SLOT_MONTH_MS / periodDurationMs),
+    capacityDrivenFallbackCount: records.filter(
+      (record) => record.kind === "attempt" && record.failover && record.capacityPressure === true,
+    ).length,
+    capacityFailureCount: records.filter(
+      (record) => record.kind === "attempt" && record.outcome === "failure" && record.capacityPressure === true,
+    ).length,
+    capacityWaitMs: records.reduce((sum, record) => sum + (record.establishmentWaitMs ?? 0), 0),
+    ...(capacityConstraint === undefined ? {} : { capacityConstraint }),
   };
 }
 
-function estimatedCost(records: UsageRecord[], periodStartedAt: string, periodEndsAt: string): { amount: number; leaseMs: number } {
+function estimatedCost(
+  records: UsageRecord[],
+  periodStartedAt: string,
+  periodEndsAt: string,
+  customerId?: string,
+): { amount: number; connectionMs: number } {
   let amount = 0;
-  const leaseWindows = new Map<string, Array<{ start: number; end: number; price: number }>>();
+  let connectionMs = 0;
+  const slotCosts = new Map<string, number>();
+  const slotConnections = new Map<string, Map<string, number>>();
+  const periodStartMs = Date.parse(periodStartedAt);
+  const periodEndMs = Date.parse(periodEndsAt);
   for (const record of records) {
     if (
       record.pricingModel === "per_gib" &&
       record.priceUsd !== undefined &&
       record.completedAt >= periodStartedAt &&
-      record.completedAt < periodEndsAt
+      record.completedAt < periodEndsAt &&
+      (customerId === undefined || record.customerId === customerId)
     ) {
       amount += ((record.bytesSent + record.bytesReceived) / GIB) * record.priceUsd;
     }
-    if (
-      record.pricingModel === "per_device_month" &&
-      record.priceUsd !== undefined &&
-      record.deviceLeaseKey !== undefined &&
-      record.leaseWindowStartedAt !== undefined &&
-      record.leaseWindowEndsAt !== undefined
-    ) {
-      const windows = leaseWindows.get(record.deviceLeaseKey) ?? [];
-      windows.push({
-        start: Math.max(Date.parse(periodStartedAt), Date.parse(record.leaseWindowStartedAt)),
-        end: Math.min(Date.parse(periodEndsAt), Date.parse(record.leaseWindowEndsAt)),
-        price: record.priceUsd,
-      });
-      leaseWindows.set(record.deviceLeaseKey, windows);
+    if (record.proxySlotId === undefined) continue;
+    if (record.kind === "capacity" && record.pricingModel === "per_device_month" && record.priceUsd !== undefined) {
+      const window = clippedWindow(record.startedAt, record.completedAt, periodStartMs, periodEndMs);
+      if (window !== undefined) {
+        slotCosts.set(
+          record.proxySlotId,
+          (slotCosts.get(record.proxySlotId) ?? 0) + ((window.end - window.start) / SLOT_MONTH_MS) * record.priceUsd,
+        );
+      }
+    } else if (record.kind === "attempt") {
+      const window = clippedWindow(record.connectionStartedAt, record.connectionEndedAt, periodStartMs, periodEndMs);
+      if (window !== undefined) {
+        const duration = window.end - window.start;
+        connectionMs += customerId === undefined || record.customerId === customerId ? duration : 0;
+        const byCustomer = slotConnections.get(record.proxySlotId) ?? new Map<string, number>();
+        byCustomer.set(record.customerId, (byCustomer.get(record.customerId) ?? 0) + duration);
+        slotConnections.set(record.proxySlotId, byCustomer);
+      }
     }
   }
-  let leaseMs = 0;
-  for (const windows of leaseWindows.values()) {
-    const duration = unionDuration(windows);
-    leaseMs += duration;
-    amount += (duration / DEVICE_MONTH_MS) * (windows.at(-1)?.price ?? 0);
+  for (const [slotId, slotCost] of slotCosts) {
+    if (customerId === undefined) {
+      amount += slotCost;
+      continue;
+    }
+    const byCustomer = slotConnections.get(slotId) ?? new Map<string, number>();
+    const total = [...byCustomer.values()].reduce((sum, value) => sum + value, 0);
+    if (total === 0) {
+      if (customerId === "Unallocated") amount += slotCost;
+    } else {
+      amount += slotCost * ((byCustomer.get(customerId) ?? 0) / total);
+    }
   }
-  return { amount, leaseMs };
+  return { amount, connectionMs };
 }
 
 export function summarizeUsage(
@@ -252,79 +434,115 @@ export function summarizeUsage(
   const from = Date.parse(query.from);
   const to = Date.parse(query.to);
   if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) throw new Error("invalid_usage_range");
-  const grouped = new Map<string, UsageRecord[]>();
+  const byPeriod = new Map<string, UsageRecord[]>();
   for (const record of records) {
-    const completedAt = Date.parse(record.completedAt);
-    const leaseStart = record.leaseWindowStartedAt === undefined ? undefined : Date.parse(record.leaseWindowStartedAt);
-    const leaseEnd = record.leaseWindowEndsAt === undefined ? undefined : Date.parse(record.leaseWindowEndsAt);
-    const leaseOverlaps = leaseStart !== undefined && leaseEnd !== undefined && leaseStart < to && leaseEnd > from;
-    if ((completedAt < from || completedAt >= to) && !leaseOverlaps) continue;
     if (!matches(record, query)) continue;
+    const completedAt = Date.parse(record.completedAt);
+    const windowStartedAt = record.kind === "capacity" ? record.startedAt : record.connectionStartedAt;
+    const windowEndsAt = record.kind === "capacity" ? record.completedAt : record.connectionEndedAt;
+    const windowStart = windowStartedAt === undefined ? undefined : Date.parse(windowStartedAt);
+    const windowEnd = windowEndsAt === undefined ? undefined : Date.parse(windowEndsAt);
+    const windowOverlaps = windowStart !== undefined && windowEnd !== undefined && windowStart < to && windowEnd > from;
+    if ((record.kind !== "attempt" || completedAt < from || completedAt >= to) && !windowOverlaps) continue;
     const starts = new Set<string>();
     if (record.kind === "attempt" && completedAt >= from && completedAt < to) {
       starts.add(periodStart(record.completedAt, query.interval).toISOString());
     }
-    if (leaseOverlaps) {
-      let start = periodStart(new Date(Math.max(from, leaseStart)).toISOString(), query.interval);
-      while (start.getTime() < Math.min(to, leaseEnd)) {
+    if (windowOverlaps && windowStart !== undefined && windowEnd !== undefined) {
+      let start = periodStart(new Date(Math.max(from, windowStart)).toISOString(), query.interval);
+      while (start.getTime() < Math.min(to, windowEnd)) {
         starts.add(start.toISOString());
         start = nextPeriod(start, query.interval);
       }
     }
     for (const start of starts) {
-      const key = `${start}\u0000${groupValue(record, query.groupBy)}`;
-      const entries = grouped.get(key) ?? [];
+      const entries = byPeriod.get(start) ?? [];
       entries.push(record);
-      grouped.set(key, entries);
+      byPeriod.set(start, entries);
     }
   }
   const results: UsageRollup[] = [];
-  for (const [key, entries] of grouped) {
-    const [periodStartedAt, groupedValue] = key.split("\u0000") as [string, string];
+  for (const [periodStartedAt, periodEntries] of byPeriod) {
     const periodEndsAt = nextPeriod(new Date(periodStartedAt), query.interval).toISOString();
-    const completedEntries = entries.filter((record) => record.completedAt >= periodStartedAt && record.completedAt < periodEndsAt);
-    const operations = new Set(completedEntries.filter((record) => record.kind === "attempt").map((record) => record.logicalOperationId));
-    const successful = new Set(
-      completedEntries
-        .filter((record) => record.kind === "attempt" && (record.outcome === "success" || record.outcome === "http_error"))
-        .map((record) => record.logicalOperationId),
-    );
-    const estimate = estimatedCost(entries, periodStartedAt, periodEndsAt);
-    const capacity = capacityDurations(entries, periodStartedAt, periodEndsAt);
-    const providers = new Set(entries.map((record) => record.provider).filter((provider) => provider !== "unresolved"));
-    const matchingTotals = totals.filter(
-      (total) => providers.has(total.provider) && total.periodStartedAt === periodStartedAt && total.periodEndsAt === periodEndsAt,
-    );
-    const reconciled = providers.size > 0 && matchingTotals.length === providers.size;
-    const providerSpendUsd = reconciled ? matchingTotals.reduce((sum, total) => sum + total.amountUsd, 0) : 0;
-    const group = query.groupBy === undefined ? {} : { [query.groupBy]: groupedValue };
-    results.push({
-      id: `${periodStartedAt}#${query.interval}#${query.groupBy ?? "all"}#${groupedValue}`,
-      interval: query.interval,
-      periodStartedAt,
-      periodEndsAt,
-      group,
-      requestCount: operations.size,
-      successCount: successful.size,
-      retryCount: completedEntries.filter((record) => record.outcome === "retry").length,
-      failoverCount: completedEntries.filter((record) => record.failover).length,
-      bytesSent: completedEntries.reduce((sum, record) => sum + record.bytesSent, 0),
-      bytesReceived: completedEntries.reduce((sum, record) => sum + record.bytesReceived, 0),
-      deviceLeaseMs: capacity.allocatedMs,
-      provisionedDeviceMs: capacity.provisionedMs,
-      healthyIdleDeviceMs: capacity.healthyIdleMs,
-      unhealthyDeviceMs: capacity.unhealthyMs,
-      allocationUtilization: capacity.provisionedMs === 0 ? 0 : capacity.allocatedMs / capacity.provisionedMs,
-      currentAllocationUtilization: capacity.currentUtilization,
-      providerSpendUsd,
-      attributedCostUsd: reconciled ? providerSpendUsd : estimate.amount,
-      estimatedCostUsd: estimate.amount,
-      costStatus: reconciled ? "reconciled" : "estimated",
-      pricingVersions: [
-        ...new Set(entries.flatMap((record) => (record.pricingVersion === undefined ? [] : [record.pricingVersion]))),
-      ].sort(),
-      updatedAt: new Date().toISOString(),
-    });
+    const groupedValues =
+      query.groupBy === undefined
+        ? ["all"]
+        : query.groupBy === "customer"
+          ? [
+              ...new Set([
+                ...periodEntries.filter((record) => record.kind === "attempt").map((record) => record.customerId),
+                ...(periodEntries.some((record) => record.kind === "capacity") ? ["Unallocated"] : []),
+              ]),
+            ]
+          : [...new Set(periodEntries.map((record) => groupValue(record, query.groupBy)))];
+    for (const groupedValue of groupedValues) {
+      const entries =
+        query.groupBy === undefined
+          ? periodEntries
+          : query.groupBy === "customer"
+            ? periodEntries.filter(
+                (record) => record.kind === "capacity" || (record.kind === "attempt" && record.customerId === groupedValue),
+              )
+            : periodEntries.filter((record) => groupValue(record, query.groupBy) === groupedValue);
+      const completedEntries = entries.filter(
+        (record) => record.kind === "attempt" && record.completedAt >= periodStartedAt && record.completedAt < periodEndsAt,
+      );
+      const operations = new Set(completedEntries.map((record) => record.logicalOperationId));
+      const successful = new Set(
+        completedEntries
+          .filter((record) => record.outcome === "success" || record.outcome === "http_error")
+          .map((record) => record.logicalOperationId),
+      );
+      const customerId = query.groupBy === "customer" ? groupedValue : query.customerId;
+      const estimate = estimatedCost(query.groupBy === "customer" ? periodEntries : entries, periodStartedAt, periodEndsAt, customerId);
+      const capacity = capacityMetrics(entries, periodStartedAt, periodEndsAt);
+      const providers = new Set(entries.map((record) => record.provider).filter((provider) => provider !== "unresolved"));
+      const matchingTotals = totals.filter(
+        (total) => providers.has(total.provider) && total.periodStartedAt === periodStartedAt && total.periodEndsAt === periodEndsAt,
+      );
+      const reconciled =
+        (query.groupBy === undefined || query.groupBy === "customer") && providers.size > 0 && matchingTotals.length === providers.size;
+      const providerSpendUsd = reconciled
+        ? matchingTotals.reduce((sum, total) => {
+            if (query.groupBy !== "customer") return sum + total.amountUsd;
+            const providerEntries = periodEntries.filter((record) => record.provider === total.provider);
+            const providerEstimate = estimatedCost(providerEntries, periodStartedAt, periodEndsAt).amount;
+            const customerEstimate = estimatedCost(providerEntries, periodStartedAt, periodEndsAt, groupedValue).amount;
+            return (
+              sum +
+              (providerEstimate === 0
+                ? groupedValue === "Unallocated"
+                  ? total.amountUsd
+                  : 0
+                : total.amountUsd * (customerEstimate / providerEstimate))
+            );
+          }, 0)
+        : 0;
+      const group = query.groupBy === undefined ? {} : { [query.groupBy]: groupedValue };
+      results.push({
+        id: `${periodStartedAt}#${query.interval}#${query.groupBy ?? "all"}#${groupedValue}`,
+        interval: query.interval,
+        periodStartedAt,
+        periodEndsAt,
+        group,
+        requestCount: operations.size,
+        successCount: successful.size,
+        retryCount: completedEntries.filter((record) => record.outcome === "retry").length,
+        failoverCount: completedEntries.filter((record) => record.failover).length,
+        bytesSent: completedEntries.reduce((sum, record) => sum + record.bytesSent, 0),
+        bytesReceived: completedEntries.reduce((sum, record) => sum + record.bytesReceived, 0),
+        ...capacity,
+        capacityPolicyVersion: CAPACITY_POLICY.version,
+        providerSpendUsd,
+        attributedCostUsd: reconciled && query.groupBy !== "customer" ? providerSpendUsd : estimate.amount,
+        estimatedCostUsd: estimate.amount,
+        costStatus: reconciled ? "reconciled" : "estimated",
+        pricingVersions: [
+          ...new Set(entries.flatMap((record) => (record.pricingVersion === undefined ? [] : [record.pricingVersion]))),
+        ].sort(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
   }
   return results.sort((a, b) => a.periodStartedAt.localeCompare(b.periodStartedAt) || a.id.localeCompare(b.id));
 }
@@ -333,15 +551,16 @@ export class UsageAccountingWorker {
   constructor(
     private readonly store: Pick<
       RouteStore,
-      "listUsageRecords" | "saveUsageRollup" | "saveUsageReconciliation" | "listUsageReconciliations"
+      "listUsageRecords" | "saveUsageRollup" | "saveUsageReconciliation" | "listUsageReconciliations" | "saveUsageAlertEvent"
     >,
     private readonly totals: () => readonly ProviderCostTotal[] = () => [],
     private readonly thresholds: UsageVarianceThresholds = DEFAULT_VARIANCE_THRESHOLDS,
     private readonly onReconciliation: (record: UsageReconciliation) => void = () => undefined,
+    private readonly onCapacityPressure: (rollup: UsageRollup) => void = () => undefined,
   ) {}
 
   async run(from: string, to: string): Promise<number> {
-    const records = await this.store.listUsageRecords(new Date(Date.parse(from) - 15 * 60_000).toISOString(), to);
+    const records = await this.store.listUsageRecords(from, to);
     const totals = this.totals();
     const historical = await this.store.listUsageReconciliations(new Date(Date.parse(from) - 32 * 86_400_000).toISOString(), to);
     const reconciliations: UsageReconciliation[] = [];
@@ -377,28 +596,41 @@ export class UsageAccountingWorker {
         sourceVersion: total.sourceVersion,
         createdAt: new Date().toISOString(),
       };
-      if (await this.store.saveUsageReconciliation(reconciliation)) this.onReconciliation(reconciliation);
+      if (await this.store.saveUsageReconciliation(reconciliation)) {
+        if (reconciliation.severity !== "normal") {
+          const alert: UsageAlertEvent = {
+            id: `reconciliation:${reconciliation.id}`,
+            kind: "reconciliation_variance",
+            severity: reconciliation.severity,
+            provider: reconciliation.provider,
+            periodStartedAt: reconciliation.periodStartedAt,
+            periodEndsAt: reconciliation.periodEndsAt,
+            relatedRecordId: reconciliation.id,
+            varianceUsd: reconciliation.varianceUsd,
+            relativeVariance: reconciliation.relativeVariance,
+            createdAt: reconciliation.createdAt,
+          };
+          await this.store.saveUsageAlertEvent(alert);
+        }
+        this.onReconciliation(reconciliation);
+      }
       reconciliations.push(reconciliation);
     }
     const rollups = [
       ...summarizeUsage(records, { from, to, interval: "hour" }, totals),
       ...summarizeUsage(records, { from, to, interval: "day" }, totals),
-      ...summarizeUsage(records, { from, to, interval: "hour", groupBy: "customer" }),
-      ...summarizeUsage(records, { from, to, interval: "day", groupBy: "customer" }),
+      ...summarizeUsage(records, { from, to, interval: "hour", groupBy: "customer" }, totals),
+      ...summarizeUsage(records, { from, to, interval: "day", groupBy: "customer" }, totals),
     ];
     for (const interval of ["hour", "day"] as const) {
       const customerRollups = rollups.filter((rollup) => rollup.interval === interval && rollup.group.customer !== undefined);
       const periods = new Set(customerRollups.map((rollup) => `${rollup.periodStartedAt}\u0000${rollup.periodEndsAt}`));
       for (const key of periods) {
         const [periodStartedAt, periodEndsAt] = key.split("\u0000") as [string, string];
-        const periodRecords = records.filter(
-          (record) => contributesToPeriod(record, periodStartedAt, periodEndsAt) && record.provider !== "unresolved",
-        );
-        const providers = new Set(periodRecords.map((record) => record.provider));
         const periodReconciliations = reconciliations.filter(
-          (record) => record.periodStartedAt === periodStartedAt && record.periodEndsAt === periodEndsAt && providers.has(record.provider),
+          (record) => record.periodStartedAt === periodStartedAt && record.periodEndsAt === periodEndsAt,
         );
-        if (providers.size === 0 || periodReconciliations.length !== providers.size) continue;
+        if (periodReconciliations.length === 0) continue;
         const periodCustomers = customerRollups.filter((rollup) => rollup.periodStartedAt === periodStartedAt);
         for (const rollup of periodCustomers) {
           rollup.attributedCostUsd = rollup.estimatedCostUsd;
@@ -419,12 +651,24 @@ export class UsageAccountingWorker {
             failoverCount: 0,
             bytesSent: 0,
             bytesReceived: 0,
-            deviceLeaseMs: 0,
-            provisionedDeviceMs: 0,
-            healthyIdleDeviceMs: 0,
-            unhealthyDeviceMs: 0,
-            allocationUtilization: 0,
-            currentAllocationUtilization: 0,
+            activeConnectionMs: 0,
+            provisionedSlotMs: 0,
+            healthyIdleSlotMs: 0,
+            unhealthySlotMs: 0,
+            slotOccupancy: 0,
+            currentSlotOccupancy: 0,
+            provisionedSlots: 0,
+            activeConnections: 0,
+            peakConcurrentConnections: 0,
+            p95ConcurrentConnections: 0,
+            concurrencyUtilization: 0,
+            throughputUtilization: 0,
+            prioritizedGbUsed: 0,
+            prioritizedGbForecast: 0,
+            capacityDrivenFallbackCount: 0,
+            capacityFailureCount: 0,
+            capacityWaitMs: 0,
+            capacityPolicyVersion: CAPACITY_POLICY.version,
             providerSpendUsd: 0,
             attributedCostUsd: 0,
             estimatedCostUsd: 0,
@@ -437,7 +681,33 @@ export class UsageAccountingWorker {
         unallocated.attributedCostUsd += variance;
       }
     }
-    for (const rollup of rollups) await this.store.saveUsageRollup(rollup);
+    for (const rollup of rollups) {
+      await this.store.saveUsageRollup(rollup);
+      if (
+        Object.keys(rollup.group).length === 0 &&
+        (rollup.capacityFailureCount > 0 ||
+          rollup.capacityDrivenFallbackCount > 0 ||
+          rollup.concurrencyUtilization > 1 ||
+          rollup.throughputUtilization > 1)
+      ) {
+        const alert: UsageAlertEvent = {
+          id: `capacity:${rollup.id}:${rollup.capacityPolicyVersion}`,
+          kind: "capacity_pressure",
+          severity: rollup.capacityFailureCount > 0 ? "error" : "warning",
+          provider: "proxidize",
+          periodStartedAt: rollup.periodStartedAt,
+          periodEndsAt: rollup.periodEndsAt,
+          relatedRecordId: rollup.id,
+          capacityPolicyVersion: rollup.capacityPolicyVersion,
+          ...(rollup.capacityConstraint === undefined ? {} : { capacityConstraint: rollup.capacityConstraint }),
+          capacityDrivenFallbackCount: rollup.capacityDrivenFallbackCount,
+          capacityFailureCount: rollup.capacityFailureCount,
+          capacityWaitMs: rollup.capacityWaitMs,
+          createdAt: new Date().toISOString(),
+        };
+        if (await this.store.saveUsageAlertEvent(alert)) this.onCapacityPressure(rollup);
+      }
+    }
     return rollups.length;
   }
 }

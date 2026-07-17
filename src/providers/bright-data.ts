@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { connect } from "node:net";
+import { expectRecord } from "../decoding.js";
 import { ProviderUnavailableError } from "../errors.js";
 import type { ProviderAdapter, ResolveOptions } from "./provider.js";
 import type { ProviderHealth, StoredRoute, Targeting, UpstreamEndpoint } from "../types.js";
@@ -116,9 +117,10 @@ export class BrightDataAdapter implements ProviderAdapter {
     };
   }
 
-  async rotate(_route: StoredRoute, _signal?: AbortSignal): Promise<void> {
+  rotate(): Promise<void> {
     // The route service increments rotationEpoch. That changes Bright Data's
     // session parameter without requiring a separate control-plane request.
+    return Promise.resolve();
   }
 
   async health(signal?: AbortSignal): Promise<ProviderHealth> {
@@ -132,7 +134,7 @@ export class BrightDataAdapter implements ProviderAdapter {
           signal: requestSignal,
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const body = (await response.json()) as { status?: unknown };
+        const body = expectRecord(await response.json(), "Bright Data network-status response");
         return body.status === true
           ? { provider: this.descriptor.id, state: "healthy", checkedAt }
           : {

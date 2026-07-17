@@ -108,7 +108,7 @@ test("webhook delivery is signed, retried, deduplicated, and tracked", async (t)
   const requests: Array<{ body: string; headers: Record<string, string> }> = [];
   const request: typeof fetch = async (_input, init) => {
     requests.push({
-      body: String(init?.body),
+      body: typeof init?.body === "string" ? init.body : "",
       headers: init?.headers as Record<string, string>,
     });
     return new Response("", { status: requests.length === 1 ? 500 : 204 });

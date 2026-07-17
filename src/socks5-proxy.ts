@@ -16,9 +16,10 @@ import {
 import type { Logger } from "./logger.js";
 import { closeServer, listen } from "./net-utils.js";
 import { RouteService } from "./route-service.js";
+import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
-import { DEVICE_LEASE_IDLE_TIMEOUT_MS, type AuthenticatedRoute, type ListenAddress, type UpstreamEndpoint } from "./types.js";
+import type { AuthenticatedRoute, ListenAddress, UpstreamEndpoint } from "./types.js";
 import { openUpstreamTunnel } from "./upstream-tunnel.js";
 
 export interface Socks5ProxyOptions {
@@ -81,7 +82,7 @@ async function readTarget(reader: HandshakeReader, addressType: number): Promise
   if (addressType === 0x01) return [...(await reader.read(4))].join(".");
   if (addressType === 0x04) return ipv6Text(await reader.read(16));
   if (addressType === 0x03) {
-    const length = (await reader.read(1))[0]!;
+    const length = (await reader.read(1)).readUInt8(0);
     if (length === 0) throw new AppError("SOCKS5 target hostname is empty", "invalid_socks5", 400);
     return (await reader.read(length)).toString("utf8");
   }
@@ -127,12 +128,10 @@ export class Socks5ProxyServer {
     let route: AuthenticatedRoute | undefined;
     let requestAccepted = false;
     let finished = false;
-    let clientCancelled = false;
     const establishmentDeadline = operationDeadline(startedAt, this.options.operationEstablishmentTimeoutMs);
     let initialBudget: ReturnType<typeof beginAttemptBudget> | undefined;
     const callerController = new AbortController();
     clientSocket.once("close", () => {
-      clientCancelled = true;
       callerController.abort();
     });
     const finishOperation = (outcome: "success" | "failure", error?: unknown): void => {
@@ -163,8 +162,8 @@ export class Socks5ProxyServer {
     });
     try {
       const greeting = await reader.read(2);
-      if (greeting[0] !== 0x05) throw new AppError("SOCKS5 version 5 is required", "invalid_socks5", 400);
-      const methods = await reader.read(greeting[1]!);
+      if (greeting.readUInt8(0) !== 0x05) throw new AppError("SOCKS5 version 5 is required", "invalid_socks5", 400);
+      const methods = await reader.read(greeting.readUInt8(1));
       if (!methods.includes(0x02)) {
         clientSocket.end(Buffer.from([0x05, 0xff]));
         throw new AuthenticationError("SOCKS5 username/password authentication is required");
@@ -172,9 +171,9 @@ export class Socks5ProxyServer {
       clientSocket.write(Buffer.from([0x05, 0x02]));
 
       const authHeader = await reader.read(2);
-      if (authHeader[0] !== 0x01 || authHeader[1] === 0) throw new AuthenticationError();
-      const username = (await reader.read(authHeader[1]!)).toString("utf8");
-      const passwordLength = (await reader.read(1))[0]!;
+      if (authHeader.readUInt8(0) !== 0x01 || authHeader.readUInt8(1) === 0) throw new AuthenticationError();
+      const username = (await reader.read(authHeader.readUInt8(1))).toString("utf8");
+      const passwordLength = (await reader.read(1)).readUInt8(0);
       const password = (await reader.read(passwordLength)).toString("utf8");
       try {
         route = await this.routes.authenticate(username, password);
@@ -186,12 +185,12 @@ export class Socks5ProxyServer {
 
       const request = await reader.read(4);
       requestAccepted = true;
-      if (request[0] !== 0x05 || request[2] !== 0x00) {
+      if (request.readUInt8(0) !== 0x05 || request.readUInt8(2) !== 0x00) {
         throw new AppError("Invalid SOCKS5 request", "invalid_socks5", 400);
       }
-      const targetHost = await readTarget(reader, request[3]!);
+      const targetHost = await readTarget(reader, request.readUInt8(3));
       const targetPort = (await reader.read(2)).readUInt16BE(0);
-      if (request[1] !== 0x01) {
+      if (request.readUInt8(1) !== 0x01) {
         sendReply(clientSocket, 0x07);
         clientSocket.end();
         finishOperation("failure", new AppError("SOCKS5 supports TCP CONNECT only", "unsupported_socks5_command", 400));
@@ -215,7 +214,7 @@ export class Socks5ProxyServer {
       let lastError: unknown;
       for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
         const budget =
-          attemptIndex === 0 && initialBudget !== undefined
+          attemptIndex === 0
             ? initialBudget
             : beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
         const attemptId = randomUUID();
@@ -237,7 +236,11 @@ export class Socks5ProxyServer {
             logicalOperationId: operationId,
             signal: budget.signal,
           });
-          attemptSpan.setAttributes(assignmentAttributes(upstream.assignment));
+          attemptSpan.setAttributes({
+            ...assignmentAttributes(upstream.assignment),
+            ...routingScoreTelemetryAttributes(upstream),
+            ...(route.providerOverride === undefined ? {} : { "proxy.routing.provider_override": route.providerOverride }),
+          });
           this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "selected", upstream.assignment);
           if (upstream.assignment.previousCandidateId !== undefined) {
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "changed", upstream.assignment);
@@ -245,6 +248,16 @@ export class Socks5ProxyServer {
           if (upstream.assignment.expectedCity !== undefined) {
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "verification", upstream.assignment);
           }
+          this.options.logger.info("Upstream candidate selected", {
+            logicalOperationId: operationId,
+            upstreamAttemptId: attemptId,
+            routeId: route.id,
+            accessGrantId: route.accessGrantId,
+            provider: upstream.provider,
+            ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
+            ...assignmentLogContext(upstream.assignment),
+            ...routingScoreLogContext(upstream),
+          });
           const opened = await openUpstreamTunnel({ host: targetHost, port: targetPort }, upstream, {
             connectTimeoutMs: budget.remainingMs(),
             maxHandshakeBytes: this.options.maxHandshakeBytes,
@@ -274,6 +287,7 @@ export class Socks5ProxyServer {
             opened.socket.destroy();
             throw error;
           }
+          await this.routes.recordCandidateSuccess(upstream);
           if (opened.providerMetadata.opaqueIpId !== undefined) {
             upstream.assignment.opaqueIpId = opened.providerMetadata.opaqueIpId;
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "identity_observed", upstream.assignment);
@@ -286,7 +300,7 @@ export class Socks5ProxyServer {
               ...assignmentLogContext(upstream.assignment),
             });
           }
-          if (clientCancelled || clientSocket.destroyed) {
+          if (callerController.signal.aborted || clientSocket.destroyed) {
             opened.socket.destroy();
             throw new AppError("Caller disconnected during tunnel establishment", "caller_cancelled", 499);
           }
@@ -390,18 +404,41 @@ export class Socks5ProxyServer {
                 bytesReceived,
                 ...(activeRoute.targeting.country === undefined ? {} : { country: activeRoute.targeting.country }),
                 ...(activeRoute.targeting.city === undefined ? {} : { city: activeRoute.targeting.city }),
-                ...(activeUpstream.endpointId === undefined ? {} : { endpointId: activeUpstream.endpointId }),
-                ...(activeUpstream.deviceLeaseKey === undefined
+                ...(activeRoute.providerOverride === undefined ? {} : { providerOverride: activeRoute.providerOverride }),
+                endpointId: activeUpstream.endpointId,
+                ...(activeUpstream.proxySlotId === undefined
                   ? {}
                   : {
-                      deviceLeaseKey: activeUpstream.deviceLeaseKey,
-                      leaseWindowStartedAt: new Date(attemptStartedAt).toISOString(),
-                      leaseWindowEndsAt: new Date(Date.parse(completedAt) + DEVICE_LEASE_IDLE_TIMEOUT_MS).toISOString(),
+                      proxySlotId: activeUpstream.proxySlotId,
+                      ...(activeUpstream.upstreamConnectionId === undefined
+                        ? {}
+                        : { upstreamConnectionId: activeUpstream.upstreamConnectionId }),
+                      connectionStartedAt: activeUpstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
+                      connectionEndedAt: completedAt,
+                      selectedSlotLoad: activeUpstream.selectedSlotLoad,
+                      capacityPressure: activeUpstream.capacityPressure,
+                      capacityPolicyVersion: activeUpstream.capacityPolicyVersion,
                     }),
+                ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
+                ...(activeUpstream.capacityCircuitState === undefined
+                  ? {}
+                  : {
+                      capacityCircuitState: activeUpstream.capacityCircuitState,
+                      capacityCircuitReason: activeUpstream.capacityCircuitReason,
+                      capacityCircuitCooldownUntil: activeUpstream.capacityCircuitCooldownUntil,
+                    }),
+                ...(activeUpstream.routingPolicyVersion === undefined
+                  ? {}
+                  : {
+                      routingPolicyVersion: activeUpstream.routingPolicyVersion,
+                      routingScore: activeUpstream.routingScore,
+                      routingScoreComponents: activeUpstream.routingScoreComponents,
+                    }),
+                establishmentWaitMs: resolutionState.establishmentWaitMs,
                 startedAt: new Date(attemptStartedAt).toISOString(),
                 completedAt,
               })
-              .catch((usageError) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
+              .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
             finishOperation(outcome, error);
           };
           clientSocket.once("close", () => finishTunnel("success"));
@@ -410,6 +447,8 @@ export class Socks5ProxyServer {
           return;
         } catch (error) {
           budget.finish();
+          await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
+          await this.routes.releaseCandidate(upstream).catch(() => undefined);
           lastError = error;
           const failedAssignment = assignmentFromError(error);
           if (failedAssignment !== undefined) {
@@ -430,7 +469,7 @@ export class Socks5ProxyServer {
             });
           }
           if (upstream !== undefined) resolutionState.excludedEndpointIds.add(upstream.endpointId);
-          const retry = !clientCancelled && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
+          const retry = !callerController.signal.aborted && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
           const attemptedProvider = upstream?.provider ?? providerIdFromError(error);
           this.options.telemetry.finishAttempt(
             attemptSpan,
@@ -484,15 +523,35 @@ export class Socks5ProxyServer {
               bytesReceived: 0,
               ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
               ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
+              ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
               ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
+              ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
+              ...(upstream?.capacityCircuitState === undefined
+                ? {}
+                : {
+                    capacityCircuitState: upstream.capacityCircuitState,
+                    capacityCircuitReason: upstream.capacityCircuitReason,
+                    capacityCircuitCooldownUntil: upstream.capacityCircuitCooldownUntil,
+                  }),
+              ...(resolutionState.capacityPolicyVersion === undefined
+                ? {}
+                : { capacityPolicyVersion: resolutionState.capacityPolicyVersion }),
+              ...(upstream?.routingPolicyVersion === undefined
+                ? {}
+                : {
+                    routingPolicyVersion: upstream.routingPolicyVersion,
+                    routingScore: upstream.routingScore,
+                    routingScoreComponents: upstream.routingScoreComponents,
+                  }),
+              establishmentWaitMs: resolutionState.establishmentWaitMs,
               startedAt: new Date(attemptStartedAt).toISOString(),
               completedAt,
             })
-            .catch((usageError) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
+            .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
           if (!retry) break;
         }
       }
-      throw lastError ?? new ProviderUnavailableError("No provider could establish the SOCKS5 tunnel");
+      throw lastError instanceof Error ? lastError : new ProviderUnavailableError("No provider could establish the SOCKS5 tunnel");
     } catch (error) {
       initialBudget?.finish();
       finishOperation("failure", error);

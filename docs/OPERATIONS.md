@@ -90,28 +90,30 @@ pnpm dev
 
 The dashboard is at `http://127.0.0.1:8083/`. Without a dedicated health route, provider and passive health work while `Health Verification` reports that no synthetic proxy validation has run.
 
+The dashboard lists non-null profile provider overrides and every current hard-capacity circuit with its provider/candidate, normalized failure class, state, and cooldown. `/api/capacity` additionally exposes the typed routing policy, recent candidate component scores, soft pressure, and circuit state for operator diagnosis.
+
 ## Configuration contract
 
 [`.env.example`](../.env.example) is the complete environment-variable reference and must be updated whenever a new setting is introduced. The tables below group the values operators normally change.
 
 ### Core data and control plane
 
-| Variable                       | Default                                          | Notes                                                          |
-| ------------------------------ | ------------------------------------------------ | -------------------------------------------------------------- |
-| `PROVIDER_MODE`                | `mock`                                           | `mock` or `live`; developer SST stages reject `live`.          |
-| `PERSISTENCE_BACKEND`          | `sqlite`                                         | `sqlite` or `dynamodb`.                                        |
-| `SQLITE_PATH`                  | `./data/profound.db`                             | Shared local state path.                                       |
-| `ROUTE_TABLE_NAME`             | none                                             | Required for DynamoDB; supplied by SST.                        |
-| `CONTROL_API_TOKEN`            | `change-me`                                      | Placeholder accepted only for loopback mock mode.              |
-| `CONTROL_API_USER_ID`          | `local-dev`                                      | Trusted principal attached to owned grants and telemetry.      |
-| `CONTROL_API_IDENTITIES_JSON`  | none                                             | Complete token-to-principal map; replaces the single identity. |
-| `ALLOWED_TARGET_PORTS`         | `80,443`                                         | Comma-separated public TCP ports accepted by both listeners.   |
-| `CONNECT_TIMEOUT_MS`           | `10000`                                          | Per-candidate establishment limit; maximum 10 seconds.         |
-| `OPERATION_TIMEOUT_MS`         | `30000`                                          | Overall establishment limit; maximum 30 seconds.               |
-| `STREAM_IDLE_TIMEOUT_MS`       | `60000` local                                    | Post-establishment application idle safeguard.                 |
-| `MAX_HEADER_BYTES`             | `32768`                                          | HTTP header and bounded handshake limit.                       |
-| `RETRY_MAX_ATTEMPTS`           | `4`                                              | Central default, range 1–6.                                    |
-| `PROXIDIZE_EXACT_CITY_SUPPORT` | mock: `provider_guaranteed`; live: `unsupported` | Set to guaranteed only with an established vendor contract.    |
+| Variable                       | Default                                         | Notes                                                                                            |
+| ------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `PROVIDER_MODE`                | `mock`                                          | `mock` or `live`; developer SST stages reject `live`.                                            |
+| `PERSISTENCE_BACKEND`          | `sqlite`                                        | `sqlite` or `dynamodb`.                                                                          |
+| `SQLITE_PATH`                  | `./data/profound.db`                            | Shared local state path.                                                                         |
+| `ROUTE_TABLE_NAME`             | none                                            | Required for DynamoDB; supplied by SST.                                                          |
+| `CONTROL_API_TOKEN`            | `change-me`                                     | Placeholder accepted only for loopback mock mode.                                                |
+| `CONTROL_API_USER_ID`          | `local-dev`                                     | Trusted principal attached to owned grants and telemetry.                                        |
+| `CONTROL_API_IDENTITIES_JSON`  | none                                            | Complete token-to-principal map; replaces the single identity.                                   |
+| `ALLOWED_TARGET_PORTS`         | `80,443`                                        | Comma-separated public TCP ports accepted by both listeners.                                     |
+| `CONNECT_TIMEOUT_MS`           | `10000`                                         | Per-candidate establishment limit; maximum 10 seconds.                                           |
+| `OPERATION_TIMEOUT_MS`         | `30000`                                         | Overall establishment limit; maximum 30 seconds.                                                 |
+| `STREAM_IDLE_TIMEOUT_MS`       | `60000` local                                   | Post-establishment application idle safeguard.                                                   |
+| `MAX_HEADER_BYTES`             | `32768`                                         | HTTP header and bounded handshake limit.                                                         |
+| `RETRY_MAX_ATTEMPTS`           | `4`                                             | Central default, range 1–6.                                                                      |
+| `PROXIDIZE_EXACT_CITY_SUPPORT` | mock: `provider_guaranteed`; live: `verifiable` | Live inventory evidence is revalidated; use guaranteed only with an established vendor contract. |
 
 Never bind the control plane beyond loopback with `change-me`. Configuration validation rejects the placeholder in live mode or on a non-loopback control host.
 
@@ -132,7 +134,8 @@ Optional endpoint overrides are `BRIGHT_DATA_HOST`, `BRIGHT_DATA_PORT`, `BRIGHT_
 SQLite is disposable local state. DynamoDB is the deployed system of record for:
 
 - route profiles and access-grant verifier hashes;
-- grant-scoped device leases and active tunnel/deployment drain state;
+- provider-account and proxy-slot inventory snapshots, active connection loads, and deployment drain state;
+- TTL-backed provider/candidate capacity circuits, including cooldown and half-open probe ownership;
 - provider and capability-health history;
 - immutable usage records, cost rollups, and reconciliation evidence;
 - alert episodes and notification delivery state.
@@ -269,7 +272,7 @@ The domain names above are syntax placeholders and must be replaced. Production 
 
 The proxy NLB terminates TLS on port `8080` for HTTP proxy traffic. The control plane terminates HTTPS on port `443`. SOCKS5 remains unencrypted on port `1080` and is private-network only.
 
-AWS fixes the TLS-listener idle timeout at 350 seconds. The configurable SOCKS5 TCP listener defaults to 1,200 seconds, and target-group deregistration defaults to 300 seconds. Set `NLB_TCP_IDLE_TIMEOUT_SECONDS` and `NLB_DEREGISTRATION_DELAY_SECONDS` deliberately; neither changes the logical 15-minute device-lease timeout.
+AWS fixes the TLS-listener idle timeout at 350 seconds. The configurable SOCKS5 TCP listener defaults to 1,200 seconds, and target-group deregistration defaults to 300 seconds. Set `NLB_TCP_IDLE_TIMEOUT_SECONDS` and `NLB_DEREGISTRATION_DELAY_SECONDS` deliberately. Proxy-slot load exists only while an upstream connection is active and is heartbeated independently of those load-balancer timeouts.
 
 ### Personal SST development
 
@@ -286,6 +289,12 @@ pnpm sst:dev --stage alice-dev
 Application modes with a dev command run locally; SST prints their addresses. This does not deploy the production-shaped Fargate topology. Stop with Ctrl-C and remove persistent stage resources:
 
 SST's VPC tunnel reserves local port `1080`, so `sst dev` runs and advertises the local SOCKS5 listener on `127.0.0.1:1081`. The standalone `pnpm dev` command and deployed ECS service continue to use port `1080`.
+
+In another terminal, copy the printed `integrationTarget` URL and run the black-box lifecycle suite against the local services. It does not read the SST stage or AWS metadata:
+
+```sh
+E2E_TARGET_URL='COPY_THE_PRINTED_INTEGRATION_TARGET_URL' pnpm test:e2e
+```
 
 ```sh
 pnpm aws:remove --stage alice-dev
@@ -335,18 +344,19 @@ The canary accepts only short-lived signed, non-replayable challenges. In AWS, A
 
 ## Internal dashboard
 
-The dashboard root shows 30-day request count, transfer, device lease time, current and time-weighted allocation utilization, unhealthy paid capacity, attributed cost, capability state, freshness, and geography evidence.
+The dashboard root shows 30-day request count, transfer, active upstream connection time, current and time-weighted proxy-slot occupancy, provisioned and unhealthy paid slot capacity, peak and p95 concurrency, attributed cost, capacity recommendations, capability state, freshness, and geography evidence.
 
 Programmatic endpoints are internal and unauthenticated at the application layer; network access is the v0 boundary:
 
-| Endpoint                          | Purpose                                                |
-| --------------------------------- | ------------------------------------------------------ |
-| `GET /api/status`                 | Latest snapshot plus stale/age fields                  |
-| `GET /api/status/history?limit=N` | Durable capability history                             |
-| `GET /api/status/geographies`     | Latest geography evidence                              |
-| `POST /api/status/validate`       | Proxy a synthetic validation request to the aggregator |
-| `GET /api/usage`                  | Usage and cost rollups                                 |
-| `GET /api/usage/reconciliations`  | Provider total comparisons and variance evidence       |
+| Endpoint                          | Purpose                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------ |
+| `GET /api/status`                 | Latest snapshot plus stale/age fields                                    |
+| `GET /api/status/history?limit=N` | Durable capability history                                               |
+| `GET /api/status/geographies`     | Latest geography evidence                                                |
+| `POST /api/status/validate`       | Proxy a synthetic validation request to the aggregator                   |
+| `GET /api/usage`                  | Usage and cost rollups                                                   |
+| `GET /api/usage/reconciliations`  | Provider total comparisons and variance evidence                         |
+| `GET /api/capacity`               | Slot inventory, compatible capacity, policy, and operator recommendation |
 
 `/api/usage` supports:
 
@@ -364,23 +374,50 @@ curl -sS \
   'http://127.0.0.1:8083/api/usage?preset=week&interval=day&groupBy=provider'
 ```
 
+`/api/capacity` accepts optional `country`, `city`, and `carrier` filters. It returns the latest internal provider-account/slot inventory with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
+
+It also returns the typed routing policy and the latest 100 safe candidate-score diagnostics. These diagnostics contain provider, optional provider override and internal proxy-slot identity, policy version, total score, component scores, soft pressure, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and component scores are emitted on internal selection logs, traces, and the durable attempt ledger.
+
+The initial `proxy-routing-v0-2026-07-17` policy scores every eligible provider and peer, slot, or device candidate from 0–100:
+
+`100 × (0.30 reliability + 0.30 headroom + 0.20 performance + 0.15 costEfficiency + 0.05 stability)`
+
+- Reliability is a freshness-adjusted, exponentially weighted success rate over the prior 24 hours with a six-hour half-life. Target HTTP outcomes are excluded.
+- Headroom is `max(0, 1 - utilization²)`, where utilization is the maximum of active connections/soft limit, observed/planned Mbps, and projected/prioritized billing-period GiB.
+- Performance uses proxy-controlled p95 establishment wait against a 10-second reference.
+- Cost efficiency is `1 / (1 + expectedCost/referenceCost)` with a `$0.01` reference and the provider's expected bytes or connection-seconds.
+- Stability discounts stale evidence, logical identity churn, and repeated failover.
+- Signals without fresh evidence start neutral at `0.5`. Candidates within five points of the best candidate in the preference tier are selected randomly with `score²` weighting.
+
+Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options but rank behind any compatible unsaturated fallback. Revalidate and version the policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent when production evidence changes.
+
+The initial `proxidize-capacity-v0-2026-07-17` policy is centralized in code and carried on durable records and rollups:
+
+- 20% headroom;
+- 8 planned Mbps per slot, derived from the documented 10 Mbps lower bound at 80%;
+- 0.5 assumed Mbps per active connection;
+- 16 soft active connections per slot (`8 / 0.5`);
+- 50 prioritized GB per slot and billing period.
+
+The dashboard reports recommendation evidence, estimated monthly cost impact, policy version, and evaluation time. Revalidate and version these assumptions when production measurements or provider terms change.
+
 ## Usage and cost accounting
 
-The durable usage ledger, not OTLP, is authoritative. Every upstream attempt records an idempotent unsampled event containing logical operation, customer, principal/grant, route, provider, outcome, byte counts, lease context, and historical pricing version.
+The durable usage ledger, not OTLP, is authoritative. Every upstream attempt records an idempotent unsampled event containing logical operation, customer, principal/grant, route, provider, outcome, byte counts, proxy-slot and upstream-connection context, capacity pressure, routing and capacity policy versions, candidate score components, and historical pricing version.
 
 - Bright Data cost is estimated from billable bytes and the historical per-GiB price.
-- Proxidize cost is estimated from unioned exclusive device lease/capacity time, including idle lease time.
+- Proxidize provisioned-slot cost is allocated by customer connection-seconds within each interval. Concurrent customers split proportionally; a slot with no active connection is attributed to `Unallocated`.
 - Hour/day/week/month rollups retain group attribution and whether cost is `estimated` or `reconciled`.
 - Configured provider totals replace the overall authoritative spend for matching periods.
-- Unassigned device capacity and unexplained reconciliation differences are posted to the synthetic `Unallocated` customer, never silently prorated to customers.
+- Idle slot capacity and unexplained reconciliation differences are posted to the synthetic `Unallocated` customer, never silently prorated to customers. Customer attribution plus `Unallocated` normalizes to reconciled provisioned-slot cost.
 - The component provides internal billing inputs only. Invoice generation, approval, adjustments, collection, and external audit are out of scope.
 
-The accounting worker can read static `PROVIDER_COST_TOTALS_JSON` and `UNALLOCATED_DEVICE_CAPACITY_JSON`, or poll `USAGE_ACCOUNTING_SOURCE_URL`. The optional source returns:
+The accounting worker can read static `PROVIDER_COST_TOTALS_JSON` and `PROVISIONED_PROXY_SLOT_CAPACITY_JSON`, or poll `USAGE_ACCOUNTING_SOURCE_URL`. The optional source returns:
 
 ```json
 {
   "providerTotals": [],
-  "unallocatedDeviceCapacity": []
+  "provisionedProxySlotCapacity": []
 }
 ```
 
@@ -394,6 +431,8 @@ Each reconciliation persists estimated total, reported total, variance, source v
 - escalate repeated warnings to error.
 
 Configure these initial thresholds with `USAGE_VARIANCE_ABSOLUTE_FLOOR_USD`, `USAGE_VARIANCE_WARNING_RELATIVE`, and `USAGE_VARIANCE_ERROR_RELATIVE`. Revisit them using observed data.
+
+Usage accounting owns capacity-pressure and reconciliation-variance classification. It persists idempotent warning/error events before emitting aggregate logs. Operators can inspect that durable evidence through the internal `GET /api/usage/alerts` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
 
 ## Alerting
 
@@ -430,11 +469,11 @@ Never emitted:
 - control, access-grant, or provider credentials;
 - unsanitized exception text.
 
-High-cardinality route, grant, user, peer, device, session, and IP identifiers stay out of metric attributes. Public-canary access/security events share the log dataset with `log.category=security`.
+High-cardinality route, grant, user, proxy-slot, peer, device, session, and IP identifiers stay out of metric attributes. Proxy-slot identifiers are permitted only in restricted internal logs, traces, inventory diagnostics, and connection-level usage records. Public-canary access/security events share the log dataset with `log.category=security`.
 
 ## Release and connection draining
 
-GitHub Actions builds an immutable image once and promotes the same digest through environments. The proxy uses ECS native blue/green target groups. Established HTTPS and SOCKS5 tunnels write durable deployment leases so a retiring deployment can drain safely.
+GitHub Actions builds an immutable image once and promotes the same digest through environments. The proxy uses ECS native blue/green target groups. Established HTTP requests and HTTPS/SOCKS5 tunnels write durable active-connection records so a retiring deployment can drain safely and slot load remains shared across tasks.
 
 After traffic shift:
 
@@ -468,7 +507,7 @@ The ECS bake window keeps the old tasks available for six hours. Routine route/g
 1. Read the provider-neutral error and use the internal status/dashboard diagnostics for provider health and capacity.
 2. Compare the profile's geography, carrier, target-authenticated intent, and retry intent with internal capability evidence.
 3. For authenticated routes, confirm an exact-city-capable provider is available.
-4. Check device capacity and leases for Proxidize.
+4. Check compatible proxy-slot inventory, health, current connection load, and capacity pressure for Proxidize.
 5. Keep provider selection and provider diagnostics out of public requests and responses; use only the internal dashboard and telemetry to explain eligibility.
 
 ### Health is stale but not unavailable
@@ -481,7 +520,7 @@ The ECS bake window keeps the old tasks available for six hours. Routine route/g
 ### Reconciliation variance is warning/error
 
 1. Verify provider total period boundaries and source version.
-2. Confirm historical price versions and byte/lease dimensions.
+2. Confirm historical price versions, bytes, connection-seconds, and provisioned-slot intervals.
 3. Inspect `Unallocated` capacity and variance entries.
 4. Treat repeated warning escalation as actionable even below the 15% single-period threshold.
 5. Correct source/accounting data; do not silently reassign variance to customers.
@@ -512,7 +551,7 @@ pnpm aws:remove --stage staging
 
 Production resources are protected and the production table is retained. Recover durable state with DynamoDB point-in-time recovery according to the platform account's backup procedure. Provider credentials and SST secrets are external to DynamoDB and must be recoverable through the organization's secret-management process.
 
-After recovery or an ECS replacement, verify route authentication, access-grant metadata, device leases, provider/capability state, accounting rollups, and alert delivery before reopening traffic.
+After recovery or an ECS replacement, verify route authentication, access-grant metadata, provider inventory, active slot-load records, provider/capability state, accounting rollups, capacity-policy versions, and alert delivery before reopening traffic.
 
 ## Production readiness checklist
 
@@ -527,5 +566,5 @@ After recovery or an ECS replacement, verify route authentication, access-grant 
 - Alert webhook signatures and recovery delivery are tested.
 - Usage reconciliation source, thresholds, and `Unallocated` handling are reviewed.
 - DynamoDB point-in-time recovery and production protection are enabled.
-- A deployed integration suite has passed for the immutable release image.
+- The black-box E2E suite and AWS acceptance suite have passed for the immutable release image.
 - Repository protection and OIDC settings match [repository-and-release-settings.md](repository-and-release-settings.md).

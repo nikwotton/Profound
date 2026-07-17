@@ -4,8 +4,8 @@ This guide covers Profound Proxy Router v0's provider-neutral control plane and 
 
 ## Concepts
 
-- A **route profile** stores stable workload requirements. It contains no protocol choice, session or rotation policy, provider selection, caller secret, or provider secret.
-- An **access grant** is the session and affinity boundary for one independently revocable workload.
+- A **route profile** stores stable workload requirements. It contains no protocol choice, session or rotation policy, caller secret, or provider secret; the optional `providerOverride` is its sole provider constraint.
+- An **access grant** is the credential, ownership, and revocation boundary for one independently revocable workload. It does not reserve a provider, slot, device, or IP.
 - A **credential** authenticates one access grant. Its opaque username is stable for that credential; its password is shown only when issued or rotated.
 - The **data plane** accepts native proxy traffic. Clients keep the original destination URL, method, path, query, headers, body, redirects, and TLS behavior.
 
@@ -100,25 +100,26 @@ V0 supports authenticated SOCKS5 TCP `CONNECT`; it rejects unauthenticated negot
 
 The committed [OpenAPI contract](../openapi/profound-control-api.v0.6.0.json) is authoritative.
 
-| Field                   | Required    | Behavior                                                                                                              |
-| ----------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
-| `customerId`            | Yes         | Non-empty attribution value.                                                                                          |
-| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required for authenticated targets.                            |
-| `geography.regionCode`  | No          | State or region constraint.                                                                                           |
-| `geography.city`        | Conditional | Required with country when `isTargetAuthenticated` is true.                                                           |
-| `carrier`               | No          | Carrier constraint.                                                                                                   |
-| `isTargetAuthenticated` | Yes         | Declares whether the target session is authenticated; controls provider-class preference and continuity requirements. |
-| `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                             |
+| Field                   | Required    | Behavior                                                                                                                |
+| ----------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `customerId`            | Yes         | Non-empty attribution value.                                                                                            |
+| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required for authenticated targets.                              |
+| `geography.regionCode`  | No          | State or region constraint.                                                                                             |
+| `geography.city`        | Conditional | Required with country when `isTargetAuthenticated` is true.                                                             |
+| `carrier`               | No          | Carrier constraint.                                                                                                     |
+| `providerOverride`      | No          | `bright_data`, `proxidize`, or `null`; constrains routing without bypassing compatibility, safety, health, or capacity. |
+| `isTargetAuthenticated` | Yes         | Declares whether the target session is authenticated; controls provider-class preference and continuity requirements.   |
+| `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                               |
 
 Unknown fields are rejected. In particular, profiles do not accept `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
 
-Authenticated targets require exact country and city continuity. They prefer compatible device-backed providers, then compatible residential providers. Unauthenticated targets prefer compatible residential providers. Provider identifiers, overrides, pricing, and health are internal and never appear in ordinary profile, grant, credential, or error responses.
+Authenticated targets require exact country and city continuity. They exhaust compatible device-backed candidates before residential candidates. Unauthenticated targets use the reverse order. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain internal.
 
 Replace the stable requirements with `PUT /v1/profiles/{id}`. New connections use the replacement; established requests and tunnels continue under the policy with which they opened.
 
 ## Access grants and credentials
 
-Access grants are the session and affinity boundary. Different mobile grants do not share a device lease. Credential rotation does not change the grant or its affinity.
+Access grants are reusable credential scopes, not target-session or provider-assignment boundaries. Every new upstream connection independently scores compatible providers and, for Proxidize, compatible proxy slots. The router atomically claims the selected slot's active load before establishment. Multiple grants, callers, customers, and connections may share a slot. The assignment lasts only for that connection; grant or credential revocation has no durable assignment to release.
 
 | Operation                                | Endpoint                                                 |
 | ---------------------------------------- | -------------------------------------------------------- |
@@ -139,9 +140,14 @@ Profile, grant, and credential list/read responses never include passwords, veri
 
 Provider selection and provider-specific rotation are internal implementation policy. Consumers declare stable requirements, not mechanisms.
 
+`providerOverride` is the one deliberate exception: set it to `bright_data` or `proxidize` only when a workload must constrain the vendor, or leave it `null`/omit it for ordinary provider-neutral routing. An override never bypasses protocol, geography, safety, health, hard-capacity, or circuit checks. If the named provider cannot satisfy the profile, the control plane returns `provider_override_unsatisfied`; the data plane does not fall back to another provider.
+
+Within the applicable provider-preference tier, candidates receive a versioned score from reliability, nonlinear capacity headroom, proxy-controlled establishment performance, expected cost, and stability. The router randomly selects within five points of the best score, weighted by score squared, so similarly qualified traffic is distributed without ignoring material quality differences. A candidate at its soft capacity limit remains an overflow option behind compatible unsaturated candidates in the same provider class; soft pressure alone never crosses to the other provider class.
+
 - Unauthenticated operations use fresh residential candidates.
-- Authenticated operations use stable grant-level affinity and exact-city continuity.
+- Authenticated operations prefer device-backed providers, require exact-city routing, and keep a connection on its selected upstream for its lifetime. Device and IP continuity across connections is best effort.
 - Bright Data remains eligible for authenticated targets when it satisfies all constraints; Proxidize remains subject to inventory and capacity.
+- Repeated proxy-controlled pre-commit establishment/capacity failures and provider-reported hard limits open a shared capacity circuit. The initial cooldown is 60 seconds, repeated openings back off, and one half-open probe closes the circuit after success.
 - `allowConnectionRetry` only permits retries before target request or tunnel bytes are committed.
 - Target HTTP responses, provider-authentication failures, and failures after commit are not hidden by failover.
 - No request ever falls back to the router's direct Internet connection.
@@ -172,9 +178,9 @@ The Effect error discriminator `_tag` may also appear in the JSON representation
 
 ## Privacy and logging
 
-Operational telemetry may include timestamps, request and correlation IDs, profile/grant/customer identifiers, protocol, target hostname and port, target method and status for plain HTTP, provider class and provider identifier in internal telemetry only, normalized outcome, duration, byte counts, retry count, and sanitized assignment evidence.
+Operational telemetry may include timestamps, request and correlation IDs, profile/grant/customer identifiers, protocol, target hostname and port, target method and status for plain HTTP, provider class and provider identifier in internal telemetry only, normalized outcome, duration, byte counts, retry count, and sanitized assignment evidence. Internal logs and traces may carry a proxy-slot identifier for diagnosis and connection-level accounting; metrics must not use proxy-slot, device, IP, session, route, grant, or user identifiers as attributes.
 
-Logs and traces must not contain request/response bodies, full URLs or query strings, raw headers, cookies, target authorization, control bearer tokens, proxy passwords, credential verifiers, provider credentials, or raw vendor responses. Tunnel telemetry contains connection metadata only because application traffic remains encrypted. Provider, health, cost, and capacity diagnostics are restricted to internal telemetry and the internal dashboard.
+Logs and traces must not contain request/response bodies, full URLs or query strings, raw headers, cookies, target authorization, control bearer tokens, proxy passwords, credential verifiers, provider credentials, or raw vendor responses. Tunnel telemetry contains connection metadata only because application traffic remains encrypted. Provider, provider-override, health, cost, routing-score, soft-overflow, failure-class, and hard-capacity circuit diagnostics are restricted to internal telemetry and the internal dashboard.
 
 ## Consumer checklist
 
@@ -184,5 +190,5 @@ Logs and traces must not contain request/response bodies, full URLs or query str
 - Use remote/provider DNS for SOCKS5.
 - Rotate credentials during the renewal window and revoke suspected credentials immediately.
 - Handle target redirects and end-to-end retries in the application.
-- Rely on declared geography and carrier constraints, not an exact provider, device, or exit IP.
+- Prefer declared geography and carrier constraints; use `providerOverride` only for a genuine vendor constraint, never to request a device or exit IP.
 - Confirm collection is authorized and compliant.

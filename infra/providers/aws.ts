@@ -171,62 +171,6 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
       AXIOM_METRICS_DATASET: axiomDatasets.metrics,
     };
 
-    function axiomCollectorConfig() {
-      return $interpolate`receivers:
-  otlp:
-    protocols:
-      http:
-        endpoint: 0.0.0.0:4318
-processors:
-  memory_limiter:
-    check_interval: 1s
-    limit_mib: 384
-    spike_limit_mib: 128
-  batch:
-    timeout: 5s
-    send_batch_size: 512
-exporters:
-  otlp_http/axiom_metrics:
-    endpoint: \${env:AXIOM_ENDPOINT}
-    compression: gzip
-    headers:
-      authorization: "Bearer \${env:AXIOM_TOKEN}"
-      x-axiom-metrics-dataset: \${env:AXIOM_METRICS_DATASET}
-    sending_queue: { enabled: true, num_consumers: 4, queue_size: 2048 }
-    retry_on_failure: { enabled: true, initial_interval: 1s, max_interval: 30s, max_elapsed_time: 5m }
-  otlp_http/axiom_logs:
-    endpoint: \${env:AXIOM_ENDPOINT}
-    compression: gzip
-    headers:
-      authorization: "Bearer \${env:AXIOM_TOKEN}"
-      x-axiom-dataset: \${env:AXIOM_LOGS_DATASET}
-    sending_queue: { enabled: true, num_consumers: 4, queue_size: 2048 }
-    retry_on_failure: { enabled: true, initial_interval: 1s, max_interval: 30s, max_elapsed_time: 5m }
-  otlp_http/axiom_traces:
-    endpoint: \${env:AXIOM_ENDPOINT}
-    compression: gzip
-    headers:
-      authorization: "Bearer \${env:AXIOM_TOKEN}"
-      x-axiom-dataset: \${env:AXIOM_TRACES_DATASET}
-    sending_queue: { enabled: true, num_consumers: 4, queue_size: 2048 }
-    retry_on_failure: { enabled: true, initial_interval: 1s, max_interval: 30s, max_elapsed_time: 5m }
-service:
-  pipelines:
-    metrics:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [otlp_http/axiom_metrics]
-    logs:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [otlp_http/axiom_logs]
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [otlp_http/axiom_traces]
-`;
-    }
-
     function proxyCollectorConfig() {
       return $interpolate`receivers:
   otlp:
@@ -651,7 +595,7 @@ service:
             STREAM_IDLE_TIMEOUT_MS: process.env.STREAM_IDLE_TIMEOUT_MS ?? String(nlbTcpIdleTimeoutSeconds * 1_000),
             RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
             PROXIDIZE_EXACT_CITY_SUPPORT:
-              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "verifiable"),
             ...otelEnvironment(`profound-proxy-router-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: proxyAppSsm,
@@ -776,7 +720,7 @@ service:
             OPERATION_TIMEOUT_MS: process.env.OPERATION_TIMEOUT_MS ?? "30000",
             RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
             PROXIDIZE_EXACT_CITY_SUPPORT:
-              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "verifiable"),
             ...otelEnvironment(`profound-proxy-control-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev ? { CONTROL_API_TOKEN: devControlApiToken } : {}),
           },
@@ -1013,7 +957,7 @@ service:
                 }),
             CONNECT_TIMEOUT_MS: process.env.CONNECT_TIMEOUT_MS ?? "10000",
             PROXIDIZE_EXACT_CITY_SUPPORT:
-              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "verifiable"),
             ...otelEnvironment(`profound-proxy-health-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev
               ? {
@@ -1168,7 +1112,7 @@ service:
             USAGE_ACCOUNTING_PORT: "8085",
             USAGE_ACCOUNTING_INTERVAL_MS: process.env.USAGE_ACCOUNTING_INTERVAL_MS ?? "60000",
             PROVIDER_COST_TOTALS_JSON: process.env.PROVIDER_COST_TOTALS_JSON ?? "[]",
-            UNALLOCATED_DEVICE_CAPACITY_JSON: process.env.UNALLOCATED_DEVICE_CAPACITY_JSON ?? "[]",
+            PROVISIONED_PROXY_SLOT_CAPACITY_JSON: process.env.PROVISIONED_PROXY_SLOT_CAPACITY_JSON ?? "[]",
             ...(process.env.USAGE_ACCOUNTING_SOURCE_URL?.trim()
               ? { USAGE_ACCOUNTING_SOURCE_URL: process.env.USAGE_ACCOUNTING_SOURCE_URL.trim() }
               : {}),
@@ -1349,56 +1293,56 @@ service:
                 service: service.nodes.service.name,
                 taskDefinition: service.nodes.taskDefinition.arn,
                 taskRole: service.nodes.taskRole.arn,
-                executionRole: service.nodes.executionRole!.arn,
+                executionRole: required(service.nodes.executionRole, "proxy execution role").arn,
               },
               controlPlane: {
                 cluster: cluster.nodes.cluster.name,
                 service: controlPlane.nodes.service.name,
                 taskDefinition: controlPlane.nodes.taskDefinition.arn,
                 taskRole: controlPlane.nodes.taskRole.arn,
-                executionRole: controlPlane.nodes.executionRole!.arn,
+                executionRole: required(controlPlane.nodes.executionRole, "control-plane execution role").arn,
               },
               healthAggregator: {
                 cluster: cluster.nodes.cluster.name,
                 service: healthAggregator.nodes.service.name,
                 taskDefinition: healthAggregator.nodes.taskDefinition.arn,
                 taskRole: healthAggregator.nodes.taskRole.arn,
-                executionRole: healthAggregator.nodes.executionRole!.arn,
+                executionRole: required(healthAggregator.nodes.executionRole, "health-aggregator execution role").arn,
               },
               status: {
                 cluster: cluster.nodes.cluster.name,
                 service: status.nodes.service.name,
                 taskDefinition: status.nodes.taskDefinition.arn,
                 taskRole: status.nodes.taskRole.arn,
-                executionRole: status.nodes.executionRole!.arn,
+                executionRole: required(status.nodes.executionRole, "status execution role").arn,
               },
               usageAccounting: {
                 cluster: cluster.nodes.cluster.name,
                 service: usageAccounting.nodes.service.name,
                 taskDefinition: usageAccounting.nodes.taskDefinition.arn,
                 taskRole: usageAccounting.nodes.taskRole.arn,
-                executionRole: usageAccounting.nodes.executionRole!.arn,
+                executionRole: required(usageAccounting.nodes.executionRole, "usage-accounting execution role").arn,
               },
               notification: {
                 cluster: cluster.nodes.cluster.name,
                 service: notification.nodes.service.name,
                 taskDefinition: notification.nodes.taskDefinition.arn,
                 taskRole: notification.nodes.taskRole.arn,
-                executionRole: notification.nodes.executionRole!.arn,
+                executionRole: required(notification.nodes.executionRole, "notification execution role").arn,
               },
               telemetry: {
                 cluster: cluster.nodes.cluster.name,
                 service: telemetryCollector.nodes.service.name,
                 taskDefinition: telemetryCollector.nodes.taskDefinition.arn,
                 taskRole: telemetryCollector.nodes.taskRole.arn,
-                executionRole: telemetryCollector.nodes.executionRole!.arn,
+                executionRole: required(telemetryCollector.nodes.executionRole, "telemetry execution role").arn,
               },
               canaryTelemetry: {
                 cluster: canaryCluster.nodes.cluster.name,
                 service: canaryTelemetryCollector.nodes.service.name,
                 taskDefinition: canaryTelemetryCollector.nodes.taskDefinition.arn,
                 taskRole: canaryTelemetryCollector.nodes.taskRole.arn,
-                executionRole: canaryTelemetryCollector.nodes.executionRole!.arn,
+                executionRole: required(canaryTelemetryCollector.nodes.executionRole, "canary telemetry execution role").arn,
               },
             },
             canary: {
@@ -1466,6 +1410,11 @@ function cidrs(value: string | undefined): string[] {
     .filter(Boolean);
   if (result.length === 0) throw new Error("Allowed CIDR lists must not be empty");
   return result;
+}
+
+function required<T>(value: T | undefined, name: string): T {
+  if (value === undefined) throw new Error(`${name} is required`);
+  return value;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {

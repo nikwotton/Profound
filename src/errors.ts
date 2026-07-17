@@ -33,6 +33,18 @@ export class ProviderUnavailableError extends AppError {
   }
 }
 
+export class ProviderCapacityLimitError extends AppError {
+  constructor(message = "Upstream provider reported a hard capacity limit") {
+    super(message, "provider_capacity_limit", 503);
+  }
+}
+
+export class ProviderOverrideUnsatisfiedError extends AppError {
+  constructor(message = "The requested provider override cannot satisfy this profile") {
+    super(message, "provider_override_unsatisfied", 503);
+  }
+}
+
 export class UpstreamError extends AppError {
   constructor(message = "Upstream proxy request failed", statusCode = 502) {
     super(message, "upstream_error", statusCode);
@@ -80,7 +92,7 @@ export function assignmentFromError(error: unknown): AssignmentEvidence | undefi
 }
 
 export function isRetryableUpstreamFailure(error: unknown): boolean {
-  if (error instanceof ProviderUnavailableError) return true;
+  if (error instanceof ProviderUnavailableError || error instanceof ProviderCapacityLimitError) return true;
   if (!(error instanceof Error)) return false;
   const code = (error as NodeJS.ErrnoException).code;
   return (

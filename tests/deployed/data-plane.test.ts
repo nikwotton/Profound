@@ -116,7 +116,7 @@ deployedTest("deployed Bright Data routes support fresh exits and authenticated 
   assert.equal((await requestViaHttpProxy(authenticated.proxyUrls.http, target)).headers["x-mock-city"], "london");
 });
 
-deployedTest("deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city", async (t) => {
+deployedTest("deployed Proxidize connections share slot capacity and preserve the exact city", async (t) => {
   const { metadata } = await deployedEnvironment();
   assert.ok(metadata.integrationTarget);
   const target = new URL("/mobile", metadata.integrationTarget.url).toString();
@@ -127,7 +127,6 @@ deployedTest("deployed Proxidize routes retain device affinity, distribute capac
         name: `mobile-distribution-${number}-${Date.now()}`,
         targeting: { country: "US", region: "NY", city: "New York" },
         rotation: { mode: "manual" },
-        session: { mode: "sticky", id: `deployed-session-${number}`, requireGeographicContinuity: true },
         isAuthenticated: true,
         shouldRetry: false,
       }),
@@ -136,12 +135,13 @@ deployedTest("deployed Proxidize routes retain device affinity, distribute capac
   t.after(async () => Promise.all(routes.map(({ profile }) => revokeRoute(profile.id).catch(() => undefined))));
 
   const first = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
-  const firstStable = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
+  const firstNextConnection = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
   const second = await requestViaHttpProxy(routes[1]!.proxyUrls.http, target);
-  assert.equal(first.headers["x-mock-endpoint-id"], firstStable.headers["x-mock-endpoint-id"]);
-  assert.equal(first.headers["x-mock-exit-ip"], firstStable.headers["x-mock-exit-ip"]);
-  assert.notEqual(first.headers["x-mock-endpoint-id"], second.headers["x-mock-endpoint-id"]);
-  assert.equal(first.headers["x-mock-city"], "New York");
+  for (const response of [first, firstNextConnection, second]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.headers["x-mock-city"], "New York");
+    assert.ok(response.headers["x-mock-endpoint-id"]);
+  }
 });
 
 deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic", async (t) => {
