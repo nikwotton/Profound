@@ -3,5 +3,6 @@ dist/
 node_modules/
 data/
 openapi/*.json
+sst-env.d.ts
 pnpm-lock.yaml
 tools/lint/pnpm-lock.yaml
