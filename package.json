@@ -54,13 +54,13 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1086.0",
+    "@aws-sdk/client-dynamodb": "^3.1089.0",
     "@aws-sdk/client-sns": "^3.1089.0",
-    "@aws-sdk/lib-dynamodb": "^3.1086.0",
-    "@effect/opentelemetry": "^0.63.0",
-    "@effect/platform": "^0.96.2",
-    "@effect/platform-node": "^0.107.0",
-    "@maxmind/geoip2-node": "^7.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.1089.0",
+    "@effect/opentelemetry": "^0.64.0",
+    "@effect/platform": "^0.97.0",
+    "@effect/platform-node": "^0.108.0",
+    "@maxmind/geoip2-node": "^7.1.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.220.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.220.0",
@@ -68,7 +68,7 @@
     "@opentelemetry/sdk-metrics": "^2.9.0",
     "@opentelemetry/sdk-node": "^0.220.0",
     "@opentelemetry/sdk-trace-base": "^2.9.0",
-    "effect": "^3.21.4",
+    "effect": "^3.22.0",
     "tar": "^7.5.20"
   }
 }
