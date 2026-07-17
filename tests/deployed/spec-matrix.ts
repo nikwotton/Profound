@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHwR5Baa4a9S-v4yytvUyAo_Uu7sNctMrAJPkCo0D3uicQe6PPz8NRGh2GptIYkrM8aO5YG-EYt5dr7Zzg8Ussqky8OFePgIEiZk0Y4";
+  "ALtnJHzS0Fg7V5rLhZMZRHkGXwk92af1s8LcaaZWCJ2o5lMH86MzdV_Lesl3xhswzeolZ58c-LZXftFrSZYV1byv6X0bV1xfpimm5VMYbXs";
 
 export interface SpecCoverage {
   id: string;
