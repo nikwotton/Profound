@@ -71,6 +71,7 @@ test("gateway releases persist active tunnels and enforce the staged drain escal
 test("developer stages are isolated and destination simulators preserve configurable recipient behavior", () => {
   const stage = file("infra/stage-config.ts");
   const simulator = file("src/destination-simulator.ts");
+  assert.match(file("Dockerfile"), /COPY infra \.\/infra/);
   assert.match(stage, /Personal developer stages cannot use live provider credentials/);
   for (const option of ["responseStatus", "responseHeader", "responseBody", "delayMs", "connection"]) {
     assert.ok(simulator.includes(option), `Destination simulator is missing ${option}`);

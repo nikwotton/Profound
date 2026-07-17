@@ -9,6 +9,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json tsconfig.build.json ./
+COPY infra ./infra
 COPY scripts ./scripts
 COPY src ./src
 COPY tests ./tests
