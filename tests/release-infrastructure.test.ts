@@ -23,7 +23,8 @@ test("repository delivery policy encodes required CI, review, dependency, migrat
   ]) {
     assert.ok(ci.includes(command), `CI is missing ${command}`);
   }
-  assert.match(settings, /require one approval and CODEOWNER review/);
+  assert.match(settings, /at least one approval/);
+  assert.match(settings, /CODEOWNER review/);
   assert.match(settings, /merge commits only/);
   assert.match(settings, /GitHub App integration/);
   assert.match(template, /migration:destructive/);

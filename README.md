@@ -16,14 +16,14 @@ Provider credentials and endpoints never leave the service. Target traffic never
 
 ## Documentation
 
-| Audience | Guide |
-| --- | --- |
-| Application developers and proxy consumers | [Consumer guide](docs/USAGE.md) |
-| Platform operators and on-call engineers | [Operations guide](docs/OPERATIONS.md) |
-| Contributors and maintainers | [Development guide](docs/DEVELOPMENT.md) |
-| Repository administrators | [Repository and release settings](docs/repository-and-release-settings.md) |
-| Control-plane client generators | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.5.0.json) |
-| Complete environment reference | [.env.example](.env.example) |
+| Audience                                   | Guide                                                                      |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| Application developers and proxy consumers | [Consumer guide](docs/USAGE.md)                                            |
+| Platform operators and on-call engineers   | [Operations guide](docs/OPERATIONS.md)                                     |
+| Contributors and maintainers               | [Development guide](docs/DEVELOPMENT.md)                                   |
+| Repository administrators                  | [Repository and release settings](docs/repository-and-release-settings.md) |
+| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.5.0.json)           |
+| Complete environment reference             | [.env.example](.env.example)                                               |
 
 The OpenAPI contract covers management operations. Forwarding remains native HTTP proxy and SOCKS5 protocol traffic, so consumers do not wrap requests in a Profound-specific envelope.
 
@@ -52,13 +52,13 @@ Start the combined proxy and control plane in offline mock mode:
 pnpm dev
 ```
 
-| Interface | Address |
-| --- | --- |
-| HTTP/HTTPS forward proxy | `127.0.0.1:8080` |
-| SOCKS5 proxy | `127.0.0.1:1080` |
-| Control API | `http://127.0.0.1:8081` |
-| Swagger UI | `http://127.0.0.1:8081/docs` |
-| OpenAPI JSON | `http://127.0.0.1:8081/openapi.json` |
+| Interface                | Address                              |
+| ------------------------ | ------------------------------------ |
+| HTTP/HTTPS forward proxy | `127.0.0.1:8080`                     |
+| SOCKS5 proxy             | `127.0.0.1:1080`                     |
+| Control API              | `http://127.0.0.1:8081`              |
+| Swagger UI               | `http://127.0.0.1:8081/docs`         |
+| OpenAPI JSON             | `http://127.0.0.1:8081/openapi.json` |
 
 Loopback-only mock mode supplies the development control token `change-me` and trusted principal `local-dev`.
 

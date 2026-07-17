@@ -20,12 +20,12 @@ The control bearer token and the access-grant credential are different secrets:
 
 Obtain these values from the platform operator:
 
-| Value | Local default | Purpose |
-| --- | --- | --- |
-| Control API base URL | `http://127.0.0.1:8081` | Route and grant management |
-| Control bearer token | `change-me` | Local loopback mock mode only |
-| HTTP/HTTPS proxy | `http://127.0.0.1:8080` | Plain HTTP forwarding and HTTPS `CONNECT` |
-| SOCKS5 proxy | `socks5h://127.0.0.1:1080` | TCP `CONNECT` with provider-side DNS |
+| Value                | Local default              | Purpose                                   |
+| -------------------- | -------------------------- | ----------------------------------------- |
+| Control API base URL | `http://127.0.0.1:8081`    | Route and grant management                |
+| Control bearer token | `change-me`                | Local loopback mock mode only             |
+| HTTP/HTTPS proxy     | `http://127.0.0.1:8080`    | Plain HTTP forwarding and HTTPS `CONNECT` |
+| SOCKS5 proxy         | `socks5h://127.0.0.1:1080` | TCP `CONNECT` with provider-side DNS      |
 
 Deployed endpoints are internal. The forward proxy normally uses TLS from the client to Profound and therefore starts with `https://`. SOCKS5 is unencrypted and must remain on the trusted private network.
 
@@ -98,23 +98,23 @@ Use remote-DNS mode (`socks5h://` or curl's `--socks5-hostname`) so the destinat
 
 The committed [OpenAPI contract](../openapi/profound-control-api.v0.5.0.json) is authoritative for JSON shapes. The following table explains the behavioral contract.
 
-| Field | Required | V0 behavior |
-| --- | --- | --- |
-| `name` | Yes | Non-empty operator-readable name. |
-| `allowedProtocols` | No | Non-empty subset of `http`, `https`, `socks5`; defaults to all three. |
-| `targeting.country` | Yes | Two-letter ISO country code, normalized to uppercase. |
-| `targeting.region` | No | Provider-specific state or region. |
-| `targeting.city` | Conditional | Required when `isAuthenticated` is true. |
-| `targeting.postalCode` | No | Bright Data ZIP routing requires `US` and exactly five digits. |
-| `targeting.asn` | No | Positive integer; unsupported by Proxidize routes. |
-| `targeting.carrier` | No | Provider-specific carrier name. |
-| `rotation` | No | Defaults to `per_request` for unauthenticated routes and `manual` for authenticated routes. |
-| `session` | No | Defaults to `none` for per-request rotation and sticky geographic continuity otherwise. |
-| `customerId` | Yes | Non-empty attribution value. V0 does not independently authorize this free-form value. |
-| `isAuthenticated` | Yes | Caller-declared workload policy used for provider preference and exact-city requirements. It does not make either provider technically ineligible by itself. |
-| `shouldRetry` | Yes | Enables eligible pre-commit establishment retries. |
-| `retryPolicy.maxAttempts` | No | Integer from 1 to 6; deployment default is 4. |
-| `forceProvider` | No | `bright_data` or `proxidize`; prevents cross-provider fallback and is intended for controlled rollout/debugging. |
+| Field                     | Required    | V0 behavior                                                                                                                                                  |
+| ------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                    | Yes         | Non-empty operator-readable name.                                                                                                                            |
+| `allowedProtocols`        | No          | Non-empty subset of `http`, `https`, `socks5`; defaults to all three.                                                                                        |
+| `targeting.country`       | Yes         | Two-letter ISO country code, normalized to uppercase.                                                                                                        |
+| `targeting.region`        | No          | Provider-specific state or region.                                                                                                                           |
+| `targeting.city`          | Conditional | Required when `isAuthenticated` is true.                                                                                                                     |
+| `targeting.postalCode`    | No          | Bright Data ZIP routing requires `US` and exactly five digits.                                                                                               |
+| `targeting.asn`           | No          | Positive integer; unsupported by Proxidize routes.                                                                                                           |
+| `targeting.carrier`       | No          | Provider-specific carrier name.                                                                                                                              |
+| `rotation`                | No          | Defaults to `per_request` for unauthenticated routes and `manual` for authenticated routes.                                                                  |
+| `session`                 | No          | Defaults to `none` for per-request rotation and sticky geographic continuity otherwise.                                                                      |
+| `customerId`              | Yes         | Non-empty attribution value. V0 does not independently authorize this free-form value.                                                                       |
+| `isAuthenticated`         | Yes         | Caller-declared workload policy used for provider preference and exact-city requirements. It does not make either provider technically ineligible by itself. |
+| `shouldRetry`             | Yes         | Enables eligible pre-commit establishment retries.                                                                                                           |
+| `retryPolicy.maxAttempts` | No          | Integer from 1 to 6; deployment default is 4.                                                                                                                |
+| `forceProvider`           | No          | `bright_data` or `proxidize`; prevents cross-provider fallback and is intended for controlled rollout/debugging.                                             |
 
 The control principal becomes the profile's `userId` and initial grant owner. Callers cannot choose `principalId` or `userId` in a request body.
 
@@ -223,23 +223,23 @@ Exact device or IP continuity is not a failover guarantee. An authenticated atte
 
 Every proxy username is an access-grant ID, not a route ID. Every request resolves the current grant and route records, so revocation and expiry take effect without embedding policy or vendor credentials in the token.
 
-| Operation | Endpoint | Effect |
-| --- | --- | --- |
-| Create route and initial grant | `POST /v1/routes` | Returns one-time proxy URLs. |
-| List routes | `GET /v1/routes` | Returns secret-free profiles visible to the control principal. |
-| Get route | `GET /v1/routes/{id}` | Returns current route status. |
-| Create another grant | `POST /v1/routes/{id}/access-grants` | Returns a separate one-time credential for the caller. |
-| List caller's grants | `GET /v1/routes/{id}/access-grants` | Returns redacted metadata only. |
-| Rotate credential | `POST /v1/access-grants/{grantId}/credentials/rotate` | Issues a replacement; old credential overlaps for at most 72 hours. |
-| Emergency rotate | `POST /v1/access-grants/{grantId}/credentials/emergency-rotate` | Invalidates all prior credentials immediately and returns a replacement. |
-| Revoke grant | `DELETE /v1/access-grants/{grantId}` | Blocks new use; established traffic is allowed to finish. |
-| Emergency revoke grant | `POST /v1/access-grants/{grantId}/emergency-revoke` | Blocks new use and terminates only this grant's established traffic. |
-| Release device lease | `POST /v1/access-grants/{grantId}/release` | Terminates lease-bound connections and frees the device. |
-| Rotate route exit | `POST /v1/routes/{id}/rotate` | Starts provider-supported rotation and returns `202`. |
-| Revoke route | `DELETE /v1/routes/{id}` | Blocks all grants for new traffic; established traffic is allowed to finish. |
-| Emergency revoke route | `POST /v1/routes/{id}/emergency-revoke` | Blocks the route and terminates all established traffic for it. |
-| Provider capabilities | `GET /v1/providers` | Returns protocols, geography, sessions, rotation, DNS, pricing, and usage dimensions. |
-| Provider health | `GET /v1/providers/health` | Returns normalized provider health. |
+| Operation                      | Endpoint                                                        | Effect                                                                                |
+| ------------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Create route and initial grant | `POST /v1/routes`                                               | Returns one-time proxy URLs.                                                          |
+| List routes                    | `GET /v1/routes`                                                | Returns secret-free profiles available to trusted control-plane callers.              |
+| Get route                      | `GET /v1/routes/{id}`                                           | Returns current route status.                                                         |
+| Create another grant           | `POST /v1/routes/{id}/access-grants`                            | Returns a separate one-time credential for the caller.                                |
+| List caller's grants           | `GET /v1/routes/{id}/access-grants`                             | Returns redacted metadata only.                                                       |
+| Rotate credential              | `POST /v1/access-grants/{grantId}/credentials/rotate`           | Issues a replacement; old credential overlaps for at most 72 hours.                   |
+| Emergency rotate               | `POST /v1/access-grants/{grantId}/credentials/emergency-rotate` | Invalidates all prior credentials immediately and returns a replacement.              |
+| Revoke grant                   | `DELETE /v1/access-grants/{grantId}`                            | Blocks new use; established traffic is allowed to finish.                             |
+| Emergency revoke grant         | `POST /v1/access-grants/{grantId}/emergency-revoke`             | Blocks new use and terminates only this grant's established traffic.                  |
+| Release device lease           | `POST /v1/access-grants/{grantId}/release`                      | Terminates lease-bound connections and frees the device.                              |
+| Rotate route exit              | `POST /v1/routes/{id}/rotate`                                   | Starts provider-supported rotation and returns `202`.                                 |
+| Revoke route                   | `DELETE /v1/routes/{id}`                                        | Blocks all grants for new traffic; established traffic is allowed to finish.          |
+| Emergency revoke route         | `POST /v1/routes/{id}/emergency-revoke`                         | Blocks the route and terminates all established traffic for it.                       |
+| Provider capabilities          | `GET /v1/providers`                                             | Returns protocols, geography, sessions, rotation, DNS, pricing, and usage dimensions. |
+| Provider health                | `GET /v1/providers/health`                                      | Returns normalized provider health.                                                   |
 
 Credentials have a fixed 30-day lifetime and no idle extension. Metadata sets `renewalDueAt` seven days before expiry. Rotate during that window. A routine rotation keeps the access-grant ID and device lease; prior usable credentials become `overlap` and are revoked after at most 72 hours or their original expiry, whichever comes first.
 
@@ -257,16 +257,16 @@ V0 attributes use to the grant owner but cannot prevent that owner from sharing 
 
 The control API uses JSON and bearer authentication. Its live contract and Swagger UI are available at `/openapi.json` and `/docs`.
 
-| Status | Meaning |
-| --- | --- |
-| `200` | Read or completed lifecycle operation. |
-| `201` | Route or grant created; capture the returned proxy URL. |
-| `202` | Rotation accepted; poll route status. |
-| `400` | Malformed or incompatible policy. The JSON body contains a normalized code/message. |
-| `401` | Missing or invalid control bearer token. |
-| `404` | Route/grant absent, revoked, or not owned by the principal. Ownership is intentionally not disclosed. |
-| `503` | Required provider/service capability is unavailable. |
-| `500` | Internal control-plane failure with sanitized output. |
+| Status | Meaning                                                                                               |
+| ------ | ----------------------------------------------------------------------------------------------------- |
+| `200`  | Read or completed lifecycle operation.                                                                |
+| `201`  | Route or grant created; capture the returned proxy URL.                                               |
+| `202`  | Rotation accepted; poll route status.                                                                 |
+| `400`  | Malformed or incompatible policy. The JSON body contains a normalized code/message.                   |
+| `401`  | Missing or invalid control bearer token.                                                              |
+| `404`  | Route/grant absent, revoked, or not owned by the principal. Ownership is intentionally not disclosed. |
+| `503`  | Required provider/service capability is unavailable.                                                  |
+| `500`  | Internal control-plane failure with sanitized output.                                                 |
 
 Data-plane authentication failures return HTTP `407 Proxy Authentication Required` or the SOCKS5 username/password failure response. Upstream establishment failures are normalized to gateway/provider errors without provider credentials or raw vendor responses. Callers should distinguish target HTTP statuses from proxy establishment failures and should apply their own end-to-end retry budget.
 
