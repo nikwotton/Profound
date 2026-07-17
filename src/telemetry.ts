@@ -22,13 +22,13 @@ export interface PassiveAttemptContext {
 }
 
 export function isTelemetryExportConfigured(environment: NodeJS.ProcessEnv): boolean {
-  return environment.OTEL_SDK_DISABLED !== "true" &&
-    (
-      environment.OTEL_EXPORTER_OTLP_ENDPOINT !== undefined ||
+  return (
+    environment.OTEL_SDK_DISABLED !== "true" &&
+    (environment.OTEL_EXPORTER_OTLP_ENDPOINT !== undefined ||
       environment.OTEL_TRACES_EXPORTER !== undefined ||
       environment.OTEL_METRICS_EXPORTER !== undefined ||
-      environment.OTEL_LOGS_EXPORTER !== undefined
-    );
+      environment.OTEL_LOGS_EXPORTER !== undefined)
+  );
 }
 
 /** v0 retains every trace; future outcome-based sampling belongs downstream. */
@@ -50,15 +50,17 @@ export class Telemetry {
 
   constructor(options: TelemetryOptions) {
     this.exporting = isTelemetryExportConfigured(options.environment);
-    this.#sdk = new NodeSDK(this.exporting
-      ? { serviceName: options.serviceName, sampler: v0TraceSampler }
-      : {
-          serviceName: options.serviceName,
-          sampler: v0TraceSampler,
-          spanProcessors: [],
-          metricReaders: [],
-          logRecordProcessors: [],
-        });
+    this.#sdk = new NodeSDK(
+      this.exporting
+        ? { serviceName: options.serviceName, sampler: v0TraceSampler }
+        : {
+            serviceName: options.serviceName,
+            sampler: v0TraceSampler,
+            spanProcessors: [],
+            metricReaders: [],
+            logRecordProcessors: [],
+          },
+    );
     this.#sdk.start();
 
     this.#tracer = trace.getTracer(options.serviceName, options.serviceVersion);
@@ -93,10 +95,12 @@ export class Telemetry {
       unit: "{verification}",
     });
     this.effectLayer = OtelTracer.layerGlobal.pipe(
-      Layer.provide(OtelResource.layer({
-        serviceName: options.serviceName,
-        serviceVersion: options.serviceVersion,
-      })),
+      Layer.provide(
+        OtelResource.layer({
+          serviceName: options.serviceName,
+          serviceVersion: options.serviceVersion,
+        }),
+      ),
     );
   }
 
@@ -123,13 +127,7 @@ export class Telemetry {
     this.#duration.record(Date.now() - startedAt, metricAttributes);
   }
 
-  finishAttempt(
-    span: Span,
-    startedAt: number,
-    attributes: Attributes,
-    error?: unknown,
-    passive?: PassiveAttemptContext,
-  ): void {
+  finishAttempt(span: Span, startedAt: number, attributes: Attributes, error?: unknown, passive?: PassiveAttemptContext): void {
     span.setAttributes(attributes);
     if (error !== undefined) {
       const message = safeErrorMessage(error);
@@ -193,11 +191,14 @@ export class Telemetry {
       this.#candidateChanges.add(1, { provider, reason: evidence.changeReason });
     }
     if (event === "verification") {
-      const outcome = evidence.assignmentMode === "unverified"
-        ? "unverified"
-        : evidence.expectedCity === undefined || evidence.observedCity === undefined
-          ? "unknown"
-          : evidence.expectedCity.toLowerCase() === evidence.observedCity.toLowerCase() ? "match" : "mismatch";
+      const outcome =
+        evidence.assignmentMode === "unverified"
+          ? "unverified"
+          : evidence.expectedCity === undefined || evidence.observedCity === undefined
+            ? "unknown"
+            : evidence.expectedCity.toLowerCase() === evidence.observedCity.toLowerCase()
+              ? "match"
+              : "mismatch";
       this.#geographicVerification.add(1, { provider, outcome });
     }
   }

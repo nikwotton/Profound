@@ -1,0 +1,8 @@
+{
+  "provider": "bright_data",
+  "version": "v0-reviewed-2026-07-13",
+  "proxyEndpoint": "brd.superproxy.io:33335",
+  "targeting": ["country", "region", "city", "postalCode", "asn", "carrier"],
+  "rotation": ["per_request", "interval", "manual"],
+  "healthEndpoint": "GET /network_status/res"
+}

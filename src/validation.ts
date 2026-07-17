@@ -127,11 +127,7 @@ function parseSession(value: unknown, rotation: RotationPolicy): SessionPolicy {
   };
 }
 
-export function validateRouteProfile(
-  value: unknown,
-  userId: string,
-  retryDefaults: RetryPolicy,
-): RouteProfile {
+export function validateRouteProfile(value: unknown, userId: string, retryDefaults: RetryPolicy): RouteProfile {
   const raw = object(value, "route");
   if ("kind" in raw) {
     throw new ValidationError("kind is not part of the route policy; use isAuthenticated and forceProvider");

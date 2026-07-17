@@ -33,11 +33,7 @@ import type {
 } from "../src/types.js";
 import { createRoute, startTestApp } from "./helpers.js";
 
-function descriptor(
-  id: ProviderId,
-  authenticatedTraffic: boolean,
-  unauthenticatedTraffic: boolean,
-): ProviderDescriptor {
+function descriptor(id: ProviderId, authenticatedTraffic: boolean, unauthenticatedTraffic: boolean): ProviderDescriptor {
   return {
     id,
     providerClass: id === "bright_data" ? "residential" : "device_backed",
@@ -101,14 +97,17 @@ test("signed canary challenges reject tampering and expiration", () => {
 
 test("public canary validates signed challenges and returns observed egress evidence", async (t) => {
   const now = Date.parse("2026-07-15T00:00:00.000Z");
-  const server = new PublicCanaryServer({
-    host: "127.0.0.1",
-    port: 0,
-    signingSecret: "canary-secret",
-    trustedProxyCidrs: [],
-    requestsPerMinute: 10,
-    now: () => now,
-  }, silentLogger);
+  const server = new PublicCanaryServer(
+    {
+      host: "127.0.0.1",
+      port: 0,
+      signingSecret: "canary-secret",
+      trustedProxyCidrs: [],
+      requestsPerMinute: 10,
+      now: () => now,
+    },
+    silentLogger,
+  );
   const address = await server.start();
   t.after(() => server.stop());
   const testId = randomUUID();
@@ -163,34 +162,40 @@ test("public canary trusts forwarding headers only from configured load-balancer
     }),
   };
   const start = async (trustedProxyCidrs: string[]) => {
-    const server = new PublicCanaryServer({
-      host: "127.0.0.1",
-      port: 0,
-      signingSecret: "trusted-proxy-secret",
-      trustedProxyCidrs,
-      requestsPerMinute: 10,
-      now: () => now,
-    }, silentLogger, geoIp);
+    const server = new PublicCanaryServer(
+      {
+        host: "127.0.0.1",
+        port: 0,
+        signingSecret: "trusted-proxy-secret",
+        trustedProxyCidrs,
+        requestsPerMinute: 10,
+        now: () => now,
+      },
+      silentLogger,
+      geoIp,
+    );
     const address = await server.start();
     t.after(() => server.stop());
     return address;
   };
-  const challenge = (testId: string) => signCanaryChallenge("trusted-proxy-secret", {
-    testId,
-    nonce: randomUUID(),
-    expiresAt: new Date(now + 60_000).toISOString(),
-  });
-  const request = async (port: number, testId: string) => fetch(`http://127.0.0.1:${port}/v1/challenge`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-forwarded-for": "198.51.100.99, 203.0.113.10",
-    },
-    body: JSON.stringify(challenge(testId)),
-  });
+  const challenge = (testId: string) =>
+    signCanaryChallenge("trusted-proxy-secret", {
+      testId,
+      nonce: randomUUID(),
+      expiresAt: new Date(now + 60_000).toISOString(),
+    });
+  const request = async (port: number, testId: string) =>
+    fetch(`http://127.0.0.1:${port}/v1/challenge`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "198.51.100.99, 203.0.113.10",
+      },
+      body: JSON.stringify(challenge(testId)),
+    });
 
   const trusted = await start(["127.0.0.0/8"]);
-  const trustedBody = await (await request(trusted.port, randomUUID())).json() as Record<string, unknown>;
+  const trustedBody = (await (await request(trusted.port, randomUUID())).json()) as Record<string, unknown>;
   assert.equal(trustedBody.observedIp, "203.0.113.10");
   assert.deepEqual(trustedBody.geo, {
     status: "available",
@@ -207,7 +212,7 @@ test("public canary trusts forwarding headers only from configured load-balancer
   });
 
   const untrusted = await start([]);
-  const untrustedBody = await (await request(untrusted.port, randomUUID())).json() as Record<string, unknown>;
+  const untrustedBody = (await (await request(untrusted.port, randomUUID())).json()) as Record<string, unknown>;
   assert.equal(untrustedBody.observedIp, "127.0.0.1");
 });
 
@@ -230,13 +235,16 @@ test("local GeoIP resolver activates versioned MaxMind evidence and marks weak d
       } as never;
     },
   });
-  const resolver = new LocalGeoIpResolver({
-    databasePath,
-    maximumAccuracyRadiusKm: 100,
-    openDatabase,
-  }, silentLogger);
+  const resolver = new LocalGeoIpResolver(
+    {
+      databasePath,
+      maximumAccuracyRadiusKm: 100,
+      openDatabase,
+    },
+    silentLogger,
+  );
   await resolver.activate(candidatePath, "2026-07-14T00:00:00.000Z");
-  assert.equal((await readFile(databasePath, "utf8")), "test-mmdb");
+  assert.equal(await readFile(databasePath, "utf8"), "test-mmdb");
   assert.deepEqual(resolver.lookup("203.0.113.10"), {
     geo: {
       status: "available",
@@ -257,11 +265,14 @@ test("local GeoIP resolver activates versioned MaxMind evidence and marks weak d
   missing = true;
   assert.equal(resolver.lookup("203.0.113.10").geo.status, "unverifiable");
 
-  const reloaded = new LocalGeoIpResolver({
-    databasePath,
-    maximumAccuracyRadiusKm: 100,
-    openDatabase,
-  }, silentLogger);
+  const reloaded = new LocalGeoIpResolver(
+    {
+      databasePath,
+      maximumAccuracyRadiusKm: 100,
+      openDatabase,
+    },
+    silentLogger,
+  );
   assert.equal(await reloaded.load(), true);
   assert.equal(reloaded.dataset?.buildTimestamp, "2026-07-14T00:00:00.000Z");
 });
@@ -284,20 +295,30 @@ test("MaxMind updater checks with HEAD, downloads MMDB, and skips the current bu
       ? new Response(null, { status: 200, headers: { "last-modified": "Tue, 14 Jul 2026 00:00:00 GMT" } })
       : new Response(archive, { status: 200 });
   };
-  const resolver = new LocalGeoIpResolver({
-    databasePath: join(directory, "active", "GeoLite2-City.mmdb"),
-    maximumAccuracyRadiusKm: 100,
-    openDatabase: async () => ({ city: () => ({}) as never }),
-  }, silentLogger);
-  const updater = new MaxMindGeoLiteUpdater(resolver, {
-    accountId: "account",
-    licenseKey: "license",
-    intervalMs: 302_400_000,
-    fetchImplementation,
-  }, silentLogger);
+  const resolver = new LocalGeoIpResolver(
+    {
+      databasePath: join(directory, "active", "GeoLite2-City.mmdb"),
+      maximumAccuracyRadiusKm: 100,
+      openDatabase: async () => ({ city: () => ({}) as never }),
+    },
+    silentLogger,
+  );
+  const updater = new MaxMindGeoLiteUpdater(
+    resolver,
+    {
+      accountId: "account",
+      licenseKey: "license",
+      intervalMs: 302_400_000,
+      fetchImplementation,
+    },
+    silentLogger,
+  );
   assert.equal(await updater.refresh(), "activated");
   assert.equal(await updater.refresh(), "current");
-  assert.deepEqual(calls.map(({ method }) => method), ["HEAD", "GET", "HEAD"]);
+  assert.deepEqual(
+    calls.map(({ method }) => method),
+    ["HEAD", "GET", "HEAD"],
+  );
   assert.ok(calls.every(({ authorization }) => authorization === `Basic ${Buffer.from("account:license").toString("base64")}`));
   assert.equal(await readFile(resolver.options.databasePath, "utf8"), "downloaded-mmdb");
 });
@@ -305,9 +326,7 @@ test("MaxMind updater checks with HEAD, downloads MMDB, and skips the current bu
 test("public canary keeps access events on its security logger", async (t) => {
   const operationalMessages: Array<{ message: string; context?: Record<string, unknown> }> = [];
   const securityMessages: Array<{ message: string; context?: Record<string, unknown> }> = [];
-  const collectingLogger = (
-    messages: Array<{ message: string; context?: Record<string, unknown> }>,
-  ): Logger => ({
+  const collectingLogger = (messages: Array<{ message: string; context?: Record<string, unknown> }>): Logger => ({
     info: (message, context) => messages.push({ message, ...(context === undefined ? {} : { context }) }),
     warn: (message, context) => messages.push({ message, ...(context === undefined ? {} : { context }) }),
     error: (message, context) => messages.push({ message, ...(context === undefined ? {} : { context }) }),
@@ -322,7 +341,10 @@ test("public canary keeps access events on its security logger", async (t) => {
     collectingLogger(securityMessages),
   );
   t.after(() => service.stop());
-  assert.deepEqual(operationalMessages.map(({ message }) => message), ["Public canary started"]);
+  assert.deepEqual(
+    operationalMessages.map(({ message }) => message),
+    ["Public canary started"],
+  );
   assert.equal(securityMessages.length, 0);
 
   const address = operationalMessages[0]?.context?.address as { port?: unknown } | undefined;
@@ -335,8 +357,14 @@ test("public canary keeps access events on its security logger", async (t) => {
     },
   });
   assert.equal(response.status, 404);
-  assert.deepEqual(operationalMessages.map(({ message }) => message), ["Public canary started"]);
-  assert.deepEqual(securityMessages.map(({ message }) => message), ["Canary request rejected"]);
+  assert.deepEqual(
+    operationalMessages.map(({ message }) => message),
+    ["Public canary started"],
+  );
+  assert.deepEqual(
+    securityMessages.map(({ message }) => message),
+    ["Canary request rejected"],
+  );
   assert.equal(securityMessages[0]?.context?.geoStatus, "unavailable");
   assert.equal(securityMessages[0]?.context?.derivedCountry, "unknown");
   assert.equal(securityMessages[0]?.context?.path, "/not-a-canary-route");
@@ -351,11 +379,15 @@ test("public canary keeps access events on its security logger", async (t) => {
 test("synthetic validation coalesces concurrent requests and shares its cooldown", async () => {
   let now = 1_000;
   let calls = 0;
-  const validator = new CooldownSyntheticValidator(async () => {
-    calls += 1;
-    await new Promise((resolve) => setImmediate(resolve));
-    return { testId: `test-${calls}`, outcome: "success", checkedAt: new Date(now).toISOString() };
-  }, 300_000, () => now);
+  const validator = new CooldownSyntheticValidator(
+    async () => {
+      calls += 1;
+      await new Promise((resolve) => setImmediate(resolve));
+      return { testId: `test-${calls}`, outcome: "success", checkedAt: new Date(now).toISOString() };
+    },
+    300_000,
+    () => now,
+  );
   const [first, second] = await Promise.all([validator.validate({}), validator.validate({ country: "US" })]);
   assert.equal(calls, 1);
   assert.equal(first.testId, second.testId);
@@ -367,13 +399,16 @@ test("synthetic validation coalesces concurrent requests and shares its cooldown
 });
 
 test("signed synthetic probe uses the normal proxy path and a direct control on proxy failure", async (t) => {
-  const canary = new PublicCanaryServer({
-    host: "127.0.0.1",
-    port: 0,
-    signingSecret: "probe-secret",
-    trustedProxyCidrs: [],
-    requestsPerMinute: 20,
-  }, silentLogger);
+  const canary = new PublicCanaryServer(
+    {
+      host: "127.0.0.1",
+      port: 0,
+      signingSecret: "probe-secret",
+      trustedProxyCidrs: [],
+      requestsPerMinute: 20,
+    },
+    silentLogger,
+  );
   const canaryAddress = await canary.start();
   const app = await startTestApp([canaryAddress.port]);
   t.after(async () => Promise.all([canary.stop(), app.stop()]));
@@ -413,68 +448,85 @@ test("signed synthetic probe uses the normal proxy path and a direct control on 
 test("synthetic GeoIP mismatch degrades expected geography without rewriting it as observed", async () => {
   const store = new SqliteRouteStore(":memory:");
   const checkedAt = "2026-07-15T00:00:00.000Z";
-  const synthetic = new CooldownSyntheticValidator(async () => ({
-    testId: "synthetic-geo-mismatch",
-    outcome: "success",
-    checkedAt,
-    observedIp: "203.0.113.10",
-    expectedCountry: "US",
-    expectedCity: "New York",
-    country: "CA",
-    city: "Toronto",
-    geoStatus: "available",
-    geographyVerification: "mismatch",
-    geoDataset: {
-      vendor: "MaxMind",
-      edition: "GeoLite2-City",
-      buildTimestamp: checkedAt,
+  const synthetic = new CooldownSyntheticValidator(
+    async () => ({
+      testId: "synthetic-geo-mismatch",
+      outcome: "success",
+      checkedAt,
+      observedIp: "203.0.113.10",
+      expectedCountry: "US",
+      expectedCity: "New York",
+      country: "CA",
+      city: "Toronto",
+      geoStatus: "available",
+      geographyVerification: "mismatch",
+      geoDataset: {
+        vendor: "MaxMind",
+        edition: "GeoLite2-City",
+        buildTimestamp: checkedAt,
+      },
+      message: "Observed GeoIP evidence did not match the requested geography",
+    }),
+    300_000,
+    () => Date.parse(checkedAt),
+  );
+  const aggregator = new CapabilityHealthAggregator(
+    store,
+    [
+      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
+    ],
+    {
+      passiveValidationMaxAgeMs: 300_000,
+      syntheticValidator: synthetic,
+      now: () => Date.parse(checkedAt),
     },
-    message: "Observed GeoIP evidence did not match the requested geography",
-  }), 300_000, () => Date.parse(checkedAt));
-  const aggregator = new CapabilityHealthAggregator(store, [
-    new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-    new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
-  ], {
-    passiveValidationMaxAgeMs: 300_000,
-    syntheticValidator: synthetic,
-    now: () => Date.parse(checkedAt),
-  }, silentLogger);
+    silentLogger,
+  );
   const snapshot = await aggregator.refresh({
     forceSynthetic: true,
     scope: { country: "US", city: "New York" },
   });
-  assert.equal(
-    snapshot.capabilities.find(({ capability }) => capability === "health_verification")?.status,
-    "degraded",
-  );
-  assert.deepEqual(snapshot.geographies, [{
-    country: "US",
-    city: "New York",
-    status: "degraded",
-    validatedAt: checkedAt,
-    source: "synthetic",
-  }]);
+  assert.equal(snapshot.capabilities.find(({ capability }) => capability === "health_verification")?.status, "degraded");
+  assert.deepEqual(snapshot.geographies, [
+    {
+      country: "US",
+      city: "New York",
+      status: "degraded",
+      validatedAt: checkedAt,
+      source: "synthetic",
+    },
+  ]);
   await store.close();
 });
 
 test("capability aggregation keeps freshness separate and requires corroboration for unavailability", async () => {
   const store = new SqliteRouteStore(":memory:");
   const checkedAt = "2026-07-15T00:00:00.000Z";
-  const synthetic = new CooldownSyntheticValidator(async () => ({
-    testId: "synthetic-1",
-    outcome: "proxy_failure",
-    checkedAt,
-    country: "US",
-    city: "New York",
-  }), 300_000, () => Date.parse(checkedAt));
-  const aggregator = new CapabilityHealthAggregator(store, [
-    new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-    new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "unhealthy", checkedAt }),
-  ], {
-    passiveValidationMaxAgeMs: 300_000,
-    syntheticValidator: synthetic,
-    now: () => Date.parse(checkedAt),
-  }, silentLogger);
+  const synthetic = new CooldownSyntheticValidator(
+    async () => ({
+      testId: "synthetic-1",
+      outcome: "proxy_failure",
+      checkedAt,
+      country: "US",
+      city: "New York",
+    }),
+    300_000,
+    () => Date.parse(checkedAt),
+  );
+  const aggregator = new CapabilityHealthAggregator(
+    store,
+    [
+      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "unhealthy", checkedAt }),
+    ],
+    {
+      passiveValidationMaxAgeMs: 300_000,
+      syntheticValidator: synthetic,
+      now: () => Date.parse(checkedAt),
+    },
+    silentLogger,
+  );
   aggregator.recordPassiveSignal({
     provider: "bright_data",
     capability: "unauthenticated_traffic",
@@ -494,18 +546,20 @@ test("capability aggregation keeps freshness separate and requires corroboration
   assert.equal(snapshot.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt, checkedAt);
   assert.equal(snapshot.geographies[0]?.status, "degraded");
   assert.deepEqual(await store.latestCapabilityHealth(), snapshot);
-  const restarted = new CapabilityHealthAggregator(store, [
-    new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-    new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "unhealthy", checkedAt }),
-  ], {
-    passiveValidationMaxAgeMs: 300_000,
-    now: () => Date.parse(checkedAt) + 600_000,
-  }, silentLogger);
-  const afterRestart = await restarted.refresh();
-  assert.equal(
-    afterRestart.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt,
-    checkedAt,
+  const restarted = new CapabilityHealthAggregator(
+    store,
+    [
+      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "unhealthy", checkedAt }),
+    ],
+    {
+      passiveValidationMaxAgeMs: 300_000,
+      now: () => Date.parse(checkedAt) + 600_000,
+    },
+    silentLogger,
   );
+  const afterRestart = await restarted.refresh();
+  assert.equal(afterRestart.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt, checkedAt);
   assert.equal(afterRestart.capabilities.find((entry) => entry.capability === "health_verification")?.status, "operational");
   assert.equal(afterRestart.geographies.length, 1);
   await store.close();
@@ -519,21 +573,26 @@ test("capability health follows preferred provider classes without penalizing a 
   ): Promise<CapabilityHealthSnapshot> => {
     const store = new SqliteRouteStore(":memory:");
     try {
-      const aggregator = new CapabilityHealthAggregator(store, [
-        new HealthProvider("bright_data", true, true, {
-          provider: "bright_data",
-          state: brightDataState,
-          checkedAt,
-        }),
-        new HealthProvider("proxidize", true, true, {
-          provider: "proxidize",
-          state: proxidizeState,
-          checkedAt,
-        }),
-      ], {
-        passiveValidationMaxAgeMs: 300_000,
-        now: () => Date.parse(checkedAt),
-      }, silentLogger);
+      const aggregator = new CapabilityHealthAggregator(
+        store,
+        [
+          new HealthProvider("bright_data", true, true, {
+            provider: "bright_data",
+            state: brightDataState,
+            checkedAt,
+          }),
+          new HealthProvider("proxidize", true, true, {
+            provider: "proxidize",
+            state: proxidizeState,
+            checkedAt,
+          }),
+        ],
+        {
+          passiveValidationMaxAgeMs: 300_000,
+          now: () => Date.parse(checkedAt),
+        },
+        silentLogger,
+      );
       return await aggregator.refresh();
     } finally {
       await store.close();
@@ -566,15 +625,20 @@ test("notification failures cannot prevent finalized health persistence", async 
   const store = new SqliteRouteStore(":memory:");
   t.after(() => store.close());
   const checkedAt = "2026-07-15T00:00:00.000Z";
-  const aggregator = new CapabilityHealthAggregator(store, [
-    new HealthProvider("bright_data", true, true, { provider: "bright_data", state: "healthy", checkedAt }),
-  ], {
-    passiveValidationMaxAgeMs: 300_000,
-    now: () => Date.parse(checkedAt),
-    alerting: {
-      evaluate: async () => { throw new Error("notification unavailable"); },
+  const aggregator = new CapabilityHealthAggregator(
+    store,
+    [new HealthProvider("bright_data", true, true, { provider: "bright_data", state: "healthy", checkedAt })],
+    {
+      passiveValidationMaxAgeMs: 300_000,
+      now: () => Date.parse(checkedAt),
+      alerting: {
+        evaluate: async () => {
+          throw new Error("notification unavailable");
+        },
+      },
     },
-  }, silentLogger);
+    silentLogger,
+  );
   const result = await aggregator.refresh();
   assert.equal((await store.latestCapabilityHealth())?.id, result.id);
 });
@@ -582,51 +646,69 @@ test("notification failures cannot prevent finalized health persistence", async 
 test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", async (t) => {
   const checkedAt = "2026-07-15T00:00:00.000Z";
   const store = new SqliteRouteStore(":memory:");
-  const aggregator = new CapabilityHealthAggregator(store, [
-    new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-    new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
-  ], {
-    passiveValidationMaxAgeMs: 300_000,
-    now: () => Date.parse(checkedAt),
-  }, silentLogger);
-  const server = new HealthAggregatorServer(aggregator, store, {
-    host: "127.0.0.1",
-    port: 0,
-    token: "collector-token",
-    refreshIntervalMs: 60_000,
-  }, silentLogger);
+  const aggregator = new CapabilityHealthAggregator(
+    store,
+    [
+      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
+    ],
+    {
+      passiveValidationMaxAgeMs: 300_000,
+      now: () => Date.parse(checkedAt),
+    },
+    silentLogger,
+  );
+  const server = new HealthAggregatorServer(
+    aggregator,
+    store,
+    {
+      host: "127.0.0.1",
+      port: 0,
+      token: "collector-token",
+      refreshIntervalMs: 60_000,
+    },
+    silentLogger,
+  );
   const address = await server.start();
   t.after(async () => {
     await server.stop();
     await store.close();
   });
   const payload = {
-    resourceLogs: [{
-      scopeLogs: [{
-        logRecords: [{
-          timeUnixNano: "1784073600000000000",
-          body: { stringValue: "profound.proxy.passive_health" },
-          attributes: [
-            { key: "event.name", value: { stringValue: "profound.proxy.passive_health" } },
-            { key: "proxy.provider", value: { stringValue: "bright_data" } },
-            { key: "proxy.capability", value: { stringValue: "unauthenticated_traffic" } },
-            { key: "proxy.outcome", value: { stringValue: "success" } },
-            { key: "proxy.observed_at", value: { stringValue: checkedAt } },
-            { key: "proxy.country", value: { stringValue: "US" } },
-            { key: "proxy.city", value: { stringValue: "New York" } },
-          ],
-        }],
-      }],
-    }],
+    resourceLogs: [
+      {
+        scopeLogs: [
+          {
+            logRecords: [
+              {
+                timeUnixNano: "1784073600000000000",
+                body: { stringValue: "profound.proxy.passive_health" },
+                attributes: [
+                  { key: "event.name", value: { stringValue: "profound.proxy.passive_health" } },
+                  { key: "proxy.provider", value: { stringValue: "bright_data" } },
+                  { key: "proxy.capability", value: { stringValue: "unauthenticated_traffic" } },
+                  { key: "proxy.outcome", value: { stringValue: "success" } },
+                  { key: "proxy.observed_at", value: { stringValue: checkedAt } },
+                  { key: "proxy.country", value: { stringValue: "US" } },
+                  { key: "proxy.city", value: { stringValue: "New York" } },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
   };
-  assert.deepEqual(passiveSignalsFromOtlpJson(payload), [{
-    provider: "bright_data",
-    capability: "unauthenticated_traffic",
-    outcome: "success",
-    observedAt: checkedAt,
-    country: "US",
-    city: "New York",
-  }]);
+  assert.deepEqual(passiveSignalsFromOtlpJson(payload), [
+    {
+      provider: "bright_data",
+      capability: "unauthenticated_traffic",
+      outcome: "success",
+      observedAt: checkedAt,
+      country: "US",
+      city: "New York",
+    },
+  ]);
   const unauthorized = await fetch(`http://127.0.0.1:${address.port}/v1/passive-signals/otlp`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -644,10 +726,7 @@ test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", 
   assert.equal(accepted.status, 200);
   assert.deepEqual(await accepted.json(), {});
   const snapshot = await store.latestCapabilityHealth();
-  assert.equal(
-    snapshot?.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt,
-    checkedAt,
-  );
+  assert.equal(snapshot?.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt, checkedAt);
   assert.equal(snapshot?.geographies[0]?.source, "passive");
 });
 
@@ -661,13 +740,17 @@ test("status application serves durable snapshots, history, and explicit stalene
     geographies: [],
   };
   await store.saveCapabilityHealth(snapshot);
-  const server = new StatusApplicationServer(store, {
-    host: "127.0.0.1",
-    port: 0,
-    staleAfterMs: 300_000,
-    historyLimit: 10,
-    now: () => Date.parse("2026-07-15T00:10:00.000Z"),
-  }, silentLogger);
+  const server = new StatusApplicationServer(
+    store,
+    {
+      host: "127.0.0.1",
+      port: 0,
+      staleAfterMs: 300_000,
+      historyLimit: 10,
+      now: () => Date.parse("2026-07-15T00:10:00.000Z"),
+    },
+    silentLogger,
+  );
   const address = await server.start();
   t.after(async () => {
     await server.stop();
@@ -679,11 +762,13 @@ test("status application serves durable snapshots, history, and explicit stalene
     snapshot,
     stale: true,
     ageMs: 600_000,
-    capabilityFreshness: [{
-      capability: "all_traffic",
-      providerStatusStale: true,
-      endToEndValidationStale: true,
-    }],
+    capabilityFreshness: [
+      {
+        capability: "all_traffic",
+        providerStatusStale: true,
+        endToEndValidationStale: true,
+      },
+    ],
   });
   const history = await fetch(`http://127.0.0.1:${address.port}/api/status/history?limit=1`);
   assert.deepEqual(await history.json(), { data: [snapshot] });

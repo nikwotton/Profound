@@ -166,14 +166,9 @@ export class ProxidizeSimulator {
   }
 
   #authorizeProxy(username: string, password: string): MockIdentity | undefined {
-    const device = this.#devices.find(
-      (candidate) => candidate.username === username && candidate.password === password,
-    );
+    const device = this.#devices.find((candidate) => candidate.username === username && candidate.password === password);
     if (device === undefined || !device.healthy) return undefined;
-    if (
-      device.rotationIntervalSeconds !== undefined &&
-      Date.now() - device.lastRotatedAt >= device.rotationIntervalSeconds * 1_000
-    ) {
+    if (device.rotationIntervalSeconds !== undefined && Date.now() - device.lastRotatedAt >= device.rotationIntervalSeconds * 1_000) {
       this.#rotateDevice(device);
     }
     const identity: MockIdentity = {
@@ -223,9 +218,7 @@ export class ProxidizeSimulator {
     if (request.method === "POST" && url.pathname === "/api/v1/perproxy/set-rotation-interval") {
       try {
         const body = await readJson(request);
-        const device = this.#devices.find(
-          (candidate) => candidate.username === body.username && candidate.publicKey === body.public_key,
-        );
+        const device = this.#devices.find((candidate) => candidate.username === body.username && candidate.publicKey === body.public_key);
         if (device === undefined || typeof body.interval !== "number") {
           json(response, 400, { error: "invalid_request" });
           return;

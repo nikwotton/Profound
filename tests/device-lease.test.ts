@@ -103,7 +103,11 @@ test("route profiles contain no credential verifier and access grants rotate and
     assert.equal((await store.authenticateAccessGrant(second.id, "second-token"))?.principalId, "user-two");
 
     const rotated = await store.rotateAccessGrantCredential(first.id, "credential-three", "rotated-token");
-    assert.equal((await store.authenticateAccessGrant(first.id, "first-token"))?.id, first.id, "ordinary rotation overlaps old and new credentials");
+    assert.equal(
+      (await store.authenticateAccessGrant(first.id, "first-token"))?.id,
+      first.id,
+      "ordinary rotation overlaps old and new credentials",
+    );
     assert.equal((await store.authenticateAccessGrant(first.id, "rotated-token"))?.endpointId, "device-1");
     assert.equal((await store.authenticateAccessGrant(second.id, "second-token"))?.id, second.id);
     assert.equal(rotated.credentials[0]?.status, "overlap");
@@ -158,6 +162,9 @@ test("credential metadata enforces expiration and overlap revocation deadlines w
     ],
   };
   const publicGrant = toPublicAccessGrant(grant);
-  assert.deepEqual(publicGrant.credentials.map((credential) => credential.status), ["expired", "revoked"]);
+  assert.deepEqual(
+    publicGrant.credentials.map((credential) => credential.status),
+    ["expired", "revoked"],
+  );
   assert.doesNotMatch(JSON.stringify(publicGrant), /tokenSalt|tokenHash|salt-one|hash-one/);
 });

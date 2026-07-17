@@ -1,0 +1,14 @@
+{
+  "name": "@profound/lint-toolchain",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint --config eslint.config.mjs ../../src ../../tests ../../infra ../../sst.config.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}

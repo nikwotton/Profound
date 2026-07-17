@@ -10,15 +10,11 @@ type JsonRecord = Record<string, unknown>;
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
 
 function record(value: unknown): JsonRecord | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as JsonRecord
-    : undefined;
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : undefined;
 }
 
 function records(value: unknown): JsonRecord[] {
-  return Array.isArray(value)
-    ? value.map(record).filter((item): item is JsonRecord => item !== undefined)
-    : [];
+  return Array.isArray(value) ? value.map(record).filter((item): item is JsonRecord => item !== undefined) : [];
 }
 
 function strings(value: unknown): string[] {
@@ -30,9 +26,7 @@ function mediaTypes(value: unknown): Set<string> {
 }
 
 function parameterKey(parameter: JsonRecord): string | undefined {
-  return typeof parameter.name === "string" && typeof parameter.in === "string"
-    ? `${parameter.in}:${parameter.name}`
-    : undefined;
+  return typeof parameter.name === "string" && typeof parameter.in === "string" ? `${parameter.in}:${parameter.name}` : undefined;
 }
 
 function compareSchema(previousValue: unknown, currentValue: unknown, location: string, changes: string[]): void {
@@ -66,21 +60,30 @@ function compareSchema(previousValue: unknown, currentValue: unknown, location: 
   }
 
   for (const keyword of ["allOf", "anyOf", "oneOf"] as const) {
-    const previousOptions = Array.isArray(previous[keyword]) ? previous[keyword] as unknown[] : [];
-    const currentOptions = Array.isArray(current[keyword]) ? current[keyword] as unknown[] : [];
+    const previousOptions = Array.isArray(previous[keyword]) ? (previous[keyword] as unknown[]) : [];
+    const currentOptions = Array.isArray(current[keyword]) ? (current[keyword] as unknown[]) : [];
     if (currentOptions.length < previousOptions.length) {
       changes.push(`${location} removed a ${keyword} schema option`);
     }
   }
 }
 
-function compareParameters(previousPath: JsonRecord, previousOperation: JsonRecord, currentPath: JsonRecord, currentOperation: JsonRecord, location: string, changes: string[]): void {
+function compareParameters(
+  previousPath: JsonRecord,
+  previousOperation: JsonRecord,
+  currentPath: JsonRecord,
+  currentOperation: JsonRecord,
+  location: string,
+  changes: string[],
+): void {
   const previousParameters = [...records(previousPath.parameters), ...records(previousOperation.parameters)];
   const currentParameters = [...records(currentPath.parameters), ...records(currentOperation.parameters)];
-  const currentByKey = new Map(currentParameters.flatMap((parameter) => {
-    const key = parameterKey(parameter);
-    return key === undefined ? [] : [[key, parameter] as const];
-  }));
+  const currentByKey = new Map(
+    currentParameters.flatMap((parameter) => {
+      const key = parameterKey(parameter);
+      return key === undefined ? [] : [[key, parameter] as const];
+    }),
+  );
   const previousKeys = new Set<string>();
 
   for (const parameter of previousParameters) {
@@ -127,7 +130,12 @@ function compareRequestBody(previousOperation: JsonRecord, currentOperation: Jso
       changes.push(`${location} removed request media type ${mediaType}`);
       continue;
     }
-    compareSchema(record(previousContent[mediaType])?.schema, record(currentContent[mediaType])?.schema, `${location} request ${mediaType}`, changes);
+    compareSchema(
+      record(previousContent[mediaType])?.schema,
+      record(currentContent[mediaType])?.schema,
+      `${location} request ${mediaType}`,
+      changes,
+    );
   }
 }
 
@@ -180,7 +188,11 @@ export function findBreakingOpenApiChanges(previous: OpenApiDocument, current: O
       }
       const previousSecurity = Array.isArray(previousOperation.security) ? previousOperation.security : undefined;
       const currentSecurity = Array.isArray(currentOperation.security) ? currentOperation.security : undefined;
-      if ((previousSecurity === undefined || previousSecurity.length === 0) && currentSecurity !== undefined && currentSecurity.length > 0) {
+      if (
+        (previousSecurity === undefined || previousSecurity.length === 0) &&
+        currentSecurity !== undefined &&
+        currentSecurity.length > 0
+      ) {
         changes.push(`${location} now requires authorization`);
       }
       compareParameters(previousPath, previousOperation, currentPath, currentOperation, location, changes);

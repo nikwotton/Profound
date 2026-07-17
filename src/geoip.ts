@@ -43,8 +43,12 @@ function metadataPath(databasePath: string): string {
 function validMetadata(value: unknown): value is DatasetSidecar {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Partial<DatasetSidecar>;
-  return candidate.vendor === VENDOR && candidate.edition === EDITION &&
-    typeof candidate.buildTimestamp === "string" && Number.isFinite(Date.parse(candidate.buildTimestamp));
+  return (
+    candidate.vendor === VENDOR &&
+    candidate.edition === EDITION &&
+    typeof candidate.buildTimestamp === "string" &&
+    Number.isFinite(Date.parse(candidate.buildTimestamp))
+  );
 }
 
 export class LocalGeoIpResolver implements GeoIpResolver {
@@ -66,10 +70,7 @@ export class LocalGeoIpResolver implements GeoIpResolver {
   async load(): Promise<boolean> {
     if (!existsSync(this.options.databasePath)) return false;
     try {
-      const [reader, fileStatus] = await Promise.all([
-        this.#openDatabase(this.options.databasePath),
-        stat(this.options.databasePath),
-      ]);
+      const [reader, fileStatus] = await Promise.all([this.#openDatabase(this.options.databasePath), stat(this.options.databasePath)]);
       let metadata: GeoIpDatasetMetadata = {
         vendor: VENDOR,
         edition: EDITION,
@@ -102,7 +103,10 @@ export class LocalGeoIpResolver implements GeoIpResolver {
       const city = record.city?.names.en;
       const geonameId = record.city?.geonameId;
       const accuracyRadiusKm = record.location?.accuracyRadius;
-      const lowConfidence = countryCode === undefined || city === undefined || accuracyRadiusKm === undefined ||
+      const lowConfidence =
+        countryCode === undefined ||
+        city === undefined ||
+        accuracyRadiusKm === undefined ||
         accuracyRadiusKm > this.options.maximumAccuracyRadiusKm;
       return {
         geo: {
@@ -193,11 +197,13 @@ export class MaxMindGeoLiteUpdater {
     });
     if (!head.ok) throw new Error(`MaxMind update check returned HTTP ${head.status}`);
     const lastModified = head.headers.get("last-modified");
-    const remoteBuild = lastModified === null || !Number.isFinite(Date.parse(lastModified))
-      ? undefined
-      : new Date(lastModified).toISOString();
-    if (remoteBuild !== undefined && this.resolver.dataset !== undefined &&
-      Date.parse(remoteBuild) <= Date.parse(this.resolver.dataset.buildTimestamp)) {
+    const remoteBuild =
+      lastModified === null || !Number.isFinite(Date.parse(lastModified)) ? undefined : new Date(lastModified).toISOString();
+    if (
+      remoteBuild !== undefined &&
+      this.resolver.dataset !== undefined &&
+      Date.parse(remoteBuild) <= Date.parse(this.resolver.dataset.buildTimestamp)
+    ) {
       return "current";
     }
 
@@ -216,7 +222,9 @@ export class MaxMindGeoLiteUpdater {
         cwd: directory,
         strict: true,
         preservePaths: false,
-        filter: (path, entry) => !path.startsWith("/") && !path.split("/").includes("..") &&
+        filter: (path, entry) =>
+          !path.startsWith("/") &&
+          !path.split("/").includes("..") &&
           basename(path) === "GeoLite2-City.mmdb" &&
           ("type" in entry ? entry.type === "File" : entry.isFile()),
       });

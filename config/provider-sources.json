@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "providers": [
+    {
+      "id": "bright_data",
+      "contract": "config/providers/bright-data-v0.json",
+      "reviewedAt": "2026-07-13T00:00:00.000Z",
+      "sources": [
+        "https://docs.brightdata.com/proxy-networks/residential/configure-your-proxy",
+        "https://docs.brightdata.com/api-reference/account-management-api/Get_current_service_status"
+      ]
+    },
+    {
+      "id": "proxidize",
+      "contract": "config/providers/proxidize-v0.json",
+      "reviewedAt": "2026-07-13T00:00:00.000Z",
+      "sources": ["https://help.proxidize.com/en/host-settings-proxy-tab", "https://docs.proxidize.com"]
+    }
+  ]
+}

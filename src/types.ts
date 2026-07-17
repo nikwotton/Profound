@@ -20,18 +20,14 @@ export interface Targeting {
   carrier?: string;
 }
 
-export type RotationPolicy =
-  | { mode: "per_request" }
-  | { mode: "interval"; intervalSeconds: number }
-  | { mode: "manual" };
+export type RotationPolicy = { mode: "per_request" } | { mode: "interval"; intervalSeconds: number } | { mode: "manual" };
 
 export interface RetryPolicy {
   maxAttempts: number;
 }
 
 export type SessionPolicy =
-  | { mode: "none"; requireGeographicContinuity: false }
-  | { mode: "sticky"; id?: string; requireGeographicContinuity: boolean };
+  { mode: "none"; requireGeographicContinuity: false } | { mode: "sticky"; id?: string; requireGeographicContinuity: boolean };
 
 export interface RouteProfileInput {
   name: string;
@@ -202,6 +198,28 @@ export interface DeviceLease {
   updatedAt: string;
 }
 
+export interface ActiveTunnel {
+  id: string;
+  deploymentId: string;
+  routeId: string;
+  accessGrantId: string;
+  protocol: "https" | "socks5";
+  provider: ProviderId;
+  endpointId?: string;
+  startedAt: string;
+  lastHeartbeatAt: string;
+  expiresAt: string;
+}
+
+export interface DeploymentDrainState {
+  deploymentId: string;
+  startedAt: string;
+  terminateRemaining: boolean;
+  lastNotificationAt?: string;
+  extensionUntil?: string;
+  updatedAt: string;
+}
+
 export interface ProviderCapabilities {
   clientProtocols: ReadonlySet<DataPlaneProtocol>;
   upstreamProtocols: ReadonlySet<UpstreamProxyProtocol>;
@@ -240,6 +258,82 @@ export interface ProviderDescriptor {
   costRank: number;
 }
 
+export type UsageProvider = ProviderId | "unresolved";
+export type UsageOutcome = "success" | "http_error" | "retry" | "failure";
+export type UsageCostStatus = "estimated" | "reconciled";
+export type UsageInterval = "hour" | "day" | "week" | "month";
+export type UsageGroupBy = "provider" | "customer" | "user" | "route" | "country" | "city" | "outcome";
+
+export interface UsageRecord {
+  kind: "attempt" | "capacity";
+  id: string;
+  logicalOperationId: string;
+  accessGrantId: string;
+  routeId: string;
+  userId: string;
+  customerId: string;
+  provider: UsageProvider;
+  protocol: DataPlaneProtocol;
+  outcome: UsageOutcome;
+  retryIndex: number;
+  failover: boolean;
+  bytesSent: number;
+  bytesReceived: number;
+  country: string;
+  city?: string;
+  endpointId?: string;
+  deviceLeaseKey?: string;
+  leaseWindowStartedAt?: string;
+  leaseWindowEndsAt?: string;
+  pricingVersion?: string;
+  pricingModel?: "per_gib" | "per_device_month";
+  priceUsd?: number;
+  capacityState?: "healthy_idle" | "unhealthy";
+  startedAt: string;
+  completedAt: string;
+}
+
+export interface UsageRollup {
+  id: string;
+  interval: UsageInterval;
+  periodStartedAt: string;
+  periodEndsAt: string;
+  group: Partial<Record<UsageGroupBy, string>>;
+  requestCount: number;
+  successCount: number;
+  retryCount: number;
+  failoverCount: number;
+  bytesSent: number;
+  bytesReceived: number;
+  deviceLeaseMs: number;
+  provisionedDeviceMs: number;
+  healthyIdleDeviceMs: number;
+  unhealthyDeviceMs: number;
+  allocationUtilization: number;
+  currentAllocationUtilization: number;
+  providerSpendUsd: number;
+  attributedCostUsd: number;
+  estimatedCostUsd: number;
+  costStatus: UsageCostStatus;
+  pricingVersions: string[];
+  updatedAt: string;
+}
+
+export interface UsageReconciliation {
+  id: string;
+  provider: ProviderId;
+  periodStartedAt: string;
+  periodEndsAt: string;
+  estimatedTotalUsd: number;
+  reportedTotalUsd: number;
+  varianceUsd: number;
+  relativeVariance: number;
+  varianceAttribution: "Unallocated";
+  severity: "normal" | "warning" | "error";
+  sourceVersion: string;
+  createdAt: string;
+}
+
 export type HealthState = "healthy" | "degraded" | "unhealthy";
 
 export interface ProviderHealth {
@@ -249,11 +343,7 @@ export interface ProviderHealth {
   message?: string;
 }
 
-export type CapabilityName =
-  | "all_traffic"
-  | "authenticated_traffic"
-  | "unauthenticated_traffic"
-  | "health_verification";
+export type CapabilityName = "all_traffic" | "authenticated_traffic" | "unauthenticated_traffic" | "health_verification";
 
 export type CapabilityStatus = "operational" | "degraded" | "unavailable";
 

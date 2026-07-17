@@ -7,21 +7,27 @@ export function assignmentAttributes(evidence: AssignmentEvidence): Attributes {
     "proxy.assignment.mode": evidence.assignmentMode,
     "proxy.assignment.change_reason": evidence.changeReason,
     "proxy.assignment.provider_reassignment_disabled": evidence.providerManagedReassignmentDisabled,
-    ...(evidence.previousCandidateId === undefined ? {} : {
-      "proxy.candidate.previous_id": evidence.previousCandidateId,
-    }),
-    ...(evidence.providerSessionId === undefined ? {} : {
-      "proxy.provider.session_id": evidence.providerSessionId,
-    }),
+    ...(evidence.previousCandidateId === undefined
+      ? {}
+      : {
+          "proxy.candidate.previous_id": evidence.previousCandidateId,
+        }),
+    ...(evidence.providerSessionId === undefined
+      ? {}
+      : {
+          "proxy.provider.session_id": evidence.providerSessionId,
+        }),
     ...(evidence.peerId === undefined ? {} : { "proxy.provider.peer_id": evidence.peerId }),
     ...(evidence.deviceId === undefined ? {} : { "proxy.provider.device_id": evidence.deviceId }),
     ...(evidence.egressIp === undefined ? {} : { "proxy.egress.ip": evidence.egressIp }),
     ...(evidence.opaqueIpId === undefined ? {} : { "proxy.egress.opaque_ip_id": evidence.opaqueIpId }),
     ...(evidence.expectedCity === undefined ? {} : { "proxy.city.expected": evidence.expectedCity }),
     ...(evidence.observedCity === undefined ? {} : { "proxy.city.observed": evidence.observedCity }),
-    ...(evidence.verificationSource === undefined ? {} : {
-      "proxy.city.verification_source": evidence.verificationSource,
-    }),
+    ...(evidence.verificationSource === undefined
+      ? {}
+      : {
+          "proxy.city.verification_source": evidence.verificationSource,
+        }),
   };
 }
 

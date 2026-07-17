@@ -12,10 +12,12 @@ import { abortReason } from "./establishment-budget.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAdapter } from "./providers/provider.js";
 import { ProxidizeAdapter } from "./providers/proxidize.js";
+import { DEPLOYMENT_POLL_INTERVAL_MS } from "./release-policy.js";
 import { toPublicAccessGrant, toPublicRoute, type RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import type {
   AuthenticatedRoute,
+  ActiveTunnel,
   DataPlaneProtocol,
   ListenAddress,
   ProviderDescriptor,
@@ -30,6 +32,7 @@ import type {
   RouteProfile,
   StoredRoute,
   UpstreamEndpoint,
+  UsageRecord,
 } from "./types.js";
 import { validateRouteProfile } from "./validation.js";
 
@@ -63,7 +66,7 @@ export interface ResolutionState {
 
 const MAX_PROVIDERS_PER_OPERATION = 3;
 const MAX_PEERS_PER_PROVIDER = 2;
-const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = 3;
+const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = 2;
 
 export interface ResolutionContext {
   logicalOperationId: string;
@@ -71,15 +74,13 @@ export interface ResolutionContext {
 }
 
 function canonicalCity(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
 
-function compatible(
-  provider: ProviderAdapter,
-  route: RouteProfile,
-  protocol?: DataPlaneProtocol,
-  target?: ProxyTarget,
-): boolean {
+function compatible(provider: ProviderAdapter, route: RouteProfile, protocol?: DataPlaneProtocol, target?: ProxyTarget): boolean {
   const capabilities = provider.descriptor.capabilities;
   if (protocol !== undefined && !capabilities.clientProtocols.has(protocol)) return false;
   if (protocol === undefined && !route.allowedProtocols.some((candidate) => capabilities.clientProtocols.has(candidate))) {
@@ -93,8 +94,8 @@ function compatible(
     return false;
   }
   if (capabilities.countries !== undefined && !capabilities.countries.has(route.targeting.country)) return false;
-  return Object.entries(route.targeting).every(([key, value]) =>
-    value === undefined || capabilities.geography.has(key as keyof RouteProfile["targeting"]),
+  return Object.entries(route.targeting).every(
+    ([key, value]) => value === undefined || capabilities.geography.has(key as keyof RouteProfile["targeting"]),
   );
 }
 
@@ -109,8 +110,8 @@ function compareProviders(
   currentProvider?: ProviderId,
 ): number {
   const preferredClass = preferredProviderClass(route);
-  const classDifference = Number(left.descriptor.providerClass !== preferredClass) -
-    Number(right.descriptor.providerClass !== preferredClass);
+  const classDifference =
+    Number(left.descriptor.providerClass !== preferredClass) - Number(right.descriptor.providerClass !== preferredClass);
   if (classDifference !== 0) return classDifference;
   if (left.descriptor.id === currentProvider) return -1;
   if (right.descriptor.id === currentProvider) return 1;
@@ -134,6 +135,7 @@ export class RouteService {
     private readonly telemetry: Telemetry,
     private readonly retryDefaults: RetryPolicy,
     private readonly deviceLeaseIdleTimeoutMs: number,
+    private readonly deploymentId: string,
     private readonly now: () => number = Date.now,
   ) {
     this.#providers = new Map([
@@ -143,9 +145,10 @@ export class RouteService {
   }
 
   #leaseKey(route: Pick<AuthenticatedRoute, "accessGrantId" | "session">): string {
-    const identity = route.session.mode === "sticky" && route.session.id !== undefined
-      ? `grant\0${route.accessGrantId}\0session\0${route.session.id}`
-      : `grant\0${route.accessGrantId}`;
+    const identity =
+      route.session.mode === "sticky" && route.session.id !== undefined
+        ? `grant\0${route.accessGrantId}\0session\0${route.session.id}`
+        : `grant\0${route.accessGrantId}`;
     return createHash("sha256").update(identity).digest("hex");
   }
 
@@ -259,20 +262,11 @@ export class RouteService {
     return (await this.store.listAccessGrants(routeId, principalId)).map(toPublicAccessGrant);
   }
 
-  async rotateAccessGrantCredential(
-    id: string,
-    principalId: string,
-    suspectedCompromise = false,
-  ): Promise<IssuedAccessGrant> {
+  async rotateAccessGrantCredential(id: string, principalId: string, suspectedCompromise = false): Promise<IssuedAccessGrant> {
     const existing = await this.#ownedAccessGrant(id, principalId);
     const credentialId = randomUUID();
     const token = randomBytes(32).toString("base64url");
-    const rotated = await this.store.rotateAccessGrantCredential(
-      existing.id,
-      credentialId,
-      token,
-      suspectedCompromise,
-    );
+    const rotated = await this.store.rotateAccessGrantCredential(existing.id, credentialId, token, suspectedCompromise);
     const accessGrant = toPublicAccessGrant(rotated);
     this.logger.info("Access grant credential rotated", {
       routeId: existing.routeId,
@@ -338,7 +332,31 @@ export class RouteService {
     for (const terminate of [...(callbacks ?? [])]) terminate();
   }
 
-  trackActiveConnection(routeId: string, accessGrantId: string, upstream: UpstreamEndpoint, terminate: () => void): () => void {
+  async trackActiveConnection(
+    routeId: string,
+    accessGrantId: string,
+    protocol: DataPlaneProtocol,
+    upstream: UpstreamEndpoint,
+    terminate: () => void,
+  ): Promise<() => void> {
+    const tunnelProtocol = protocol === "http" ? undefined : protocol;
+    const activeTunnelId = tunnelProtocol === undefined ? undefined : randomUUID();
+    if (activeTunnelId !== undefined) {
+      const now = new Date(this.now()).toISOString();
+      const tunnel: ActiveTunnel = {
+        id: activeTunnelId,
+        deploymentId: this.deploymentId,
+        routeId,
+        accessGrantId,
+        protocol: tunnelProtocol!,
+        provider: upstream.provider,
+        ...(upstream.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
+        startedAt: now,
+        lastHeartbeatAt: now,
+        expiresAt: new Date(this.now() + 120_000).toISOString(),
+      };
+      await this.store.registerActiveTunnel(tunnel);
+    }
     const routeCallbacks = this.#activeByRoute.get(routeId) ?? new Set<() => void>();
     routeCallbacks.add(terminate);
     this.#activeByRoute.set(routeId, routeCallbacks);
@@ -353,6 +371,8 @@ export class RouteService {
     }
     let finished = false;
     let nextHeartbeatAt = 0;
+    let nextTunnelHeartbeatAt = 0;
+    let nextDeploymentCheckAt = 0;
     const heartbeatIntervalMs = Math.min(30_000, Math.max(1_000, Math.floor(this.deviceLeaseIdleTimeoutMs / 3)));
     const check = async (): Promise<void> => {
       if (finished) return;
@@ -360,13 +380,25 @@ export class RouteService {
         terminate();
         return;
       }
+      if (this.now() >= nextDeploymentCheckAt) {
+        nextDeploymentCheckAt = this.now() + DEPLOYMENT_POLL_INTERVAL_MS;
+        if (await this.store.shouldTerminateDeployment(this.deploymentId)) {
+          terminate();
+          return;
+        }
+      }
+      if (activeTunnelId !== undefined && this.now() >= nextTunnelHeartbeatAt) {
+        nextTunnelHeartbeatAt = this.now() + 30_000;
+        const heartbeat = new Date(this.now()).toISOString();
+        await this.store.heartbeatActiveTunnel(activeTunnelId, heartbeat, new Date(this.now() + 120_000).toISOString());
+      }
       if (leaseKey !== undefined && this.now() >= nextHeartbeatAt) {
         nextHeartbeatAt = this.now() + heartbeatIntervalMs;
         const now = new Date(this.now()).toISOString();
         const activeUntil = new Date(this.now() + Math.max(60_000, heartbeatIntervalMs * 2)).toISOString();
         const lease = await this.store.renewDeviceLease(leaseKey, now, activeUntil, false);
         if (lease === undefined) terminate();
-      } else if (leaseKey !== undefined && await this.store.getDeviceLease(leaseKey) === undefined) {
+      } else if (leaseKey !== undefined && (await this.store.getDeviceLease(leaseKey)) === undefined) {
         terminate();
       }
     };
@@ -388,7 +420,23 @@ export class RouteService {
         const now = new Date(this.now()).toISOString();
         void this.store.renewDeviceLease(leaseKey, now, now, true).catch(() => undefined);
       }
+      if (activeTunnelId !== undefined) void this.store.removeActiveTunnel(activeTunnelId).catch(() => undefined);
     };
+  }
+
+  async recordUsage(record: Omit<UsageRecord, "kind" | "pricingVersion" | "pricingModel" | "priceUsd">): Promise<boolean> {
+    const descriptor = record.provider === "unresolved" ? undefined : this.#providers.get(record.provider)?.descriptor;
+    return this.store.recordUsage({
+      ...record,
+      kind: "attempt",
+      ...(descriptor === undefined
+        ? {}
+        : {
+            pricingVersion: descriptor.pricing.version,
+            pricingModel: descriptor.pricing.model,
+            priceUsd: descriptor.pricing.amountUsd,
+          }),
+    });
   }
 
   async authenticate(id: string, token: string): Promise<AuthenticatedRoute> {
@@ -424,7 +472,10 @@ export class RouteService {
     const grant = await this.store.getAccessGrant(route.accessGrantId);
     let current = this.#routeForGrant(await this.store.get(route.id), grant);
     if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
-    current = this.#routeForGrant(await this.#applyScheduledRotation(current, context), await this.store.getAccessGrant(route.accessGrantId));
+    current = this.#routeForGrant(
+      await this.#applyScheduledRotation(current, context),
+      await this.store.getAccessGrant(route.accessGrantId),
+    );
     this.assertProtocolAllowed(current, protocol);
     const compatibleProviders = [...this.#providers.values()]
       .filter((provider) => compatible(provider, current, protocol, target))
@@ -437,9 +488,10 @@ export class RouteService {
     }
     for (const provider of compatibleProviders) {
       const attempts = state.attemptsByProvider.get(provider.descriptor.id) ?? 0;
-      const attemptLimit = current.isAuthenticated && provider.descriptor.capabilities.exactCity === "verifiable"
-        ? MAX_VERIFICATION_CANDIDATES_PER_PROVIDER
-        : MAX_PEERS_PER_PROVIDER;
+      const attemptLimit =
+        current.isAuthenticated && provider.descriptor.capabilities.exactCity === "verifiable"
+          ? MAX_VERIFICATION_CANDIDATES_PER_PROVIDER
+          : MAX_PEERS_PER_PROVIDER;
       if (attempts >= attemptLimit) continue;
       const health = await provider.health(context.signal);
       if (context.signal.aborted) throw abortReason(context.signal);
@@ -475,17 +527,16 @@ export class RouteService {
         const expected = endpoint.assignment.expectedCity;
         const observed = endpoint.assignment.observedCity;
         if (
-          endpoint.assignment.assignmentMode !== "service_verified" || expected === undefined || observed === undefined ||
+          endpoint.assignment.assignmentMode !== "service_verified" ||
+          expected === undefined ||
+          observed === undefined ||
           canonicalCity(expected) !== canonicalCity(observed)
         ) {
           state.excludedEndpointIds.add(endpoint.endpointId);
           state.previousCandidateId = endpoint.assignment.candidateId;
           state.previousProvider = endpoint.provider;
           throw attributeProvider(
-            attributeAssignment(
-              new ProviderUnavailableError("Candidate exact-city verification failed"),
-              endpoint.assignment,
-            ),
+            attributeAssignment(new ProviderUnavailableError("Candidate exact-city verification failed"), endpoint.assignment),
             provider.descriptor.id,
           );
         }
@@ -493,9 +544,8 @@ export class RouteService {
       if (state.previousCandidateId !== undefined) {
         endpoint.assignment.previousCandidateId = state.previousCandidateId;
       }
-      endpoint.assignment.changeReason = state.previousProvider === undefined
-        ? "selection"
-        : state.previousProvider === endpoint.provider ? "retry" : "failover";
+      endpoint.assignment.changeReason =
+        state.previousProvider === undefined ? "selection" : state.previousProvider === endpoint.provider ? "retry" : "failover";
       state.previousCandidateId = endpoint.assignment.candidateId;
       state.previousProvider = endpoint.provider;
       return endpoint;
@@ -523,7 +573,10 @@ export class RouteService {
       "proxy.candidate.id": route.endpointId ?? "unknown",
     });
     try {
-      await this.proxidize.rotate({ ...claimed, ...(route.endpointId === undefined ? {} : { endpointId: route.endpointId }) }, context.signal);
+      await this.proxidize.rotate(
+        { ...claimed, ...(route.endpointId === undefined ? {} : { endpointId: route.endpointId }) },
+        context.signal,
+      );
       const completed = await this.store.completeRotation(route.id);
       rotationSpan.addEvent("proxy.candidate.rotation", {
         "proxy.candidate.id": route.endpointId ?? "unknown",
@@ -546,12 +599,17 @@ export class RouteService {
       return completed;
     } catch (error) {
       await this.store.setStatus(route.id, "failed", safeErrorMessage(error)).catch(() => undefined);
-      this.telemetry.finishSpan(rotationSpan, rotationStartedAt, {
-        plane: "control",
-        protocol: "rotation",
-        outcome: "failure",
-        provider: route.provider,
-      }, error);
+      this.telemetry.finishSpan(
+        rotationSpan,
+        rotationStartedAt,
+        {
+          plane: "control",
+          protocol: "rotation",
+          outcome: "failure",
+          provider: route.provider,
+        },
+        error,
+      );
       this.telemetry.recordRotation(route.provider, "failure");
       throw error;
     }
@@ -606,12 +664,17 @@ export class RouteService {
     } catch (error) {
       const message = safeErrorMessage(error);
       await this.store.setStatus(route.id, "failed", message).catch(() => undefined);
-      this.telemetry.finishSpan(rotationSpan, rotationStartedAt, {
-        plane: "control",
-        protocol: "rotation",
-        outcome: "failure",
-        provider: route.provider,
-      }, error);
+      this.telemetry.finishSpan(
+        rotationSpan,
+        rotationStartedAt,
+        {
+          plane: "control",
+          protocol: "rotation",
+          outcome: "failure",
+          provider: route.provider,
+        },
+        error,
+      );
       this.telemetry.recordRotation(route.provider, "failure");
       this.logger.warn("Route rotation failed", {
         logicalOperationId: rotationOperationId,

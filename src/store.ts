@@ -4,6 +4,8 @@ import { NotFoundError } from "./errors.js";
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
+  ActiveTunnel,
+  DeploymentDrainState,
   DeviceLease,
   HealthAlertDelivery,
   HealthAlertEvent,
@@ -16,6 +18,9 @@ import type {
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredRoute,
+  UsageRecord,
+  UsageReconciliation,
+  UsageRollup,
 } from "./types.js";
 
 export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = 30 * 24 * 60 * 60_000;
@@ -43,8 +48,11 @@ export function createStoredCredential(id: string, token: string, createdAt: str
 }
 
 function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number): boolean {
-  return credential.status !== "revoked" && Date.parse(credential.expiresAt) > nowMs &&
-    (credential.revokeAt === undefined || Date.parse(credential.revokeAt) > nowMs);
+  return (
+    credential.status !== "revoked" &&
+    Date.parse(credential.expiresAt) > nowMs &&
+    (credential.revokeAt === undefined || Date.parse(credential.revokeAt) > nowMs)
+  );
 }
 
 interface RouteRow {
@@ -156,10 +164,14 @@ export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant
     status: grant.status,
     credentials: grant.credentials.map((credential) => ({
       id: credential.id,
-      status: grant.status === "revoked" || credential.status === "revoked" ||
+      status:
+        grant.status === "revoked" ||
+        credential.status === "revoked" ||
         (credential.revokeAt !== undefined && Date.parse(credential.revokeAt) <= nowMs)
-        ? "revoked"
-        : Date.parse(credential.expiresAt) <= nowMs ? "expired" : credential.status,
+          ? "revoked"
+          : Date.parse(credential.expiresAt) <= nowMs
+            ? "expired"
+            : credential.status,
       createdAt: credential.createdAt,
       renewalDueAt: credential.renewalDueAt,
       renewalDue: Date.parse(credential.renewalDueAt) <= nowMs && Date.parse(credential.expiresAt) > nowMs,
@@ -195,34 +207,26 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
 }
 
 export interface RouteStore {
-  create(
-    id: string,
-    profile: RouteProfile,
-    provider: StoredRoute["provider"],
-    endpointId?: string,
-  ): Promise<StoredRoute>;
+  create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute>;
   get(id: string, includeRevoked?: boolean): Promise<StoredRoute>;
   list(): Promise<StoredRoute[]>;
-  createAccessGrant(
-    id: string,
-    routeId: string,
-    principalId: string,
-    credentialId: string,
-    token: string,
-  ): Promise<StoredAccessGrant>;
+  createAccessGrant(id: string, routeId: string, principalId: string, credentialId: string, token: string): Promise<StoredAccessGrant>;
   getAccessGrant(id: string, includeRevoked?: boolean): Promise<StoredAccessGrant>;
   listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]>;
   authenticateAccessGrant(id: string, token: string): Promise<StoredAccessGrant | undefined>;
-  rotateAccessGrantCredential(
-    id: string,
-    credentialId: string,
-    token: string,
-    suspectedCompromise?: boolean,
-  ): Promise<StoredAccessGrant>;
+  rotateAccessGrantCredential(id: string, credentialId: string, token: string, suspectedCompromise?: boolean): Promise<StoredAccessGrant>;
   revokeAccessGrant(id: string, terminateActive?: boolean): Promise<void>;
   setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant>;
   revoke(id: string, terminateActive?: boolean): Promise<void>;
   shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean>;
+  registerActiveTunnel(tunnel: ActiveTunnel): Promise<void>;
+  heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void>;
+  removeActiveTunnel(id: string): Promise<void>;
+  listActiveTunnels(deploymentId: string, now?: string): Promise<ActiveTunnel[]>;
+  listAllActiveTunnels(now?: string): Promise<ActiveTunnel[]>;
+  getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined>;
+  saveDeploymentDrain(state: DeploymentDrainState): Promise<void>;
+  shouldTerminateDeployment(deploymentId: string): Promise<boolean>;
   setEndpoint(id: string, endpointId?: string): Promise<StoredRoute>;
   acquireDeviceLease(
     leaseKey: string,
@@ -231,12 +235,7 @@ export interface RouteStore {
     now: string,
     idleTimeoutMs: number,
   ): Promise<DeviceLease | undefined>;
-  renewDeviceLease(
-    leaseKey: string,
-    now: string,
-    activeUntil: string,
-    recordActivity: boolean,
-  ): Promise<DeviceLease | undefined>;
+  renewDeviceLease(leaseKey: string, now: string, activeUntil: string, recordActivity: boolean): Promise<DeviceLease | undefined>;
   getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined>;
   releaseDeviceLease(leaseKey: string): Promise<void>;
   setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute>;
@@ -255,6 +254,12 @@ export interface RouteStore {
   pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]>;
   saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void>;
   healthAlertHistory(limit: number): Promise<HealthAlertEvent[]>;
+  recordUsage(record: UsageRecord): Promise<boolean>;
+  listUsageRecords(from: string, to: string): Promise<UsageRecord[]>;
+  saveUsageRollup(rollup: UsageRollup): Promise<void>;
+  listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]>;
+  saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean>;
+  listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]>;
   close(): Promise<void>;
 }
 
@@ -345,49 +350,82 @@ export class SqliteRouteStore implements RouteStore {
       );
       CREATE INDEX IF NOT EXISTS health_alert_deliveries_pending
         ON health_alert_deliveries(status, next_attempt_at);
+      CREATE TABLE IF NOT EXISTS active_tunnels (
+        id TEXT PRIMARY KEY,
+        deployment_id TEXT NOT NULL,
+        route_id TEXT NOT NULL,
+        access_grant_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        tunnel_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS active_tunnels_deployment_expiry
+        ON active_tunnels(deployment_id, expires_at);
+      CREATE TABLE IF NOT EXISTS deployment_drains (
+        deployment_id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS usage_records (
+        id TEXT PRIMARY KEY,
+        completed_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS usage_records_completed_at
+        ON usage_records(completed_at);
+      CREATE TABLE IF NOT EXISTS usage_rollups (
+        id TEXT PRIMARY KEY,
+        interval TEXT NOT NULL CHECK(interval IN ('hour', 'day', 'week', 'month')),
+        period_started_at TEXT NOT NULL,
+        rollup_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS usage_rollups_period
+        ON usage_rollups(interval, period_started_at);
+      CREATE TABLE IF NOT EXISTS usage_reconciliations (
+        id TEXT PRIMARY KEY,
+        period_started_at TEXT NOT NULL,
+        reconciliation_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS usage_reconciliations_period
+        ON usage_reconciliations(period_started_at);
     `);
   }
 
-  async create(
-    id: string,
-    profile: RouteProfile,
-    provider: StoredRoute["provider"],
-    endpointId?: string,
-  ): Promise<StoredRoute> {
+  async create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
-    this.#database.prepare(`
+    this.#database
+      .prepare(
+        `
       INSERT INTO routes (
         id, name, targeting_json, rotation_json, policy_json,
         provider, endpoint_id, status, last_rotation_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?)
-    `).run(
-      id,
-      profile.name,
-      JSON.stringify(profile.targeting),
-      JSON.stringify(profile.rotation),
-      JSON.stringify({
-        allowedProtocols: profile.allowedProtocols,
-        session: profile.session,
-        customerId: profile.customerId,
-        userId: profile.userId,
-        isAuthenticated: profile.isAuthenticated,
-        shouldRetry: profile.shouldRetry,
-        retryPolicy: profile.retryPolicy,
-        ...(profile.forceProvider === undefined ? {} : { forceProvider: profile.forceProvider }),
-      }),
-      provider,
-      endpointId ?? null,
-      now,
-      now,
-      now,
-    );
+    `,
+      )
+      .run(
+        id,
+        profile.name,
+        JSON.stringify(profile.targeting),
+        JSON.stringify(profile.rotation),
+        JSON.stringify({
+          allowedProtocols: profile.allowedProtocols,
+          session: profile.session,
+          customerId: profile.customerId,
+          userId: profile.userId,
+          isAuthenticated: profile.isAuthenticated,
+          shouldRetry: profile.shouldRetry,
+          retryPolicy: profile.retryPolicy,
+          ...(profile.forceProvider === undefined ? {} : { forceProvider: profile.forceProvider }),
+        }),
+        provider,
+        endpointId ?? null,
+        now,
+        now,
+        now,
+      );
     return this.get(id);
   }
 
   async get(id: string, includeRevoked = false): Promise<StoredRoute> {
-    const sql = includeRevoked
-      ? "SELECT * FROM routes WHERE id = ?"
-      : "SELECT * FROM routes WHERE id = ? AND status != 'revoked'";
+    const sql = includeRevoked ? "SELECT * FROM routes WHERE id = ?" : "SELECT * FROM routes WHERE id = ? AND status != 'revoked'";
     const row = this.#database.prepare(sql).get(id) as unknown as RouteRow | undefined;
     if (row === undefined) throw new NotFoundError();
     return routeFromRow(row);
@@ -410,11 +448,15 @@ export class SqliteRouteStore implements RouteStore {
     await this.get(routeId);
     const now = new Date().toISOString();
     const credential = createStoredCredential(credentialId, token, now);
-    this.#database.prepare(`
+    this.#database
+      .prepare(
+        `
       INSERT INTO access_grants(
         id, route_id, principal_id, credentials_json, status, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'ready', ?, ?)
-    `).run(id, routeId, principalId, JSON.stringify([credential]), now, now);
+    `,
+      )
+      .run(id, routeId, principalId, JSON.stringify([credential]), now, now);
     return this.getAccessGrant(id);
   }
 
@@ -431,7 +473,9 @@ export class SqliteRouteStore implements RouteStore {
     await this.get(routeId);
     const rows = (principalId === undefined
       ? this.#database.prepare("SELECT * FROM access_grants WHERE route_id = ? ORDER BY created_at").all(routeId)
-      : this.#database.prepare("SELECT * FROM access_grants WHERE route_id = ? AND principal_id = ? ORDER BY created_at").all(routeId, principalId)) as unknown as AccessGrantRow[];
+      : this.#database
+          .prepare("SELECT * FROM access_grants WHERE route_id = ? AND principal_id = ? ORDER BY created_at")
+          .all(routeId, principalId)) as unknown as AccessGrantRow[];
     return rows.map(accessGrantFromRow);
   }
 
@@ -453,9 +497,13 @@ export class SqliteRouteStore implements RouteStore {
     });
     if (credential === undefined) return undefined;
     credential.lastUsedAt = now;
-    this.#database.prepare(`
+    this.#database
+      .prepare(
+        `
       UPDATE access_grants SET credentials_json = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
-    `).run(JSON.stringify(grant.credentials), now, id);
+    `,
+      )
+      .run(JSON.stringify(grant.credentials), now, id);
     return { ...grant, credentials: grant.credentials, updatedAt: now };
   }
 
@@ -479,56 +527,142 @@ export class SqliteRouteStore implements RouteStore {
       };
     });
     credentials.push(createStoredCredential(credentialId, token, now));
-    const result = this.#database.prepare(`
+    const result = this.#database
+      .prepare(
+        `
       UPDATE access_grants SET credentials_json = ?, updated_at = ?
       WHERE id = ? AND status != 'revoked'
-    `).run(JSON.stringify(credentials), now, id);
+    `,
+      )
+      .run(JSON.stringify(credentials), now, id);
     if (result.changes === 0) throw new NotFoundError();
     return this.getAccessGrant(id);
   }
 
   async revokeAccessGrant(id: string, terminateActive = false): Promise<void> {
     const now = new Date().toISOString();
-    const result = this.#database.prepare(terminateActive
-      ? "UPDATE access_grants SET status = 'revoked', terminate_active = 1, updated_at = ? WHERE id = ?"
-      : "UPDATE access_grants SET status = 'revoked', updated_at = ? WHERE id = ?"
-    ).run(now, id);
+    const result = this.#database
+      .prepare(
+        terminateActive
+          ? "UPDATE access_grants SET status = 'revoked', terminate_active = 1, updated_at = ? WHERE id = ?"
+          : "UPDATE access_grants SET status = 'revoked', updated_at = ? WHERE id = ?",
+      )
+      .run(now, id);
     if (result.changes === 0) throw new NotFoundError();
   }
 
   async setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant> {
     const now = new Date().toISOString();
-    const result = this.#database.prepare(`
+    const result = this.#database
+      .prepare(
+        `
       UPDATE access_grants SET endpoint_id = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
-    `).run(endpointId ?? null, now, id);
+    `,
+      )
+      .run(endpointId ?? null, now, id);
     if (result.changes === 0) throw new NotFoundError();
     return this.getAccessGrant(id);
   }
 
   async revoke(id: string, terminateActive = false): Promise<void> {
     const now = new Date().toISOString();
-    const result = this.#database.prepare(terminateActive
-      ? "UPDATE routes SET status = 'revoked', terminate_active = 1, updated_at = ? WHERE id = ?"
-      : "UPDATE routes SET status = 'revoked', terminate_active = 0, updated_at = ? WHERE id = ? AND status != 'revoked'"
-    ).run(now, id);
+    const result = this.#database
+      .prepare(
+        terminateActive
+          ? "UPDATE routes SET status = 'revoked', terminate_active = 1, updated_at = ? WHERE id = ?"
+          : "UPDATE routes SET status = 'revoked', terminate_active = 0, updated_at = ? WHERE id = ? AND status != 'revoked'",
+      )
+      .run(now, id);
     if (result.changes === 0) throw new NotFoundError();
   }
 
   async shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean> {
-    const row = this.#database.prepare("SELECT terminate_active FROM routes WHERE id = ?")
-      .get(id) as { terminate_active: number } | undefined;
+    const row = this.#database.prepare("SELECT terminate_active FROM routes WHERE id = ?").get(id) as
+      { terminate_active: number } | undefined;
     if (row?.terminate_active === 1) return true;
     if (accessGrantId === undefined) return false;
-    const grant = this.#database.prepare("SELECT terminate_active FROM access_grants WHERE id = ?")
-      .get(accessGrantId) as { terminate_active: number } | undefined;
+    const grant = this.#database.prepare("SELECT terminate_active FROM access_grants WHERE id = ?").get(accessGrantId) as
+      { terminate_active: number } | undefined;
     return grant?.terminate_active === 1;
+  }
+
+  async registerActiveTunnel(tunnel: ActiveTunnel): Promise<void> {
+    this.#database
+      .prepare(
+        `
+      INSERT INTO active_tunnels(id, deployment_id, route_id, access_grant_id, expires_at, tunnel_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+      )
+      .run(tunnel.id, tunnel.deploymentId, tunnel.routeId, tunnel.accessGrantId, tunnel.expiresAt, JSON.stringify(tunnel));
+  }
+
+  async heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
+    const row = this.#database.prepare("SELECT tunnel_json FROM active_tunnels WHERE id = ?").get(id) as
+      { tunnel_json: string } | undefined;
+    if (row === undefined) return;
+    const tunnel = { ...(JSON.parse(row.tunnel_json) as ActiveTunnel), lastHeartbeatAt, expiresAt };
+    this.#database
+      .prepare("UPDATE active_tunnels SET expires_at = ?, tunnel_json = ? WHERE id = ?")
+      .run(expiresAt, JSON.stringify(tunnel), id);
+  }
+
+  async removeActiveTunnel(id: string): Promise<void> {
+    this.#database.prepare("DELETE FROM active_tunnels WHERE id = ?").run(id);
+  }
+
+  async listActiveTunnels(deploymentId: string, now = new Date().toISOString()): Promise<ActiveTunnel[]> {
+    const rows = this.#database
+      .prepare(
+        `
+      SELECT tunnel_json FROM active_tunnels WHERE deployment_id = ? AND expires_at > ? ORDER BY id
+    `,
+      )
+      .all(deploymentId, now) as unknown as Array<{ tunnel_json: string }>;
+    return rows.map((row) => JSON.parse(row.tunnel_json) as ActiveTunnel);
+  }
+
+  async listAllActiveTunnels(now = new Date().toISOString()): Promise<ActiveTunnel[]> {
+    const rows = this.#database
+      .prepare(
+        `
+      SELECT tunnel_json FROM active_tunnels WHERE expires_at > ? ORDER BY id
+    `,
+      )
+      .all(now) as unknown as Array<{ tunnel_json: string }>;
+    return rows.map((row) => JSON.parse(row.tunnel_json) as ActiveTunnel);
+  }
+
+  async getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined> {
+    const row = this.#database.prepare("SELECT state_json FROM deployment_drains WHERE deployment_id = ?").get(deploymentId) as
+      { state_json: string } | undefined;
+    return row === undefined ? undefined : (JSON.parse(row.state_json) as DeploymentDrainState);
+  }
+
+  async saveDeploymentDrain(state: DeploymentDrainState): Promise<void> {
+    this.#database
+      .prepare(
+        `
+      INSERT INTO deployment_drains(deployment_id, state_json) VALUES (?, ?)
+      ON CONFLICT(deployment_id) DO UPDATE SET state_json = excluded.state_json
+    `,
+      )
+      .run(state.deploymentId, JSON.stringify(state));
+  }
+
+  async shouldTerminateDeployment(deploymentId: string): Promise<boolean> {
+    return (await this.getDeploymentDrain(deploymentId))?.terminateRemaining === true;
   }
 
   async setEndpoint(id: string, endpointId?: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
-    const result = this.#database.prepare(`
+    const result = this.#database
+      .prepare(
+        `
       UPDATE routes SET endpoint_id = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
-    `).run(endpointId ?? null, now, id);
+    `,
+      )
+      .run(endpointId ?? null, now, id);
     if (result.changes === 0) throw new NotFoundError();
     return this.get(id);
   }
@@ -544,18 +678,23 @@ export class SqliteRouteStore implements RouteStore {
     const idleBefore = new Date(Date.parse(now) - idleTimeoutMs).toISOString();
     this.#database.exec("BEGIN IMMEDIATE");
     try {
-      const existingRow = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
-        .get(leaseKey) as unknown as DeviceLeaseRow | undefined;
+      const existingRow = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?").get(leaseKey) as unknown as
+        DeviceLeaseRow | undefined;
       if (existingRow !== undefined) {
         const expired = existingRow.last_activity_at <= idleBefore && existingRow.active_until <= now;
         if (!expired) {
           if (candidateEndpointIds.includes(existingRow.endpoint_id)) {
-            this.#database.prepare(`
+            this.#database
+              .prepare(
+                `
               UPDATE device_leases
               SET route_id = ?, last_activity_at = ?, updated_at = ?
               WHERE lease_key = ?
-            `).run(routeId, now, now, leaseKey);
-            const renewed = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
+            `,
+              )
+              .run(routeId, now, now, leaseKey);
+            const renewed = this.#database
+              .prepare("SELECT * FROM device_leases WHERE lease_key = ?")
               .get(leaseKey) as unknown as DeviceLeaseRow;
             this.#database.exec("COMMIT");
             return leaseFromRow(renewed);
@@ -567,9 +706,13 @@ export class SqliteRouteStore implements RouteStore {
         }
         if (expired) this.#database.prepare("DELETE FROM device_leases WHERE lease_key = ?").run(leaseKey);
       }
-      this.#database.prepare(`
+      this.#database
+        .prepare(
+          `
         DELETE FROM device_leases WHERE last_activity_at <= ? AND active_until <= ?
-      `).run(idleBefore, now);
+      `,
+        )
+        .run(idleBefore, now);
       const candidate = candidateEndpointIds.find((endpointId) => {
         const row = this.#database.prepare("SELECT 1 FROM device_leases WHERE endpoint_id = ?").get(endpointId);
         return row === undefined;
@@ -578,13 +721,16 @@ export class SqliteRouteStore implements RouteStore {
         this.#database.exec("COMMIT");
         return undefined;
       }
-      this.#database.prepare(`
+      this.#database
+        .prepare(
+          `
         INSERT INTO device_leases(
           lease_key, route_id, endpoint_id, last_activity_at, active_until, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(leaseKey, routeId, candidate, now, now, now, now);
-      const inserted = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
-        .get(leaseKey) as unknown as DeviceLeaseRow;
+      `,
+        )
+        .run(leaseKey, routeId, candidate, now, now, now, now);
+      const inserted = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?").get(leaseKey) as unknown as DeviceLeaseRow;
       this.#database.exec("COMMIT");
       return leaseFromRow(inserted);
     } catch (error) {
@@ -593,25 +739,24 @@ export class SqliteRouteStore implements RouteStore {
     }
   }
 
-  async renewDeviceLease(
-    leaseKey: string,
-    now: string,
-    activeUntil: string,
-    recordActivity: boolean,
-  ): Promise<DeviceLease | undefined> {
-    const result = this.#database.prepare(`
+  async renewDeviceLease(leaseKey: string, now: string, activeUntil: string, recordActivity: boolean): Promise<DeviceLease | undefined> {
+    const result = this.#database
+      .prepare(
+        `
       UPDATE device_leases
       SET last_activity_at = CASE WHEN ? THEN ? ELSE last_activity_at END,
           active_until = ?, updated_at = ?
       WHERE lease_key = ?
-    `).run(recordActivity ? 1 : 0, now, activeUntil, now, leaseKey);
+    `,
+      )
+      .run(recordActivity ? 1 : 0, now, activeUntil, now, leaseKey);
     if (result.changes === 0) return undefined;
     return this.getDeviceLease(leaseKey);
   }
 
   async getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined> {
-    const row = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?")
-      .get(leaseKey) as unknown as DeviceLeaseRow | undefined;
+    const row = this.#database.prepare("SELECT * FROM device_leases WHERE lease_key = ?").get(leaseKey) as unknown as
+      DeviceLeaseRow | undefined;
     return row === undefined ? undefined : leaseFromRow(row);
   }
 
@@ -630,21 +775,29 @@ export class SqliteRouteStore implements RouteStore {
 
   async claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined> {
     const now = new Date().toISOString();
-    const result = this.#database.prepare(`
+    const result = this.#database
+      .prepare(
+        `
       UPDATE routes
       SET status = 'rotating', last_error = NULL, updated_at = ?
       WHERE id = ? AND status = 'ready' AND last_rotation_at <= ?
-    `).run(now, id, dueBefore);
+    `,
+      )
+      .run(now, id, dueBefore);
     return result.changes === 0 ? undefined : this.get(id);
   }
 
   async completeRotation(id: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
-    const result = this.#database.prepare(`
+    const result = this.#database
+      .prepare(
+        `
       UPDATE routes
       SET status = 'ready', last_error = NULL, last_rotation_at = ?, updated_at = ?
       WHERE id = ? AND status = 'rotating'
-    `).run(now, now, id);
+    `,
+      )
+      .run(now, now, id);
     if (result.changes === 0) throw new NotFoundError();
     return this.get(id);
   }
@@ -652,11 +805,13 @@ export class SqliteRouteStore implements RouteStore {
   async incrementRotationEpoch(id: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
     const result = this.#database
-      .prepare(`
+      .prepare(
+        `
         UPDATE routes
         SET rotation_epoch = rotation_epoch + 1, updated_at = ?
         WHERE id = ? AND status != 'revoked'
-      `)
+      `,
+      )
       .run(now, id);
     if (result.changes === 0) throw new NotFoundError();
     return this.get(id);
@@ -670,14 +825,18 @@ export class SqliteRouteStore implements RouteStore {
   }
 
   async saveHealth(health: ProviderHealth): Promise<void> {
-    this.#database.prepare(`
+    this.#database
+      .prepare(
+        `
       INSERT INTO provider_health(provider, state, checked_at, message)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(provider) DO UPDATE SET
         state = excluded.state,
         checked_at = excluded.checked_at,
         message = excluded.message
-    `).run(health.provider, health.state, health.checkedAt, health.message ?? null);
+    `,
+      )
+      .run(health.provider, health.state, health.checkedAt, health.message ?? null);
   }
 
   async listHealth(): Promise<ProviderHealth[]> {
@@ -691,20 +850,23 @@ export class SqliteRouteStore implements RouteStore {
   }
 
   async saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
-    this.#database.prepare(`
+    this.#database
+      .prepare(
+        `
       INSERT INTO capability_health_snapshots(id, generated_at, snapshot_json)
       VALUES (?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         generated_at = excluded.generated_at,
         snapshot_json = excluded.snapshot_json
-    `).run(snapshot.id, snapshot.generatedAt, JSON.stringify(snapshot));
+    `,
+      )
+      .run(snapshot.id, snapshot.generatedAt, JSON.stringify(snapshot));
   }
 
   async latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined> {
-    const row = this.#database
-      .prepare("SELECT snapshot_json FROM capability_health_snapshots ORDER BY generated_at DESC LIMIT 1")
-      .get() as CapabilityHealthRow | undefined;
-    return row === undefined ? undefined : JSON.parse(row.snapshot_json) as CapabilityHealthSnapshot;
+    const row = this.#database.prepare("SELECT snapshot_json FROM capability_health_snapshots ORDER BY generated_at DESC LIMIT 1").get() as
+      CapabilityHealthRow | undefined;
+    return row === undefined ? undefined : (JSON.parse(row.snapshot_json) as CapabilityHealthSnapshot);
   }
 
   async capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]> {
@@ -715,30 +877,47 @@ export class SqliteRouteStore implements RouteStore {
   }
 
   async getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined> {
-    const row = this.#database.prepare("SELECT state_json FROM health_alert_states WHERE capability = ?")
-      .get(capability) as { state_json: string } | undefined;
-    return row === undefined ? undefined : JSON.parse(row.state_json) as HealthAlertState;
+    const row = this.#database.prepare("SELECT state_json FROM health_alert_states WHERE capability = ?").get(capability) as
+      { state_json: string } | undefined;
+    return row === undefined ? undefined : (JSON.parse(row.state_json) as HealthAlertState);
   }
 
   async saveHealthAlertState(state: HealthAlertState): Promise<void> {
-    this.#database.prepare(`
+    this.#database
+      .prepare(
+        `
       INSERT INTO health_alert_states(capability, state_json) VALUES (?, ?)
       ON CONFLICT(capability) DO UPDATE SET state_json = excluded.state_json
-    `).run(state.capability, JSON.stringify(state));
+    `,
+      )
+      .run(state.capability, JSON.stringify(state));
   }
 
   async createHealthAlertEvent(event: HealthAlertEvent, destinationIds: readonly string[]): Promise<boolean> {
     this.#database.exec("BEGIN IMMEDIATE");
     try {
-      const inserted = this.#database.prepare(`
+      const inserted = this.#database
+        .prepare(
+          `
         INSERT OR IGNORE INTO health_alert_events(id, dedupe_key, created_at, event_json)
         VALUES (?, ?, ?, ?)
-      `).run(event.id, event.dedupeKey, event.createdAt, JSON.stringify(event));
-      const persistedEvent = inserted.changes > 0
-        ? event
-        : JSON.parse((this.#database.prepare(`
+      `,
+        )
+        .run(event.id, event.dedupeKey, event.createdAt, JSON.stringify(event));
+      const persistedEvent =
+        inserted.changes > 0
+          ? event
+          : (JSON.parse(
+              (
+                this.#database
+                  .prepare(
+                    `
             SELECT event_json FROM health_alert_events WHERE dedupe_key = ?
-          `).get(event.dedupeKey) as { event_json: string }).event_json) as HealthAlertEvent;
+          `,
+                  )
+                  .get(event.dedupeKey) as { event_json: string }
+              ).event_json,
+            ) as HealthAlertEvent);
       const delivery = this.#database.prepare(`
         INSERT OR IGNORE INTO health_alert_deliveries(
           alert_id, destination_id, status, next_attempt_at, delivery_json
@@ -753,12 +932,7 @@ export class SqliteRouteStore implements RouteStore {
           nextAttemptAt: persistedEvent.createdAt,
           event: persistedEvent,
         };
-        delivery.run(
-          persistedEvent.id,
-          destinationId,
-          persistedEvent.createdAt,
-          JSON.stringify(value),
-        );
+        delivery.run(persistedEvent.id, destinationId, persistedEvent.createdAt, JSON.stringify(value));
       }
       this.#database.exec("COMMIT");
       return inserted.changes > 0;
@@ -769,33 +943,87 @@ export class SqliteRouteStore implements RouteStore {
   }
 
   async pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]> {
-    const rows = this.#database.prepare(`
+    const rows = this.#database
+      .prepare(
+        `
       SELECT delivery_json FROM health_alert_deliveries
       WHERE status = 'pending' AND next_attempt_at <= ?
       ORDER BY next_attempt_at ASC LIMIT ?
-    `).all(dueBefore, limit) as unknown as Array<{ delivery_json: string }>;
+    `,
+      )
+      .all(dueBefore, limit) as unknown as Array<{ delivery_json: string }>;
     return rows.map((row) => JSON.parse(row.delivery_json) as HealthAlertDelivery);
   }
 
   async saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void> {
-    this.#database.prepare(`
+    this.#database
+      .prepare(
+        `
       UPDATE health_alert_deliveries
       SET status = ?, next_attempt_at = ?, delivery_json = ?
       WHERE alert_id = ? AND destination_id = ?
-    `).run(
-      delivery.status,
-      delivery.nextAttemptAt,
-      JSON.stringify(delivery),
-      delivery.alertId,
-      delivery.destinationId,
-    );
+    `,
+      )
+      .run(delivery.status, delivery.nextAttemptAt, JSON.stringify(delivery), delivery.alertId, delivery.destinationId);
   }
 
   async healthAlertHistory(limit: number): Promise<HealthAlertEvent[]> {
-    const rows = this.#database.prepare(`
+    const rows = this.#database
+      .prepare(
+        `
       SELECT event_json FROM health_alert_events ORDER BY created_at DESC LIMIT ?
-    `).all(limit) as unknown as Array<{ event_json: string }>;
+    `,
+      )
+      .all(limit) as unknown as Array<{ event_json: string }>;
     return rows.map((row) => JSON.parse(row.event_json) as HealthAlertEvent);
+  }
+
+  async recordUsage(record: UsageRecord): Promise<boolean> {
+    const result = this.#database
+      .prepare("INSERT OR IGNORE INTO usage_records(id, completed_at, record_json) VALUES (?, ?, ?)")
+      .run(record.id, record.completedAt, JSON.stringify(record));
+    return result.changes > 0;
+  }
+
+  async listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
+    const rows = this.#database
+      .prepare("SELECT record_json FROM usage_records WHERE completed_at >= ? AND completed_at < ? ORDER BY completed_at")
+      .all(from, to) as unknown as Array<{ record_json: string }>;
+    return rows.map((row) => JSON.parse(row.record_json) as UsageRecord);
+  }
+
+  async saveUsageRollup(rollup: UsageRollup): Promise<void> {
+    this.#database
+      .prepare(
+        `INSERT INTO usage_rollups(id, interval, period_started_at, rollup_json) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET rollup_json = excluded.rollup_json`,
+      )
+      .run(rollup.id, rollup.interval, rollup.periodStartedAt, JSON.stringify(rollup));
+  }
+
+  async listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]> {
+    const rows = this.#database
+      .prepare(
+        "SELECT rollup_json FROM usage_rollups WHERE interval = ? AND period_started_at >= ? AND period_started_at < ? ORDER BY period_started_at",
+      )
+      .all(interval, from, to) as unknown as Array<{ rollup_json: string }>;
+    return rows.map((row) => JSON.parse(row.rollup_json) as UsageRollup);
+  }
+
+  async saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
+    const result = this.#database
+      .prepare("INSERT OR IGNORE INTO usage_reconciliations(id, period_started_at, reconciliation_json) VALUES (?, ?, ?)")
+      .run(reconciliation.id, reconciliation.periodStartedAt, JSON.stringify(reconciliation));
+    return result.changes > 0;
+  }
+
+  async listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]> {
+    const rows = this.#database
+      .prepare(
+        "SELECT reconciliation_json FROM usage_reconciliations WHERE period_started_at >= ? AND period_started_at < ? ORDER BY period_started_at",
+      )
+      .all(from, to) as unknown as Array<{ reconciliation_json: string }>;
+    return rows.map((row) => JSON.parse(row.reconciliation_json) as UsageReconciliation);
   }
 
   async close(): Promise<void> {

@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { destinationResponsePlan, waitForDestinationDelay } from "./destination-simulator.js";
 import type { Logger } from "./logger.js";
 import type { ListenAddress } from "./types.js";
 
@@ -24,7 +25,7 @@ function json(response: ServerResponse, status: number, body: unknown, headers: 
     "content-type": "application/json",
     "content-length": encoded.length,
     "cache-control": "no-store",
-    "connection": "close",
+    connection: "close",
     ...headers,
   });
   response.end(encoded);
@@ -43,9 +44,9 @@ async function readBody(request: IncomingMessage, maximumBodyBytes: number): Pro
 }
 
 /**
- * Disposable echo origin for post-deploy tests. It is intentionally excluded
- * from production and deployed into the public-canary VPC, which has no route
- * to product services. Never use it for application traffic.
+ * Plain-HTTP socket origin for ephemeral CI transport checks. It is excluded
+ * from developer and production deployments and runs in the public-canary VPC,
+ * which has no route to product services. Never use it for application traffic.
  */
 export class IntegrationTargetServer {
   #server: Server | undefined;
@@ -72,7 +73,7 @@ export class IntegrationTargetServer {
     const server = this.#server;
     this.#server = undefined;
     if (server === undefined) return;
-    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    await new Promise<void>((resolve, reject) => server.close((error) => (error === undefined ? resolve() : reject(error))));
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -83,31 +84,37 @@ export class IntegrationTargetServer {
     }
     try {
       const body = await readBody(request, this.options.maximumBodyBytes ?? 1024 * 1024);
-      const testId = typeof request.headers["x-profound-test-id"] === "string"
-        ? request.headers["x-profound-test-id"]
-        : "unattributed";
+      const testId = typeof request.headers["x-profound-test-id"] === "string" ? request.headers["x-profound-test-id"] : "unattributed";
       const requestCount = (this.#requestCounts.get(testId) ?? 0) + 1;
       this.#requestCounts.set(testId, requestCount);
       const observation: TargetObservation = {
         method: request.method ?? "UNKNOWN",
         path: `${url.pathname}${url.search}`,
         requestBody: body.toString("utf8"),
-        ...(typeof request.headers.authorization === "string"
-          ? { authorization: request.headers.authorization }
-          : {}),
+        ...(typeof request.headers.authorization === "string" ? { authorization: request.headers.authorization } : {}),
         ...(typeof request.headers.cookie === "string" ? { cookie: request.headers.cookie } : {}),
-        ...(typeof request.headers["x-profound-test-header"] === "string"
-          ? { testHeader: request.headers["x-profound-test-header"] }
-          : {}),
+        ...(typeof request.headers["x-profound-test-header"] === "string" ? { testHeader: request.headers["x-profound-test-header"] } : {}),
         requestCount,
       };
-      const requestedStatus = url.pathname.match(/^\/status\/(\d{3})$/)?.[1];
-      if (url.pathname === "/redirect") {
-        json(response, 302, observation, { location: url.searchParams.get("to") ?? "/redirected" });
+      const plan = destinationResponsePlan(url);
+      await waitForDestinationDelay(plan.delayMs);
+      if (plan.connection === "reset") {
+        request.socket.destroy(new Error("simulated_destination_reset"));
         return;
       }
-      const status = requestedStatus === undefined ? 200 : Number(requestedStatus);
-      json(response, status >= 100 && status <= 599 ? status : 400, observation);
+      if (plan.connection === "close") {
+        request.socket.end();
+        return;
+      }
+      if (plan.connection === "timeout") {
+        setTimeout(() => request.socket.destroy(new Error("simulated_destination_timeout")), 5_000).unref();
+        return;
+      }
+      if (url.pathname === "/redirect") {
+        json(response, 302, plan.body ?? observation, { location: url.searchParams.get("to") ?? "/redirected", ...plan.headers });
+        return;
+      }
+      json(response, plan.status, plan.body ?? observation, plan.headers);
     } catch (error) {
       this.logger.warn("Integration target request rejected", {
         error: error instanceof Error ? error.message : "unknown",

@@ -21,7 +21,7 @@ export interface ServiceMetadata {
 }
 
 export interface DeployedMetadata {
-  schemaVersion: 2;
+  schemaVersion: 3;
   app: string;
   stage: string;
   deploymentProvider: "aws";
@@ -78,6 +78,15 @@ export interface DeployedMetadata {
   };
   integrationTarget: null | {
     url: string;
+    compute: "lambda";
+    api: "api-gateway-v2";
+    apiId: string;
+    functionArn: string;
+    stateTable: string;
+  };
+  integrationTransportTarget: null | {
+    url: string;
+    compute: "ecs-fargate";
     cluster: string;
     service: string;
     taskDefinition: string;
@@ -151,10 +160,7 @@ export interface ProxyResponse {
   body: string;
 }
 
-export function deployedTest(
-  name: string,
-  fn: (context: TestContext) => Promise<void> | void,
-): void {
+export function deployedTest(name: string, fn: (context: TestContext) => Promise<void> | void): void {
   test(name, { skip: !deployedTestsEnabled }, fn);
 }
 
@@ -222,19 +228,13 @@ export function deployedEnvironment(): Promise<DeployedEnvironment> {
 
 async function loadDeployedEnvironment(): Promise<DeployedEnvironment> {
   const stage = requiredEnvironment("DEPLOYED_STAGE");
-  const parameterName = optionalEnvironment("DEPLOYED_METADATA_PARAMETER") ??
-    `/sst/profound-proxy-router/${stage}/deployed-integration`;
-  const parameter = await awsJson<{ Parameter?: { Value?: string } }>([
-    "ssm",
-    "get-parameter",
-    "--name",
-    parameterName,
-  ]);
+  const parameterName = optionalEnvironment("DEPLOYED_METADATA_PARAMETER") ?? `/sst/profound-proxy-router/${stage}/deployed-integration`;
+  const parameter = await awsJson<{ Parameter?: { Value?: string } }>(["ssm", "get-parameter", "--name", parameterName]);
   const value = parameter.Parameter?.Value;
   if (value === undefined) throw new Error(`SSM parameter ${parameterName} has no value`);
   const metadata = JSON.parse(value) as DeployedMetadata;
-  if (metadata.schemaVersion !== 2 || metadata.stage !== stage) {
-    throw new Error(`SSM parameter ${parameterName} is not deployed-integration schema v2 for stage ${stage}`);
+  if (metadata.schemaVersion !== 3 || metadata.stage !== stage) {
+    throw new Error(`SSM parameter ${parameterName} is not deployed-integration schema v3 for stage ${stage}`);
   }
   const healthAggregatorToken = optionalEnvironment("DEPLOYED_HEALTH_AGGREGATOR_TOKEN");
   const canarySigningSecret = optionalEnvironment("DEPLOYED_CANARY_SIGNING_SECRET");
@@ -248,11 +248,7 @@ async function loadDeployedEnvironment(): Promise<DeployedEnvironment> {
   };
 }
 
-export async function controlRequest(
-  path: string,
-  init: RequestInit = {},
-  token?: string | null,
-): Promise<Response> {
+export async function controlRequest(path: string, init: RequestInit = {}, token?: string | null): Promise<Response> {
   const environment = await deployedEnvironment();
   const authorization = token === null ? {} : { authorization: `Bearer ${token ?? environment.controlToken}` };
   return fetch(new URL(path, `${environment.metadata.controlApi}/`), {
@@ -276,16 +272,18 @@ export async function createRoute(
     }),
   });
   if (response.status !== 201) throw new Error(`Route creation failed: ${response.status} ${await response.text()}`);
-  return await response.json() as CreatedRouteResponse;
+  return (await response.json()) as CreatedRouteResponse;
 }
 
 export async function revokeRoute(id: string): Promise<void> {
   const grants = await controlRequest(`/v1/routes/${encodeURIComponent(id)}/access-grants`).catch(() => undefined);
   if (grants?.ok) {
-    const payload = await grants.json() as { data?: PublicAccessGrant[] };
-    await Promise.all((payload.data ?? []).map((grant) =>
-      controlRequest(`/v1/access-grants/${encodeURIComponent(grant.id)}/release`, { method: "POST" })
-        .catch(() => undefined)));
+    const payload = (await grants.json()) as { data?: PublicAccessGrant[] };
+    await Promise.all(
+      (payload.data ?? []).map((grant) =>
+        controlRequest(`/v1/access-grants/${encodeURIComponent(grant.id)}/release`, { method: "POST" }).catch(() => undefined),
+      ),
+    );
   }
   const response = await controlRequest(`/v1/routes/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (response.status !== 204 && response.status !== 200) {
@@ -308,27 +306,29 @@ export async function requestViaHttpProxy(
   const proxy = new URL(proxyUrl);
   const transport = proxy.protocol === "https:" ? httpsRequest : httpRequest;
   return await new Promise((resolve, reject) => {
-    const request = transport({
-      hostname: proxy.hostname,
-      port: Number(proxy.port),
-      method: options.method ?? "GET",
-      path: targetUrl,
-      headers: {
-        "proxy-authorization": basicAuth(
-          decodeURIComponent(proxy.username),
-          decodeURIComponent(proxy.password),
-        ),
-        ...options.headers,
+    const request = transport(
+      {
+        hostname: proxy.hostname,
+        port: Number(proxy.port),
+        method: options.method ?? "GET",
+        path: targetUrl,
+        headers: {
+          "proxy-authorization": basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password)),
+          ...options.headers,
+        },
       },
-    }, (response) => {
-      const chunks: Buffer[] = [];
-      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-      response.on("end", () => resolve({
-        status: response.statusCode ?? 0,
-        headers: response.headers,
-        body: Buffer.concat(chunks).toString("utf8"),
-      }));
-    });
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
+        );
+      },
+    );
     request.once("error", reject);
     request.end(options.body);
   });
@@ -338,9 +338,10 @@ type ProxySocket = Socket | TLSSocket;
 
 async function openProxySocket(proxy: URL): Promise<ProxySocket> {
   const port = Number(proxy.port);
-  const socket = proxy.protocol === "https:"
-    ? tlsConnect({ host: proxy.hostname, port, servername: proxy.hostname })
-    : netConnect({ host: proxy.hostname, port });
+  const socket =
+    proxy.protocol === "https:"
+      ? tlsConnect({ host: proxy.hostname, port, servername: proxy.hostname })
+      : netConnect({ host: proxy.hostname, port });
   await once(socket, proxy.protocol === "https:" ? "secureConnect" : "connect");
   return socket;
 }
@@ -401,7 +402,7 @@ async function connectViaHttpProxy(proxyUrl: string, target: URL): Promise<Proxy
   const authority = `${target.hostname}:${target.port || (target.protocol === "https:" ? "443" : "80")}`;
   socket.write(
     `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n` +
-    `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
+      `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
   );
   const headers = await readHeaders(socket);
   const status = Number(headers.split(" ")[1]);
@@ -420,7 +421,7 @@ export async function httpConnectStatus(proxyUrl: string, targetUrl: string): Pr
     const authority = `${target.hostname}:${target.port || (target.protocol === "https:" ? "443" : "80")}`;
     socket.write(
       `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n` +
-      `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
+        `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
     );
     return Number((await readHeaders(socket)).split(" ")[1] ?? 0);
   } finally {
@@ -454,13 +455,14 @@ export async function requestViaHttpConnect(
 ): Promise<ProxyResponse> {
   const target = new URL(targetUrl);
   const tunnel = await connectViaHttpProxy(proxyUrl, target);
-  const socket: ProxySocket = target.protocol === "https:"
-    ? tlsConnect({
-        socket: tunnel,
-        servername: isIP(target.hostname) === 0 ? target.hostname : undefined,
-        rejectUnauthorized: options.rejectUnauthorized ?? true,
-      })
-    : tunnel;
+  const socket: ProxySocket =
+    target.protocol === "https:"
+      ? tlsConnect({
+          socket: tunnel,
+          servername: isIP(target.hostname) === 0 ? target.hostname : undefined,
+          rejectUnauthorized: options.rejectUnauthorized ?? true,
+        })
+      : tunnel;
   if (target.protocol === "https:") await once(socket, "secureConnect");
   const body = options.body ?? "";
   const headers = {
@@ -471,8 +473,10 @@ export async function requestViaHttpConnect(
   };
   socket.write(
     `${options.method ?? "GET"} ${target.pathname}${target.search} HTTP/1.1\r\n` +
-    Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join("") +
-    `\r\n${body}`,
+      Object.entries(headers)
+        .map(([name, value]) => `${name}: ${value}\r\n`)
+        .join("") +
+      `\r\n${body}`,
   );
   try {
     return await collectHttpResponse(socket);
@@ -490,24 +494,19 @@ async function connectViaSocks5(proxyUrl: string, target: URL, command = 0x01): 
   if (method[0] !== 0x05 || method[1] !== 0x02) throw new Error(`Unexpected SOCKS5 method reply ${method.toString("hex")}`);
   const username = Buffer.from(decodeURIComponent(proxy.username));
   const password = Buffer.from(decodeURIComponent(proxy.password));
-  socket.write(Buffer.concat([
-    Buffer.from([0x01, username.length]),
-    username,
-    Buffer.from([password.length]),
-    password,
-  ]));
+  socket.write(Buffer.concat([Buffer.from([0x01, username.length]), username, Buffer.from([password.length]), password]));
   const authentication = await readExactly(socket, 2);
   if (authentication[1] !== 0x00) throw new Error(`SOCKS5 authentication failed with ${authentication[1]}`);
   const hostname = Buffer.from(target.hostname);
-  const address = isIP(target.hostname) === 4
-    ? Buffer.from([0x01, ...target.hostname.split(".").map(Number)])
-    : Buffer.concat([Buffer.from([0x03, hostname.length]), hostname]);
+  const address =
+    isIP(target.hostname) === 4
+      ? Buffer.from([0x01, ...target.hostname.split(".").map(Number)])
+      : Buffer.concat([Buffer.from([0x03, hostname.length]), hostname]);
   const port = Buffer.alloc(2);
   port.writeUInt16BE(Number(target.port || (target.protocol === "https:" ? 443 : 80)));
   socket.write(Buffer.concat([Buffer.from([0x05, command, 0x00]), address, port]));
   const reply = await readExactly(socket, 4);
-  const addressLength = reply[3] === 0x01 ? 4 : reply[3] === 0x04 ? 16
-    : reply[3] === 0x03 ? (await readExactly(socket, 1))[0]! : 0;
+  const addressLength = reply[3] === 0x01 ? 4 : reply[3] === 0x04 ? 16 : reply[3] === 0x03 ? (await readExactly(socket, 1))[0]! : 0;
   if (addressLength > 0) await readExactly(socket, addressLength + 2);
   return { socket, reply: reply[1] ?? 0xff };
 }
@@ -523,13 +522,14 @@ export async function requestViaSocks5(
     connected.socket.destroy();
     throw new Error(`SOCKS5 CONNECT failed with reply ${connected.reply}`);
   }
-  const socket: ProxySocket = target.protocol === "https:"
-    ? tlsConnect({
-        socket: connected.socket,
-        servername: isIP(target.hostname) === 0 ? target.hostname : undefined,
-        rejectUnauthorized: options.rejectUnauthorized ?? true,
-      })
-    : connected.socket;
+  const socket: ProxySocket =
+    target.protocol === "https:"
+      ? tlsConnect({
+          socket: connected.socket,
+          servername: isIP(target.hostname) === 0 ? target.hostname : undefined,
+          rejectUnauthorized: options.rejectUnauthorized ?? true,
+        })
+      : connected.socket;
   if (target.protocol === "https:") await once(socket, "secureConnect");
   const body = options.body ?? "";
   const headers = {
@@ -540,8 +540,10 @@ export async function requestViaSocks5(
   };
   socket.write(
     `${options.method ?? "GET"} ${target.pathname}${target.search} HTTP/1.1\r\n` +
-    Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join("") +
-    `\r\n${body}`,
+      Object.entries(headers)
+        .map(([name, value]) => `${name}: ${value}\r\n`)
+        .join("") +
+      `\r\n${body}`,
   );
   try {
     return await collectHttpResponse(socket);
@@ -577,10 +579,14 @@ export async function waitFor<T>(
 }
 
 export async function waitForRouteStatus(id: string, expected: string): Promise<PublicRoute> {
-  return await waitFor(`route ${id} to become ${expected}`, async () => {
-    const response = await controlRequest(`/v1/routes/${encodeURIComponent(id)}`);
-    if (!response.ok) return undefined;
-    const body = await response.json() as { route: PublicRoute };
-    return body.route.status === expected ? body.route : undefined;
-  }, { timeoutMs: 30_000, intervalMs: 250 });
+  return await waitFor(
+    `route ${id} to become ${expected}`,
+    async () => {
+      const response = await controlRequest(`/v1/routes/${encodeURIComponent(id)}`);
+      if (!response.ok) return undefined;
+      const body = (await response.json()) as { route: PublicRoute };
+      return body.route.status === expected ? body.route : undefined;
+    },
+    { timeoutMs: 30_000, intervalMs: 250 },
+  );
 }

@@ -229,7 +229,7 @@ export class PublicCanaryServer {
     const server = this.#server;
     this.#server = undefined;
     if (server === undefined) return;
-    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    await new Promise<void>((resolve, reject) => server.close((error) => (error === undefined ? resolve() : reject(error))));
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {

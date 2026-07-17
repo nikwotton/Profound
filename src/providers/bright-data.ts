@@ -20,22 +20,13 @@ function compact(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_]/g, "");
 }
 
-function sessionId(
-  route: StoredRoute,
-  now: number,
-  logicalOperationId = route.id,
-  candidateIndex = 0,
-): string {
-  const bucket = route.rotation.mode === "interval"
-    ? Math.floor(now / (route.rotation.intervalSeconds * 1_000))
-    : 0;
-  const scope = route.rotation.mode === "per_request"
-    ? logicalOperationId
-    : `${route.session.mode === "sticky" ? route.session.id ?? route.id : route.id}:${bucket}`;
-  return createHash("sha256")
-    .update(`${scope}:${route.rotationEpoch}:candidate-${candidateIndex}`)
-    .digest("hex")
-    .slice(0, 20);
+function sessionId(route: StoredRoute, now: number, logicalOperationId = route.id, candidateIndex = 0): string {
+  const bucket = route.rotation.mode === "interval" ? Math.floor(now / (route.rotation.intervalSeconds * 1_000)) : 0;
+  const scope =
+    route.rotation.mode === "per_request"
+      ? logicalOperationId
+      : `${route.session.mode === "sticky" ? (route.session.id ?? route.id) : route.id}:${bucket}`;
+  return createHash("sha256").update(`${scope}:${route.rotationEpoch}:candidate-${candidateIndex}`).digest("hex").slice(0, 20);
 }
 
 export function buildBrightDataUsername(
@@ -121,11 +112,13 @@ export class BrightDataAdapter implements ProviderAdapter {
         assignmentMode: "provider_guaranteed",
         providerManagedReassignmentDisabled: true,
         changeReason: options.candidateIndex === 0 ? "selection" : "retry",
-        ...(route.targeting.city === undefined ? {} : {
-          expectedCity: route.targeting.city,
-          observedCity: route.targeting.city,
-          verificationSource: "provider_guarantee",
-        }),
+        ...(route.targeting.city === undefined
+          ? {}
+          : {
+              expectedCity: route.targeting.city,
+              observedCity: route.targeting.city,
+              verificationSource: "provider_guarantee",
+            }),
       },
     };
   }
@@ -146,7 +139,7 @@ export class BrightDataAdapter implements ProviderAdapter {
           signal: requestSignal,
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const body = await response.json() as { status?: unknown };
+        const body = (await response.json()) as { status?: unknown };
         return body.status === true
           ? { provider: this.descriptor.id, state: "healthy", checkedAt }
           : {

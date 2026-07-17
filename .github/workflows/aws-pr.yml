@@ -1,0 +1,108 @@
+name: AWS PR environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: aws-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  production-shaped:
+    if: github.event_name == 'merge_group' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: pull-request
+    env:
+      STAGE: ci-pr-${{ github.event.pull_request.number || github.run_id }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: pnpm install --frozen-lockfile
+      - name: Provision stage secrets
+        shell: bash
+        run: |
+          pnpm sst secret set AxiomIngestToken "$AXIOM_INGEST_TOKEN" --stage "$STAGE"
+          pnpm sst secret set ControlApiToken "$CONTROL_API_TOKEN" --stage "$STAGE"
+          pnpm sst secret set HealthAggregatorToken "$HEALTH_AGGREGATOR_TOKEN" --stage "$STAGE"
+          pnpm sst secret set CanarySigningSecret "$CANARY_SIGNING_SECRET" --stage "$STAGE"
+        env:
+          AXIOM_INGEST_TOKEN: ${{ secrets.AXIOM_INGEST_TOKEN }}
+          CONTROL_API_TOKEN: ${{ secrets.CONTROL_API_TOKEN }}
+          HEALTH_AGGREGATOR_TOKEN: ${{ secrets.HEALTH_AGGREGATOR_TOKEN }}
+          CANARY_SIGNING_SECRET: ${{ secrets.CANARY_SIGNING_SECRET }}
+      - name: Deploy current main as the upgrade baseline
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          git checkout "${{ github.event.pull_request.base.sha }}"
+          pnpm install --frozen-lockfile
+          pnpm aws:deploy --stage "$STAGE"
+          git checkout "${{ github.event.pull_request.head.sha }}"
+          pnpm install --frozen-lockfile
+      - name: Deploy merge-queue candidate
+        if: github.event_name == 'merge_group'
+        run: pnpm aws:deploy --stage "$STAGE"
+      - name: Connect runner to the private VPC
+        shell: bash
+        run: |
+          pnpm sst tunnel --stage "$STAGE" > /tmp/sst-tunnel.log 2>&1 &
+          echo $! > /tmp/sst-tunnel.pid
+          for attempt in {1..30}; do
+            grep -q "Tunnel ready" /tmp/sst-tunnel.log && exit 0
+            sleep 2
+          done
+          cat /tmp/sst-tunnel.log
+          exit 1
+      - name: Seed baseline exclusively through public APIs
+        if: github.event_name == 'pull_request'
+        run: node scripts/seed-deployed-stage.mjs
+        env:
+          SST_STAGE: ${{ env.STAGE }}
+          CONTROL_API_TOKEN: ${{ secrets.CONTROL_API_TOKEN }}
+      - name: Upgrade the live baseline to the candidate
+        if: github.event_name == 'pull_request'
+        run: pnpm aws:deploy --stage "$STAGE"
+      - name: Run ordered restartable migrations
+        shell: bash
+        run: |
+          metadata="$(aws ssm get-parameter --name "/sst/profound-proxy-router/$STAGE/deployed-integration" --query 'Parameter.Value' --output text)"
+          ROUTE_TABLE_NAME="$(jq -r '.routeTable' <<< "$metadata")" pnpm migrate
+      - name: Seed through public APIs and exercise old/new compatibility
+        run: pnpm test:deployed
+        env:
+          SST_STAGE: ${{ env.STAGE }}
+          CONTROL_API_TOKEN: ${{ secrets.CONTROL_API_TOKEN }}
+          AXIOM_QUERY_TOKEN: ${{ secrets.AXIOM_QUERY_TOKEN }}
+      - name: Rollback rehearsal
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          git checkout "${{ github.event.pull_request.base.sha }}"
+          pnpm install --frozen-lockfile
+          pnpm aws:deploy --stage "$STAGE"
+          git checkout "${{ github.event.pull_request.head.sha }}"
+          pnpm install --frozen-lockfile
+          pnpm aws:deploy --stage "$STAGE"
+      - name: Remove ephemeral environment
+        if: always()
+        run: pnpm aws:remove --stage "$STAGE"

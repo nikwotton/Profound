@@ -65,9 +65,7 @@ function ipv6Bytes(address: string): Buffer {
   };
   const left = parseSide(leftText);
   const right = parseSide(rightText);
-  const groups = address.includes("::")
-    ? [...left, ...Array.from({ length: 8 - left.length - right.length }, () => 0), ...right]
-    : left;
+  const groups = address.includes("::") ? [...left, ...Array.from({ length: 8 - left.length - right.length }, () => 0), ...right] : left;
   const output = Buffer.alloc(16);
   groups.forEach((group, index) => output.writeUInt16BE(group, index * 2));
   return output;
@@ -94,9 +92,9 @@ async function openHttpTunnel(
 ): Promise<{ remainder: Buffer; providerMetadata: OpenedUpstreamTunnel["providerMetadata"] }> {
   socket.write(
     `CONNECT ${authority(target)} HTTP/1.1\r\n` +
-    `Host: ${authority(target)}\r\n` +
-    `Proxy-Authorization: ${basicAuth(upstream.username, upstream.password)}\r\n` +
-    "Connection: keep-alive\r\n\r\n",
+      `Host: ${authority(target)}\r\n` +
+      `Proxy-Authorization: ${basicAuth(upstream.username, upstream.password)}\r\n` +
+      "Connection: keep-alive\r\n\r\n",
   );
   return await new Promise((resolve, reject) => {
     let buffer = Buffer.alloc(0);
@@ -122,12 +120,14 @@ async function openHttpTunnel(
       cleanup();
       const statusLine = buffer.subarray(0, boundary).toString("latin1").split("\r\n")[0] ?? "";
       const headerLines = buffer.subarray(0, boundary).toString("latin1").split("\r\n").slice(1);
-      const headers = new Map(headerLines.map((line) => {
-        const separator = line.indexOf(":");
-        return separator < 0
-          ? [line.toLowerCase(), ""]
-          : [line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim()];
-      }));
+      const headers = new Map(
+        headerLines.map((line) => {
+          const separator = line.indexOf(":");
+          return separator < 0
+            ? [line.toLowerCase(), ""]
+            : [line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim()];
+        }),
+      );
       const status = Number(statusLine.split(" ")[1]);
       if (status === 407) {
         reject(new UpstreamError("Upstream provider authentication failed"));
@@ -171,10 +171,7 @@ async function openSocks5Tunnel(
   if (method[0] !== 0x05 || method[1] !== 0x02) {
     throw new UpstreamError("Upstream SOCKS5 proxy rejected authentication negotiation");
   }
-  socket.write(Buffer.concat([
-    Buffer.from([0x01, username.length]), username,
-    Buffer.from([password.length]), password,
-  ]));
+  socket.write(Buffer.concat([Buffer.from([0x01, username.length]), username, Buffer.from([password.length]), password]));
   const authentication = await readExactly(socket, 2);
   if (authentication[0] !== 0x01 || authentication[1] !== 0x00) {
     throw new UpstreamError("Upstream SOCKS5 proxy rejected credentials");
@@ -186,8 +183,7 @@ async function openSocks5Tunnel(
   if (reply[0] !== 0x05 || reply[1] !== 0x00) {
     throw new ProviderUnavailableError("Upstream SOCKS5 proxy rejected the tunnel");
   }
-  const addressLength = reply[3] === 0x01 ? 4 : reply[3] === 0x04 ? 16
-    : reply[3] === 0x03 ? (await readExactly(socket, 1))[0]! : undefined;
+  const addressLength = reply[3] === 0x01 ? 4 : reply[3] === 0x04 ? 16 : reply[3] === 0x03 ? (await readExactly(socket, 1))[0]! : undefined;
   if (addressLength === undefined) throw new ProviderUnavailableError("Upstream SOCKS5 proxy sent an invalid reply");
   await readExactly(socket, addressLength + 2);
   return { remainder: Buffer.alloc(0), providerMetadata: {} };
@@ -208,9 +204,10 @@ export async function openUpstreamTunnel(
   }, options.connectTimeoutMs);
   try {
     await once(socket, "connect", { signal: options.signal });
-    const opened = upstream.protocol === "http"
-      ? await openHttpTunnel(socket, target, upstream, options.maxHandshakeBytes)
-      : await openSocks5Tunnel(socket, target, upstream);
+    const opened =
+      upstream.protocol === "http"
+        ? await openHttpTunnel(socket, target, upstream, options.maxHandshakeBytes)
+        : await openSocks5Tunnel(socket, target, upstream);
     clearTimeout(timeout);
     options.signal.removeEventListener("abort", abort);
     return { socket, ...opened };

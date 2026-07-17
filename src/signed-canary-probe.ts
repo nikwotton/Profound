@@ -5,12 +5,7 @@ import type { Duplex } from "node:stream";
 import { connect as tlsConnect } from "node:tls";
 import { signCanaryChallenge } from "./canary-challenge.js";
 import type { SyntheticValidationScope } from "./health-aggregator.js";
-import type {
-  GeoIpDatasetMetadata,
-  GeoIpEvidence,
-  GeographyVerification,
-  SyntheticValidationResult,
-} from "./types.js";
+import type { GeoIpDatasetMetadata, GeoIpEvidence, GeographyVerification, SyntheticValidationResult } from "./types.js";
 
 export interface SignedCanaryProbeOptions {
   canaryUrl: string;
@@ -46,10 +41,14 @@ async function responseBody(response: NodeJS.ReadableStream, statusCode: number 
   if (parsed.geo === undefined || !["available", "unverifiable", "unavailable"].includes(parsed.geo.status)) {
     throw new Error("Canary GeoIP evidence was malformed");
   }
-  if (parsed.geo.status === "available" &&
-    (typeof parsed.geoDataset?.vendor !== "string" || parsed.geoDataset.vendor.length === 0 ||
-      typeof parsed.geoDataset.edition !== "string" || parsed.geoDataset.edition.length === 0 ||
-      !Number.isFinite(Date.parse(parsed.geoDataset.buildTimestamp)))) {
+  if (
+    parsed.geo.status === "available" &&
+    (typeof parsed.geoDataset?.vendor !== "string" ||
+      parsed.geoDataset.vendor.length === 0 ||
+      typeof parsed.geoDataset.edition !== "string" ||
+      parsed.geoDataset.edition.length === 0 ||
+      !Number.isFinite(Date.parse(parsed.geoDataset.buildTimestamp)))
+  ) {
     throw new Error("Canary GeoIP dataset metadata was malformed");
   }
   return parsed as CanaryResponse;
@@ -62,8 +61,7 @@ function normalized(value: string | undefined): string | undefined {
 
 function verifyGeography(scope: SyntheticValidationScope, response: CanaryResponse): GeographyVerification {
   if (response.geo.status !== "available") return "unverifiable";
-  const countryMatches = scope.country === undefined ||
-    normalized(scope.country) === normalized(response.geo.countryCode);
+  const countryMatches = scope.country === undefined || normalized(scope.country) === normalized(response.geo.countryCode);
   const cityMatches = scope.city === undefined || normalized(scope.city) === normalized(response.geo.city);
   return countryMatches && cityMatches ? "match" : "mismatch";
 }
@@ -71,14 +69,18 @@ function verifyGeography(scope: SyntheticValidationScope, response: CanaryRespon
 function directRequest(target: URL, body: Buffer, timeoutMs: number): Promise<CanaryResponse> {
   const send = target.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
-    const request = send(target, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "content-length": body.length,
+    const request = send(
+      target,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": body.length,
+        },
+        timeout: timeoutMs,
       },
-      timeout: timeoutMs,
-    }, (response) => void responseBody(response, response.statusCode).then(resolve, reject));
+      (response) => void responseBody(response, response.statusCode).then(resolve, reject),
+    );
     request.once("timeout", () => request.destroy(new Error("Canary request timed out")));
     request.once("error", reject);
     request.end(body);
@@ -88,21 +90,24 @@ function directRequest(target: URL, body: Buffer, timeoutMs: number): Promise<Ca
 function requestOverTunnel(target: URL, socket: Duplex, body: Buffer, timeoutMs: number): Promise<CanaryResponse> {
   const send = target.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
-    const request = send({
-      protocol: target.protocol,
-      hostname: target.hostname,
-      port: target.port || (target.protocol === "https:" ? 443 : 80),
-      path: `${target.pathname}${target.search}`,
-      method: "POST",
-      headers: {
-        host: target.host,
-        "content-type": "application/json",
-        "content-length": body.length,
+    const request = send(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || (target.protocol === "https:" ? 443 : 80),
+        path: `${target.pathname}${target.search}`,
+        method: "POST",
+        headers: {
+          host: target.host,
+          "content-type": "application/json",
+          "content-length": body.length,
+        },
+        agent: false,
+        createConnection: () => socket,
+        timeout: timeoutMs,
       },
-      agent: false,
-      createConnection: () => socket,
-      timeout: timeoutMs,
-    }, (response) => void responseBody(response, response.statusCode).then(resolve, reject));
+      (response) => void responseBody(response, response.statusCode).then(resolve, reject),
+    );
     request.once("timeout", () => request.destroy(new Error("Canary tunnel request timed out")));
     request.once("error", reject);
     request.end(body);
@@ -114,20 +119,23 @@ function proxiedRequest(target: URL, proxy: URL, body: Buffer, options: SignedCa
   const proxyAuthorization = authorization(options);
   if (target.protocol === "http:") {
     return new Promise((resolve, reject) => {
-      const request = send({
-        protocol: proxy.protocol,
-        hostname: proxy.hostname,
-        port: proxy.port || (proxy.protocol === "https:" ? 443 : 80),
-        method: "POST",
-        path: target.href,
-        headers: {
-          host: target.host,
-          "content-type": "application/json",
-          "content-length": body.length,
-          ...(proxyAuthorization === undefined ? {} : { "proxy-authorization": proxyAuthorization }),
+      const request = send(
+        {
+          protocol: proxy.protocol,
+          hostname: proxy.hostname,
+          port: proxy.port || (proxy.protocol === "https:" ? 443 : 80),
+          method: "POST",
+          path: target.href,
+          headers: {
+            host: target.host,
+            "content-type": "application/json",
+            "content-length": body.length,
+            ...(proxyAuthorization === undefined ? {} : { "proxy-authorization": proxyAuthorization }),
+          },
+          timeout: options.timeoutMs,
         },
-        timeout: options.timeoutMs,
-      }, (response) => void responseBody(response, response.statusCode).then(resolve, reject));
+        (response) => void responseBody(response, response.statusCode).then(resolve, reject),
+      );
       request.once("timeout", () => request.destroy(new Error("Proxy canary request timed out")));
       request.once("error", reject);
       request.end(body);
@@ -175,11 +183,15 @@ export class SignedCanaryProbe {
       const testId = randomUUID();
       return {
         testId,
-        body: Buffer.from(JSON.stringify(signCanaryChallenge(this.options.signingSecret, {
-          testId,
-          nonce: randomBytes(16).toString("base64url"),
-          expiresAt: new Date((this.options.now?.() ?? Date.now()) + 60_000).toISOString(),
-        }))),
+        body: Buffer.from(
+          JSON.stringify(
+            signCanaryChallenge(this.options.signingSecret, {
+              testId,
+              nonce: randomBytes(16).toString("base64url"),
+              expiresAt: new Date((this.options.now?.() ?? Date.now()) + 60_000).toISOString(),
+            }),
+          ),
+        ),
       };
     };
     if (this.options.proxyUrl === undefined) {
@@ -210,11 +222,14 @@ export class SignedCanaryProbe {
         geoStatus: result.geo.status,
         geographyVerification,
         ...(result.geoDataset === undefined ? {} : { geoDataset: result.geoDataset }),
-        ...(geographyVerification === "match" ? {} : {
-          message: geographyVerification === "mismatch"
-            ? "Observed GeoIP evidence did not match the requested geography"
-            : "Observed geography could not be verified",
-        }),
+        ...(geographyVerification === "match"
+          ? {}
+          : {
+              message:
+                geographyVerification === "mismatch"
+                  ? "Observed GeoIP evidence did not match the requested geography"
+                  : "Observed geography could not be verified",
+            }),
       };
     } catch (proxyError) {
       const direct = makeBody();

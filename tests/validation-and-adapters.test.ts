@@ -34,12 +34,16 @@ function route(overrides: Partial<StoredRoute> = {}): StoredRoute {
 }
 
 function validate(value: Record<string, unknown>) {
-  return validateRouteProfile({
-    customerId: "customer",
-    isAuthenticated: false,
-    shouldRetry: false,
-    ...value,
-  }, "user", { maxAttempts: 2 });
+  return validateRouteProfile(
+    {
+      customerId: "customer",
+      isAuthenticated: false,
+      shouldRetry: false,
+      ...value,
+    },
+    "user",
+    { maxAttempts: 2 },
+  );
 }
 
 test("control API token defaults only for local mock mode", () => {
@@ -51,22 +55,30 @@ test("control API token defaults only for local mock mode", () => {
   assert.equal(local.adminToken, "change-me");
   assert.equal(local.proxidizeExactCity, "provider_guaranteed");
 
-  assert.throws(() => loadConfig({
-    PROVIDER_MODE: "mock",
-    CONTROL_API_HOST: "0.0.0.0",
-    SQLITE_PATH: "./data/config-test.db",
-  }), /CONTROL_API_TOKEN must be set/);
+  assert.throws(
+    () =>
+      loadConfig({
+        PROVIDER_MODE: "mock",
+        CONTROL_API_HOST: "0.0.0.0",
+        SQLITE_PATH: "./data/config-test.db",
+      }),
+    /CONTROL_API_TOKEN must be set/,
+  );
 
-  assert.throws(() => loadConfig({
-    PROVIDER_MODE: "live",
-    CONTROL_API_HOST: "127.0.0.1",
-    BRIGHT_DATA_CUSTOMER_ID: "customer",
-    BRIGHT_DATA_ZONE: "zone",
-    BRIGHT_DATA_PASSWORD: "password",
-    BRIGHT_DATA_API_KEY: "api-key",
-    PROXIDIZE_API_TOKEN: "provider-token",
-    SQLITE_PATH: "./data/config-test.db",
-  }), /CONTROL_API_TOKEN must be set/);
+  assert.throws(
+    () =>
+      loadConfig({
+        PROVIDER_MODE: "live",
+        CONTROL_API_HOST: "127.0.0.1",
+        BRIGHT_DATA_CUSTOMER_ID: "customer",
+        BRIGHT_DATA_ZONE: "zone",
+        BRIGHT_DATA_PASSWORD: "password",
+        BRIGHT_DATA_API_KEY: "api-key",
+        PROXIDIZE_API_TOKEN: "provider-token",
+        SQLITE_PATH: "./data/config-test.db",
+      }),
+    /CONTROL_API_TOKEN must be set/,
+  );
 
   const shared = loadConfig({
     PROVIDER_MODE: "mock",
@@ -88,22 +100,34 @@ test("control API token defaults only for local mock mode", () => {
   });
   assert.equal(live.proxidizeExactCity, "unsupported");
 
-  assert.throws(() => loadConfig({
-    PROVIDER_MODE: "mock",
-    PROXIDIZE_EXACT_CITY_SUPPORT: "verifiable",
-    SQLITE_PATH: "./data/config-test.db",
-  }), /canonical verifier/);
+  assert.throws(
+    () =>
+      loadConfig({
+        PROVIDER_MODE: "mock",
+        PROXIDIZE_EXACT_CITY_SUPPORT: "verifiable",
+        SQLITE_PATH: "./data/config-test.db",
+      }),
+    /canonical verifier/,
+  );
 
-  assert.throws(() => loadConfig({
-    PROVIDER_MODE: "mock",
-    CONNECT_TIMEOUT_MS: "10001",
-    SQLITE_PATH: "./data/config-test.db",
-  }), /CONNECT_TIMEOUT_MS/);
-  assert.throws(() => loadConfig({
-    PROVIDER_MODE: "mock",
-    OPERATION_TIMEOUT_MS: "30001",
-    SQLITE_PATH: "./data/config-test.db",
-  }), /OPERATION_TIMEOUT_MS/);
+  assert.throws(
+    () =>
+      loadConfig({
+        PROVIDER_MODE: "mock",
+        CONNECT_TIMEOUT_MS: "10001",
+        SQLITE_PATH: "./data/config-test.db",
+      }),
+    /CONNECT_TIMEOUT_MS/,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        PROVIDER_MODE: "mock",
+        OPERATION_TIMEOUT_MS: "30001",
+        SQLITE_PATH: "./data/config-test.db",
+      }),
+    /OPERATION_TIMEOUT_MS/,
+  );
 
   const identities = loadConfig({
     PROVIDER_MODE: "mock",
@@ -115,10 +139,14 @@ test("control API token defaults only for local mock mode", () => {
 });
 
 test("DynamoDB persistence configuration requires an explicit table", () => {
-  assert.throws(() => loadConfig({
-    PROVIDER_MODE: "mock",
-    PERSISTENCE_BACKEND: "dynamodb",
-  }), /ROUTE_TABLE_NAME is required/);
+  assert.throws(
+    () =>
+      loadConfig({
+        PROVIDER_MODE: "mock",
+        PERSISTENCE_BACKEND: "dynamodb",
+      }),
+    /ROUTE_TABLE_NAME is required/,
+  );
   const config = loadConfig({
     PROVIDER_MODE: "mock",
     PERSISTENCE_BACKEND: "dynamodb",
@@ -126,10 +154,14 @@ test("DynamoDB persistence configuration requires an explicit table", () => {
   });
   assert.equal(config.persistenceBackend, "dynamodb");
   assert.equal(config.routeTableName, "route-state");
-  assert.throws(() => loadConfig({
-    PROVIDER_MODE: "mock",
-    ADVERTISED_HTTP_PROXY_PROTOCOL: "ftp",
-  }), /ADVERTISED_HTTP_PROXY_PROTOCOL must be http or https/);
+  assert.throws(
+    () =>
+      loadConfig({
+        PROVIDER_MODE: "mock",
+        ADVERTISED_HTTP_PROXY_PROTOCOL: "ftp",
+      }),
+    /ADVERTISED_HTTP_PROXY_PROTOCOL must be http or https/,
+  );
 });
 
 test("route validation supplies behavior defaults and normalizes countries", () => {
@@ -164,74 +196,110 @@ test("route validation supplies behavior defaults and normalizes countries", () 
 });
 
 test("route validation rejects incompatible mobile and ZIP policies", () => {
-  assert.throws(() => validate({
-    name: "obsolete-kind",
-    kind: "mobile",
-    targeting: { country: "US", city: "New York" },
-  }), /kind is not part of the route policy/);
-  assert.throws(() => validate({
-    name: "authenticated-without-city",
-    targeting: { country: "US", region: "NY" },
-    isAuthenticated: true,
-  }), /targeting.city is required/);
-  assert.throws(() => validate({
-    name: "no-protocols",
-    targeting: { country: "US" },
-    allowedProtocols: [],
-  }), /non-empty array/);
-  assert.throws(() => validate({
-    name: "bad-mobile",
-    isAuthenticated: true,
-    targeting: { country: "US" },
-    rotation: { mode: "per_request" },
-  }), /do not support per_request/);
-  assert.throws(() => validate({
-    name: "bad-forced-proxidize",
-    targeting: { country: "US" },
-    forceProvider: "proxidize",
-    rotation: { mode: "per_request" },
-  }), /do not support per_request/);
-  assert.throws(() => validate({
-    name: "bad-zip",
-    targeting: { country: "GB", postalCode: "SW1A" },
-  }), /requires country US/);
-  assert.throws(() => validate({
-    name: "short-interval",
-    targeting: { country: "US" },
-    rotation: { mode: "interval", intervalSeconds: 59 },
-  }), /at least 60/);
-  assert.throws(() => validate({
-    name: "too-many-attempts",
-    targeting: { country: "US" },
-    retryPolicy: { maxAttempts: 7 },
-  }), /from 1 to 6/);
-  assert.throws(() => validate({
-    name: "retry-backoff",
-    targeting: { country: "US" },
-    retryPolicy: { backoffMs: 100 },
-  }), /do not back off/);
-  assert.throws(() => validate({
-    name: "contradictory-session",
-    targeting: { country: "US" },
-    rotation: { mode: "per_request" },
-    session: { mode: "sticky", id: "session-1" },
-  }), /incompatible with per_request/);
+  assert.throws(
+    () =>
+      validate({
+        name: "obsolete-kind",
+        kind: "mobile",
+        targeting: { country: "US", city: "New York" },
+      }),
+    /kind is not part of the route policy/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "authenticated-without-city",
+        targeting: { country: "US", region: "NY" },
+        isAuthenticated: true,
+      }),
+    /targeting.city is required/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "no-protocols",
+        targeting: { country: "US" },
+        allowedProtocols: [],
+      }),
+    /non-empty array/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "bad-mobile",
+        isAuthenticated: true,
+        targeting: { country: "US" },
+        rotation: { mode: "per_request" },
+      }),
+    /do not support per_request/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "bad-forced-proxidize",
+        targeting: { country: "US" },
+        forceProvider: "proxidize",
+        rotation: { mode: "per_request" },
+      }),
+    /do not support per_request/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "bad-zip",
+        targeting: { country: "GB", postalCode: "SW1A" },
+      }),
+    /requires country US/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "short-interval",
+        targeting: { country: "US" },
+        rotation: { mode: "interval", intervalSeconds: 59 },
+      }),
+    /at least 60/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "too-many-attempts",
+        targeting: { country: "US" },
+        retryPolicy: { maxAttempts: 7 },
+      }),
+    /from 1 to 6/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "retry-backoff",
+        targeting: { country: "US" },
+        retryPolicy: { backoffMs: 100 },
+      }),
+    /do not back off/,
+  );
+  assert.throws(
+    () =>
+      validate({
+        name: "contradictory-session",
+        targeting: { country: "US" },
+        rotation: { mode: "per_request" },
+        session: { mode: "sticky", id: "session-1" },
+      }),
+    /incompatible with per_request/,
+  );
 });
 
 test("Bright Data credentials encode targeting and pin each per-request candidate to a unique constant session", () => {
   const prefix = "brd-customer-customer1-zone-zone1-country-us-state-ny-city-newyork-zip-10001-asn-12345-carrier-tmobile";
-  const username = buildBrightDataUsername(
-    { customerId: "customer-1", zone: "zone-1" },
-    route(),
-    1,
-    { logicalOperationId: "operation-1", candidateIndex: 0 },
-  );
-  const next = buildBrightDataUsername(
-    { customerId: "customer-1", zone: "zone-1" },
-    route(),
-    1,
-    { logicalOperationId: "operation-2", candidateIndex: 0 },
-  );
+  const username = buildBrightDataUsername({ customerId: "customer-1", zone: "zone-1" }, route(), 1, {
+    logicalOperationId: "operation-1",
+    candidateIndex: 0,
+  });
+  const next = buildBrightDataUsername({ customerId: "customer-1", zone: "zone-1" }, route(), 1, {
+    logicalOperationId: "operation-2",
+    candidateIndex: 0,
+  });
   assert.match(username, new RegExp(`^${prefix}-session-[a-f0-9]{20}$`));
   assert.notEqual(username, next);
 });
@@ -264,25 +332,37 @@ test("Bright Data health uses the authenticated residential network-status API w
     },
   });
   assert.equal((await adapter.health()).state, "healthy");
-  assert.deepEqual(requested, [{
-    url: "https://api.brightdata.com/network_status/res",
-    authorization: "Bearer api-key",
-  }]);
+  assert.deepEqual(requested, [
+    {
+      url: "https://api.brightdata.com/network_status/res",
+      authorization: "Bearer api-key",
+    },
+  ]);
 });
 
 test("literal target validation blocks explicit private, metadata, and reserved addresses without using local DNS for routing", async () => {
   for (const address of [
-    "127.0.0.1", "10.0.0.1", "169.254.169.254", "192.168.1.1", "198.51.100.1",
-    "::1", "64:ff9b:1::1", "100:0:0:1::1", "2001:10::1", "3fff::1", "4000::1", "fc00::1",
+    "127.0.0.1",
+    "10.0.0.1",
+    "169.254.169.254",
+    "192.168.1.1",
+    "198.51.100.1",
+    "::1",
+    "64:ff9b:1::1",
+    "100:0:0:1::1",
+    "2001:10::1",
+    "3fff::1",
+    "4000::1",
+    "fc00::1",
   ]) {
     assert.equal(isPublicAddress(address), false, address);
   }
   assert.equal(isPublicAddress("8.8.8.8"), true);
   assert.equal(isPublicAddress("2606:4700:4700::1111"), true);
-  const validate = createTargetValidator(
-    new Set([80, 443]),
-    async () => [{ address: "8.8.8.8", family: 4 }, { address: "10.0.0.1", family: 4 }],
-  );
+  const validate = createTargetValidator(new Set([80, 443]), async () => [
+    { address: "8.8.8.8", family: 4 },
+    { address: "10.0.0.1", family: 4 },
+  ]);
   const diagnostic = await validate("mixed.example", 443);
   assert.deepEqual(await diagnostic?.localResolution, {
     status: "available",

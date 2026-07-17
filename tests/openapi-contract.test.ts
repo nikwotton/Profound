@@ -29,7 +29,11 @@ test("OpenAPI compatibility check rejects breaking management-contract changes",
   const post = operation?.post as Record<string, unknown> | undefined;
   if (post === undefined) assert.fail("Expected POST /v1/routes to exist");
   post.parameters = [{ name: "x-breaking-input", in: "header", required: true, schema: { type: "string" } }];
-  assert.ok(findBreakingOpenApiChanges(baseline, newlyRequired).some((change) => change.includes("added required parameter header:x-breaking-input")));
+  assert.ok(
+    findBreakingOpenApiChanges(baseline, newlyRequired).some((change) =>
+      change.includes("added required parameter header:x-breaking-input"),
+    ),
+  );
 
   const additive = structuredClone(baseline);
   additive.paths ??= {};

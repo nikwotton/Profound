@@ -21,6 +21,9 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit && tsc -p tsconfig.sst.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "tools/lint/node_modules/.bin/eslint --config tools/lint/eslint.config.mjs src tests infra sst.config.ts",
     "openapi:generate": "pnpm build && node scripts/openapi-contract.mjs generate",
     "openapi:check": "pnpm build && node scripts/openapi-contract.mjs check",
     "openapi:compat": "pnpm build && node scripts/openapi-contract.mjs compatibility",
@@ -30,18 +33,29 @@
     "aws:remove": "sst remove",
     "sst:dev": "sst dev",
     "start": "node dist/src/index.js",
+    "test:unit": "vitest run",
+    "test:property": "vitest run tests/property",
+    "test:release-policy": "pnpm build && node --test dist/tests/release-policy.test.js dist/tests/deployment-coordinator.test.js dist/tests/deployment-coordinator-runtime.test.js dist/tests/migration-runner.test.js",
+    "pr:policy": "pnpm build && node scripts/validate-pr-policy.mjs",
+    "provider:freshness": "node scripts/provider-freshness.mjs",
+    "migrate": "pnpm build && node scripts/run-migrations.mjs",
     "test": "pnpm build && node --test dist/tests/*.test.js dist/tests/**/*.test.js",
     "test:deployed": "pnpm build && RUN_DEPLOYED_SST_TESTS=1 node --test --test-concurrency=1 dist/tests/*.test.js dist/tests/deployed/**/*.test.js",
     "test:live": "pnpm build && RUN_LIVE_PROXY_TESTS=1 node --test dist/tests/live/**/*.test.js"
   },
   "devDependencies": {
+    "@effect/vitest": "^0.27.0",
     "@types/node": "^22.15.30",
+    "fast-check": "^4.0.0",
+    "prettier": "^3.0.0",
     "sst": "^4.17.1",
     "tsx": "^4.20.3",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^3.0.0"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1086.0",
+    "@aws-sdk/client-sns": "^3.1089.0",
     "@aws-sdk/lib-dynamodb": "^3.1086.0",
     "@effect/opentelemetry": "^0.63.0",
     "@effect/platform": "^0.96.2",

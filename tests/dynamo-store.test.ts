@@ -2,13 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { DynamoRouteStore } from "../src/dynamo-store.js";
-import type {
-  CapabilityHealthSnapshot,
-  HealthAlertEvent,
-  HealthAlertState,
-  ProviderHealth,
-  RouteProfile,
-} from "../src/types.js";
+import type { CapabilityHealthSnapshot, HealthAlertEvent, HealthAlertState, ProviderHealth, RouteProfile } from "../src/types.js";
 
 interface CapturedCommand {
   constructor: { name: string };
@@ -50,11 +44,13 @@ test("DynamoDB persistence hashes credentials and uses the route and affinity in
           ? { Items: healthItem === undefined ? [] : [healthItem] }
           : values[":entity"] === "access_grant"
             ? { Items: accessGrantItem === undefined ? [] : [accessGrantItem] }
-          : { Items: routeItem === undefined ? [] : [routeItem] };
+            : { Items: routeItem === undefined ? [] : [routeItem] };
       }
       return {};
     },
-    destroy: () => { destroyed = true; },
+    destroy: () => {
+      destroyed = true;
+    },
   } as unknown as DynamoDBDocumentClient;
   const store = new DynamoRouteStore("route-state", client);
   const profile: RouteProfile = {
@@ -79,7 +75,10 @@ test("DynamoDB persistence hashes credentials and uses the route and affinity in
   assert.doesNotMatch(JSON.stringify(accessGrantItem), new RegExp(token));
   assert.equal((await store.authenticateAccessGrant("grant-1", token))?.id, "grant-1");
   assert.equal(await store.authenticateAccessGrant("grant-1", "incorrect"), undefined);
-  assert.deepEqual((await store.list()).map((route) => route.id), ["route-1"]);
+  assert.deepEqual(
+    (await store.list()).map((route) => route.id),
+    ["route-1"],
+  );
   assert.equal(await store.assignmentCount("device-1"), 2);
 
   const health: ProviderHealth = {
@@ -100,8 +99,9 @@ test("DynamoDB persistence hashes credentials and uses the route and affinity in
   assert.deepEqual(await store.latestCapabilityHealth(), snapshot);
   assert.deepEqual(await store.capabilityHealthHistory(10), [snapshot]);
   await store.revoke("route-1");
-  const revoke = commands.find((command) =>
-    command.constructor.name === "UpdateCommand" && String(command.input.UpdateExpression).includes("REMOVE gsi1pk"));
+  const revoke = commands.find(
+    (command) => command.constructor.name === "UpdateCommand" && String(command.input.UpdateExpression).includes("REMOVE gsi1pk"),
+  );
   assert.match(String(revoke?.input.UpdateExpression), /REMOVE gsi1pk, gsi1sk/);
   await store.close();
   assert.equal(destroyed, true);
@@ -241,10 +241,7 @@ test("DynamoDB device leases conditionally lock endpoints and survive gateway-lo
   const now = "2026-07-15T00:00:00.000Z";
   const first = await store.acquireDeviceLease("session-a", "route-a", ["device-1"], now, 15 * 60_000);
   assert.equal(first?.endpointId, "device-1");
-  assert.equal(
-    await store.acquireDeviceLease("session-b", "route-b", ["device-1"], now, 15 * 60_000),
-    undefined,
-  );
+  assert.equal(await store.acquireDeviceLease("session-b", "route-b", ["device-1"], now, 15 * 60_000), undefined);
   assert.equal((await store.getDeviceLease("session-a"))?.routeId, "route-a");
   await store.releaseDeviceLease("session-a");
   const replacement = await store.acquireDeviceLease("session-b", "route-b", ["device-1"], now, 15 * 60_000);

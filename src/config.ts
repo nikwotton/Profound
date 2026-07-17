@@ -19,6 +19,7 @@ export interface AppConfig {
   advertisedHttpProxyProtocol: "http" | "https";
   sqlitePath: string;
   routeTableName?: string;
+  deploymentId: string;
   allowedTargetPorts: Set<number>;
   attemptEstablishmentTimeoutMs: number;
   operationEstablishmentTimeoutMs: number;
@@ -39,13 +40,7 @@ export interface AppConfig {
   proxidize: { apiBaseUrl: string; apiToken: string };
 }
 
-function integer(
-  value: string | undefined,
-  fallback: number,
-  field: string,
-  minimum = 0,
-  maximum = 65_535,
-): number {
+function integer(value: string | undefined, fallback: number, field: string, minimum = 0, maximum = 65_535): number {
   const result = value === undefined ? fallback : Number(value);
   if (!Number.isInteger(result) || result < minimum || result > maximum) {
     throw new ValidationError(`${field} must be an integer from ${minimum} to ${maximum}`);
@@ -62,7 +57,10 @@ function targetPorts(value: string | undefined): Set<number> {
 }
 
 function isLoopbackHost(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  const normalized = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, "$1");
   if (normalized === "localhost" || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
   return isIP(normalized) === 4 && normalized.split(".")[0] === "127";
 }
@@ -81,8 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ValidationError("ADVERTISED_HTTP_PROXY_PROTOCOL must be http or https");
   }
   const controlHost = env.CONTROL_API_HOST ?? "127.0.0.1";
-  const proxidizeExactCity = env.PROXIDIZE_EXACT_CITY_SUPPORT ??
-    (providerMode === "mock" ? "provider_guaranteed" : "unsupported");
+  const proxidizeExactCity = env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported");
   if (!new Set(["provider_guaranteed", "unsupported"]).has(proxidizeExactCity)) {
     throw new ValidationError(
       "PROXIDIZE_EXACT_CITY_SUPPORT must be provider_guaranteed or unsupported; verifiable requires a configured canonical verifier",
@@ -102,10 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       throw new ValidationError("CONTROL_API_IDENTITIES_JSON must map bearer tokens to trusted user IDs");
     }
     const entries = Object.entries(parsed as Record<string, unknown>);
-    if (
-      entries.length === 0 ||
-      entries.some(([token, user]) => token.trim() === "" || typeof user !== "string" || user.trim() === "")
-    ) {
+    if (entries.length === 0 || entries.some(([token, user]) => token.trim() === "" || typeof user !== "string" || user.trim() === "")) {
       throw new ValidationError("CONTROL_API_IDENTITIES_JSON requires non-empty token and user ID strings");
     }
     controlIdentities = new Map(entries.map(([token, user]) => [token, (user as string).trim()]));
@@ -114,8 +108,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (persistenceBackend === "dynamodb" && !routeTableName) {
     throw new ValidationError("ROUTE_TABLE_NAME is required when PERSISTENCE_BACKEND=dynamodb");
   }
-  if (env.CONTROL_API_DISABLED !== "true" &&
-    (providerMode === "live" || !isLoopbackHost(controlHost)) && controlIdentities.has("change-me")) {
+  if (
+    env.CONTROL_API_DISABLED !== "true" &&
+    (providerMode === "live" || !isLoopbackHost(controlHost)) &&
+    controlIdentities.has("change-me")
+  ) {
     throw new ValidationError(
       "CONTROL_API_TOKEN must be set to a non-placeholder value in live mode or when CONTROL_API_HOST is not loopback",
     );
@@ -138,15 +135,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     advertisedHttpProxyProtocol,
     sqlitePath,
     ...(routeTableName === undefined ? {} : { routeTableName }),
+    deploymentId: env.DEPLOYMENT_ID?.trim() || "local",
     allowedTargetPorts: targetPorts(env.ALLOWED_TARGET_PORTS),
     attemptEstablishmentTimeoutMs: integer(env.CONNECT_TIMEOUT_MS, 10_000, "CONNECT_TIMEOUT_MS", 1, 10_000),
-    operationEstablishmentTimeoutMs: integer(
-      env.OPERATION_TIMEOUT_MS,
-      30_000,
-      "OPERATION_TIMEOUT_MS",
-      1,
-      30_000,
-    ),
+    operationEstablishmentTimeoutMs: integer(env.OPERATION_TIMEOUT_MS, 30_000, "OPERATION_TIMEOUT_MS", 1, 30_000),
     streamIdleTimeoutMs: integer(env.STREAM_IDLE_TIMEOUT_MS, 60_000, "STREAM_IDLE_TIMEOUT_MS", 1, 3_600_000),
     maxHeaderBytes: integer(env.MAX_HEADER_BYTES, 32 * 1024, "MAX_HEADER_BYTES", 1_024, 1_048_576),
     retryDefaults: {
@@ -160,10 +152,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       customerId: env.BRIGHT_DATA_CUSTOMER_ID ?? "mock-customer",
       zone: env.BRIGHT_DATA_ZONE ?? "residential",
       password: env.BRIGHT_DATA_PASSWORD ?? "mock-bright-password",
-      ...(env.BRIGHT_DATA_API_KEY?.trim() ? {
-        apiKey: env.BRIGHT_DATA_API_KEY.trim(),
-        statusApiUrl: env.BRIGHT_DATA_STATUS_API_URL ?? "https://api.brightdata.com/network_status/res",
-      } : {}),
+      ...(env.BRIGHT_DATA_API_KEY?.trim()
+        ? {
+            apiKey: env.BRIGHT_DATA_API_KEY.trim(),
+            statusApiUrl: env.BRIGHT_DATA_STATUS_API_URL ?? "https://api.brightdata.com/network_status/res",
+          }
+        : {}),
     },
     proxidize: {
       apiBaseUrl: env.PROXIDIZE_API_BASE_URL ?? "https://api.proxidize.com",

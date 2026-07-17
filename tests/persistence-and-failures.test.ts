@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createLogger } from "../src/logger.js";
-import {
-  createRoute,
-  requestViaProxy,
-  socks5AuthenticationStatus,
-  startHttpTarget,
-  startTestApp,
-} from "./helpers.js";
+import { createRoute, requestViaProxy, socks5AuthenticationStatus, startHttpTarget, startTestApp } from "./helpers.js";
 
 test("access-grant credentials and mobile affinity survive a service restart", async (t) => {
   const target = await startHttpTarget();
@@ -40,7 +34,9 @@ test("access-grant credentials and mobile affinity survive a service restart", a
 test("provider authentication, rate limiting, and unavailable peers are normalized", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
-  t.after(async () => { await Promise.all([target.stop(), testApp.stop()]); });
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
   const route = await createRoute(testApp.application, {
     name: "failures",
     targeting: { country: "US" },
@@ -109,7 +105,9 @@ test("data-plane attempt logs include attribution and byte counts without reques
   const logger = createLogger((line) => lines.push(line));
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port], undefined, logger);
-  t.after(async () => { await Promise.all([target.stop(), testApp.stop()]); });
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
   const route = await createRoute(testApp.application, {
     name: "telemetry",
     targeting: { country: "US" },

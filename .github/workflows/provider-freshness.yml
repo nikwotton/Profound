@@ -1,0 +1,46 @@
+name: Provider contract freshness
+
+on:
+  schedule:
+    - cron: "29 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - id: freshness
+        continue-on-error: true
+        run: pnpm provider:freshness -- --remote
+      - if: steps.freshness.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "Provider API documentation needs review";
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: "open", labels: "provider-freshness"
+            });
+            if (!existing.data.some(issue => issue.title === title)) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                labels: ["provider-freshness"],
+                body: "The scheduled provider freshness check observed documentation newer than the pinned review date. Review the linked sources, update the versioned contracts and simulators, and close this issue through the normal PR gates."
+              });
+            }
+      - if: steps.freshness.outcome == 'failure'
+        run: exit 1

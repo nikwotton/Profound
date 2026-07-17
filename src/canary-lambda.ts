@@ -50,19 +50,22 @@ function integer(value: string | undefined, fallback: number, name: string): num
 }
 
 const runtime = (async () => {
-  const geoIp = new LocalGeoIpResolver({
-    databasePath: resolve(process.env.GEOIP_DATABASE_PATH ?? "./data/GeoLite2-City.mmdb"),
-    maximumAccuracyRadiusKm: integer(
-      process.env.GEOIP_MAX_ACCURACY_RADIUS_KM,
-      100,
-      "GEOIP_MAX_ACCURACY_RADIUS_KM",
-    ),
-  }, securityLogger);
+  const geoIp = new LocalGeoIpResolver(
+    {
+      databasePath: resolve(process.env.GEOIP_DATABASE_PATH ?? "./data/GeoLite2-City.mmdb"),
+      maximumAccuracyRadiusKm: integer(process.env.GEOIP_MAX_ACCURACY_RADIUS_KM, 100, "GEOIP_MAX_ACCURACY_RADIUS_KM"),
+    },
+    securityLogger,
+  );
   await geoIp.load();
-  return new PublicCanary({
-    signingSecret: required(process.env.CANARY_SIGNING_SECRET, "CANARY_SIGNING_SECRET"),
-    requestsPerMinute: integer(process.env.CANARY_REQUESTS_PER_MINUTE, 60, "CANARY_REQUESTS_PER_MINUTE"),
-  }, securityLogger, geoIp);
+  return new PublicCanary(
+    {
+      signingSecret: required(process.env.CANARY_SIGNING_SECRET, "CANARY_SIGNING_SECRET"),
+      requestsPerMinute: integer(process.env.CANARY_REQUESTS_PER_MINUTE, 60, "CANARY_REQUESTS_PER_MINUTE"),
+    },
+    securityLogger,
+    geoIp,
+  );
 })();
 
 function otlpValue(value: unknown): { stringValue?: string; intValue?: string; doubleValue?: number; boolValue?: boolean } {
@@ -123,69 +126,89 @@ async function exportInvocationTelemetry(
   };
   const requests = [
     postOtlp("/v1/logs", {
-      resourceLogs: [{
-        resource,
-        scopeLogs: [{
-          scope: { name: `${serviceName}.security`, version: "0.3.0" },
-          logRecords: parsedLogs.map((entry) => ({
-            timeUnixNano: unixNano(entry.time),
-            severityText: entry.level.toUpperCase(),
-            body: { stringValue: entry.message },
-            attributes: attributes({ "log.category": "security", ...(entry.context ?? {}) }),
-          })),
-        }],
-      }],
+      resourceLogs: [
+        {
+          resource,
+          scopeLogs: [
+            {
+              scope: { name: `${serviceName}.security`, version: "0.3.0" },
+              logRecords: parsedLogs.map((entry) => ({
+                timeUnixNano: unixNano(entry.time),
+                severityText: entry.level.toUpperCase(),
+                body: { stringValue: entry.message },
+                attributes: attributes({ "log.category": "security", ...(entry.context ?? {}) }),
+              })),
+            },
+          ],
+        },
+      ],
     }),
     postOtlp("/v1/traces", {
-      resourceSpans: [{
-        resource,
-        scopeSpans: [{
-          scope: { name: serviceName, version: "0.3.0" },
-          spans: [{
-            traceId,
-            spanId,
-            name: "canary.http",
-            kind: 2,
-            startTimeUnixNano: unixNano(startedAt),
-            endTimeUnixNano: unixNano(finishedAt),
-            attributes: attributes(commonAttributes),
-            status: { code: statusCode < 500 ? 1 : 2 },
-          }],
-        }],
-      }],
+      resourceSpans: [
+        {
+          resource,
+          scopeSpans: [
+            {
+              scope: { name: serviceName, version: "0.3.0" },
+              spans: [
+                {
+                  traceId,
+                  spanId,
+                  name: "canary.http",
+                  kind: 2,
+                  startTimeUnixNano: unixNano(startedAt),
+                  endTimeUnixNano: unixNano(finishedAt),
+                  attributes: attributes(commonAttributes),
+                  status: { code: statusCode < 500 ? 1 : 2 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
     }),
     postOtlp("/v1/metrics", {
-      resourceMetrics: [{
-        resource,
-        scopeMetrics: [{
-          scope: { name: serviceName, version: "0.3.0" },
-          metrics: [{
-            name: "profound.canary.requests",
-            unit: "{request}",
-            sum: {
-              aggregationTemporality: 2,
-              isMonotonic: true,
-              dataPoints: [{
-                startTimeUnixNano: unixNano(startedAt),
-                timeUnixNano: unixNano(finishedAt),
-                asInt: "1",
-                attributes: attributes(commonAttributes),
-              }],
+      resourceMetrics: [
+        {
+          resource,
+          scopeMetrics: [
+            {
+              scope: { name: serviceName, version: "0.3.0" },
+              metrics: [
+                {
+                  name: "profound.canary.requests",
+                  unit: "{request}",
+                  sum: {
+                    aggregationTemporality: 2,
+                    isMonotonic: true,
+                    dataPoints: [
+                      {
+                        startTimeUnixNano: unixNano(startedAt),
+                        timeUnixNano: unixNano(finishedAt),
+                        asInt: "1",
+                        attributes: attributes(commonAttributes),
+                      },
+                    ],
+                  },
+                },
+              ],
             },
-          }],
-        }],
-      }],
+          ],
+        },
+      ],
     }),
   ];
   const results = await Promise.allSettled(requests);
   for (const result of results) {
     if (result.status === "rejected") {
-      console.error(JSON.stringify({
-        level: "error",
-        time: new Date().toISOString(),
-        message: "Canary OTLP export failed",
-        context: { error: result.reason instanceof Error ? result.reason.message : "unknown" },
-      }));
+      console.error(
+        JSON.stringify({
+          level: "error",
+          time: new Date().toISOString(),
+          message: "Canary OTLP export failed",
+          context: { error: result.reason instanceof Error ? result.reason.message : "unknown" },
+        }),
+      );
     }
   }
 }

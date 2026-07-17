@@ -18,7 +18,7 @@ import { closeServer, listen } from "./net-utils.js";
 import { RouteService } from "./route-service.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
-import type { AuthenticatedRoute, ListenAddress, UpstreamEndpoint } from "./types.js";
+import { DEVICE_LEASE_IDLE_TIMEOUT_MS, type AuthenticatedRoute, type ListenAddress, type UpstreamEndpoint } from "./types.js";
 import { openUpstreamTunnel } from "./upstream-tunnel.js";
 
 export interface Socks5ProxyOptions {
@@ -78,7 +78,7 @@ function ipv6Text(bytes: Buffer): string {
 }
 
 async function readTarget(reader: HandshakeReader, addressType: number): Promise<string> {
-  if (addressType === 0x01) return [...await reader.read(4)].join(".");
+  if (addressType === 0x01) return [...(await reader.read(4))].join(".");
   if (addressType === 0x04) return ipv6Text(await reader.read(16));
   if (addressType === 0x03) {
     const length = (await reader.read(1))[0]!;
@@ -138,17 +138,24 @@ export class Socks5ProxyServer {
     const finishOperation = (outcome: "success" | "failure", error?: unknown): void => {
       if (finished) return;
       finished = true;
-      this.options.telemetry.finishSpan(operationSpan, startedAt, {
-        plane: "data",
-        protocol: "socks5",
-        outcome,
-        ...(route === undefined ? {} : {
-          "proxy.route.id": route.id,
-          "proxy.access_grant.id": route.accessGrantId,
-          "enduser.id": route.userId,
-          "customer.id": route.customerId,
-        }),
-      }, error);
+      this.options.telemetry.finishSpan(
+        operationSpan,
+        startedAt,
+        {
+          plane: "data",
+          protocol: "socks5",
+          outcome,
+          ...(route === undefined
+            ? {}
+            : {
+                "proxy.route.id": route.id,
+                "proxy.access_grant.id": route.accessGrantId,
+                "enduser.id": route.userId,
+                "customer.id": route.customerId,
+              }),
+        },
+        error,
+      );
     };
 
     clientSocket.setTimeout(this.options.attemptEstablishmentTimeoutMs, () => {
@@ -191,11 +198,7 @@ export class Socks5ProxyServer {
         return;
       }
       this.routes.assertProtocolAllowed(route, "socks5");
-      initialBudget = beginAttemptBudget(
-        establishmentDeadline,
-        this.options.attemptEstablishmentTimeoutMs,
-        callerController.signal,
-      );
+      initialBudget = beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
       const targetValidation = await this.options.targetValidator(targetHost, targetPort, initialBudget.signal);
       operationSpan.setAttributes({
         "proxy.route.id": route.id,
@@ -211,13 +214,10 @@ export class Socks5ProxyServer {
       const resolutionState = this.routes.createResolutionState();
       let lastError: unknown;
       for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
-        const budget = attemptIndex === 0 && initialBudget !== undefined
-          ? initialBudget
-          : beginAttemptBudget(
-              establishmentDeadline,
-              this.options.attemptEstablishmentTimeoutMs,
-              callerController.signal,
-            );
+        const budget =
+          attemptIndex === 0 && initialBudget !== undefined
+            ? initialBudget
+            : beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
         const attemptId = randomUUID();
         const attemptStartedAt = Date.now();
         const attemptSpan = this.options.telemetry.startSpan("proxy.upstream_attempt", {
@@ -233,13 +233,10 @@ export class Socks5ProxyServer {
         });
         let upstream: UpstreamEndpoint | undefined;
         try {
-          upstream = await this.routes.resolve(
-            route,
-            "socks5",
-            { host: targetHost, port: targetPort },
-            resolutionState,
-            { logicalOperationId: operationId, signal: budget.signal },
-          );
+          upstream = await this.routes.resolve(route, "socks5", { host: targetHost, port: targetPort }, resolutionState, {
+            logicalOperationId: operationId,
+            signal: budget.signal,
+          });
           attemptSpan.setAttributes(assignmentAttributes(upstream.assignment));
           this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "selected", upstream.assignment);
           if (upstream.assignment.previousCandidateId !== undefined) {
@@ -273,12 +270,7 @@ export class Socks5ProxyServer {
           });
           if (opened.providerMetadata.opaqueIpId !== undefined) {
             upstream.assignment.opaqueIpId = opened.providerMetadata.opaqueIpId;
-            this.options.telemetry.recordCandidateEvent(
-              attemptSpan,
-              upstream.provider,
-              "identity_observed",
-              upstream.assignment,
-            );
+            this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "identity_observed", upstream.assignment);
             this.options.logger.info("Upstream candidate identity observed", {
               logicalOperationId: operationId,
               upstreamAttemptId: attemptId,
@@ -298,7 +290,7 @@ export class Socks5ProxyServer {
             opened.socket.destroy();
             throw error;
           }
-          const stopTracking = this.routes.trackActiveConnection(route.id, route.accessGrantId, upstream, () => {
+          const stopTracking = await this.routes.trackActiveConnection(route.id, route.accessGrantId, "socks5", upstream, () => {
             clientSocket.destroy(new AppError("Route was emergency-revoked", "route_emergency_revoked", 403));
             opened.socket.destroy();
           });
@@ -312,26 +304,48 @@ export class Socks5ProxyServer {
           });
           sendReply(clientSocket, 0x00);
           if (opened.remainder.length > 0) clientSocket.write(opened.remainder);
-          clientSocket.pipe(counter((bytes) => { bytesSent += bytes; })).pipe(opened.socket);
-          opened.socket.pipe(counter((bytes) => { bytesReceived += bytes; })).pipe(clientSocket);
+          clientSocket
+            .pipe(
+              counter((bytes) => {
+                bytesSent += bytes;
+              }),
+            )
+            .pipe(opened.socket);
+          opened.socket
+            .pipe(
+              counter((bytes) => {
+                bytesReceived += bytes;
+              }),
+            )
+            .pipe(clientSocket);
           let tunnelFinished = false;
+          const activeRoute = route;
+          const activeUpstream = upstream;
           const finishTunnel = (outcome: "success" | "failure", error?: unknown): void => {
             if (tunnelFinished) return;
             tunnelFinished = true;
             stopTracking();
-            this.options.telemetry.finishAttempt(attemptSpan, attemptStartedAt, {
-              provider: upstream?.provider ?? "unknown",
-              protocol: "socks5",
-              outcome,
-              "proxy.failover": upstream?.provider !== route?.provider,
-              "proxy.bytes_sent": bytesSent,
-              "proxy.bytes_received": bytesReceived,
-              "proxy.endpoint.id": upstream?.endpointId ?? "unknown",
-            }, error, route === undefined ? undefined : {
-              isAuthenticated: route.isAuthenticated,
-              country: route.targeting.country,
-              ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-            });
+            this.options.telemetry.finishAttempt(
+              attemptSpan,
+              attemptStartedAt,
+              {
+                provider: upstream?.provider ?? "unknown",
+                protocol: "socks5",
+                outcome,
+                "proxy.failover": upstream?.provider !== route?.provider,
+                "proxy.bytes_sent": bytesSent,
+                "proxy.bytes_received": bytesReceived,
+                "proxy.endpoint.id": upstream?.endpointId ?? "unknown",
+              },
+              error,
+              route === undefined
+                ? undefined
+                : {
+                    isAuthenticated: route.isAuthenticated,
+                    country: route.targeting.country,
+                    ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
+                  },
+            );
             this.options.logger.info("SOCKS5 tunnel completed", {
               logicalOperationId: operationId,
               upstreamAttemptId: attemptId,
@@ -352,6 +366,36 @@ export class Socks5ProxyServer {
               bytesSent,
               bytesReceived,
             });
+            const completedAt = new Date().toISOString();
+            void this.routes
+              .recordUsage({
+                id: attemptId,
+                logicalOperationId: operationId,
+                accessGrantId: activeRoute.accessGrantId,
+                routeId: activeRoute.id,
+                userId: activeRoute.userId,
+                customerId: activeRoute.customerId,
+                provider: activeUpstream.provider,
+                protocol: "socks5",
+                outcome,
+                retryIndex: attemptIndex,
+                failover: activeUpstream.provider !== activeRoute.provider,
+                bytesSent,
+                bytesReceived,
+                country: activeRoute.targeting.country,
+                ...(activeRoute.targeting.city === undefined ? {} : { city: activeRoute.targeting.city }),
+                ...(activeUpstream.endpointId === undefined ? {} : { endpointId: activeUpstream.endpointId }),
+                ...(activeUpstream.deviceLeaseKey === undefined
+                  ? {}
+                  : {
+                      deviceLeaseKey: activeUpstream.deviceLeaseKey,
+                      leaseWindowStartedAt: new Date(attemptStartedAt).toISOString(),
+                      leaseWindowEndsAt: new Date(Date.parse(completedAt) + DEVICE_LEASE_IDLE_TIMEOUT_MS).toISOString(),
+                    }),
+                startedAt: new Date(attemptStartedAt).toISOString(),
+                completedAt,
+              })
+              .catch((usageError) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
             finishOperation(outcome, error);
           };
           clientSocket.once("close", () => finishTunnel("success"));
@@ -382,18 +426,24 @@ export class Socks5ProxyServer {
           if (upstream !== undefined) resolutionState.excludedEndpointIds.add(upstream.endpointId);
           const retry = !clientCancelled && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
           const attemptedProvider = upstream?.provider ?? providerIdFromError(error);
-          this.options.telemetry.finishAttempt(attemptSpan, attemptStartedAt, {
-            provider: attemptedProvider ?? "unresolved",
-            protocol: "socks5",
-            outcome: retry ? "retry" : "failure",
-            "proxy.failover": attemptedProvider !== undefined && attemptedProvider !== route.provider,
-            "proxy.bytes_sent": 0,
-            "proxy.bytes_received": 0,
-          }, error, {
-            isAuthenticated: route.isAuthenticated,
-            country: route.targeting.country,
-            ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-          });
+          this.options.telemetry.finishAttempt(
+            attemptSpan,
+            attemptStartedAt,
+            {
+              provider: attemptedProvider ?? "unresolved",
+              protocol: "socks5",
+              outcome: retry ? "retry" : "failure",
+              "proxy.failover": attemptedProvider !== undefined && attemptedProvider !== route.provider,
+              "proxy.bytes_sent": 0,
+              "proxy.bytes_received": 0,
+            },
+            error,
+            {
+              isAuthenticated: route.isAuthenticated,
+              country: route.targeting.country,
+              ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
+            },
+          );
           this.options.logger.warn("SOCKS5 tunnel establishment failed", {
             logicalOperationId: operationId,
             upstreamAttemptId: attemptId,
@@ -410,6 +460,29 @@ export class Socks5ProxyServer {
             retryIndex: attemptIndex,
             failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
           });
+          const completedAt = new Date().toISOString();
+          void this.routes
+            .recordUsage({
+              id: attemptId,
+              logicalOperationId: operationId,
+              accessGrantId: route.accessGrantId,
+              routeId: route.id,
+              userId: route.userId,
+              customerId: route.customerId,
+              provider: attemptedProvider ?? "unresolved",
+              protocol: "socks5",
+              outcome: retry ? "retry" : "failure",
+              retryIndex: attemptIndex,
+              failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
+              bytesSent: 0,
+              bytesReceived: 0,
+              country: route.targeting.country,
+              ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
+              ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
+              startedAt: new Date(attemptStartedAt).toISOString(),
+              completedAt,
+            })
+            .catch((usageError) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
           if (!retry) break;
         }
       }
@@ -418,9 +491,12 @@ export class Socks5ProxyServer {
       initialBudget?.finish();
       finishOperation("failure", error);
       if (requestAccepted && !clientSocket.destroyed) {
-        const replyCode = error instanceof AppError && error.code === "unsupported_socks5_address"
-          ? 0x08
-          : error instanceof AppError && error.statusCode === 403 ? 0x02 : 0x01;
+        const replyCode =
+          error instanceof AppError && error.code === "unsupported_socks5_address"
+            ? 0x08
+            : error instanceof AppError && error.statusCode === 403
+              ? 0x02
+              : 0x01;
         sendReply(clientSocket, replyCode);
         clientSocket.end();
       } else if (!clientSocket.destroyed && !clientSocket.writableEnded) {

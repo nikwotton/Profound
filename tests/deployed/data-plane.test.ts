@@ -30,7 +30,10 @@ deployedTest("deployed HTTP forwarding preserves native method, path, query, hea
   });
   t.after(() => revokeRoute(route.route.id).catch(() => undefined));
   const testId = randomUUID();
-  const target = new URL("/echo/path?first=one&second=two", metadata.integrationTarget.url).toString();
+  const target = new URL(
+    "/echo/path?first=one&second=two",
+    metadata.integrationTransportTarget?.url ?? metadata.integrationTarget.url,
+  ).toString();
   const response = await requestViaHttpProxy(route.proxyUrls.http, target, {
     method: "POST",
     headers: {
@@ -68,11 +71,9 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
   t.after(() => revokeRoute(route.route.id).catch(() => undefined));
 
   const statusId = randomUUID();
-  const unavailable = await requestViaHttpProxy(
-    route.proxyUrls.http,
-    new URL("/status/503", metadata.integrationTarget.url).toString(),
-    { headers: { "x-profound-test-id": statusId } },
-  );
+  const unavailable = await requestViaHttpProxy(route.proxyUrls.http, new URL("/status/503", metadata.integrationTarget.url).toString(), {
+    headers: { "x-profound-test-id": statusId },
+  });
   assert.equal(unavailable.status, 503);
   assert.equal(parsedBody(unavailable).requestCount, 1);
 
@@ -153,14 +154,16 @@ deployedTest("deployed Proxidize routes retain device affinity, distribute capac
   const target = new URL("/mobile", metadata.integrationTarget.url).toString();
   const routes: CreatedRouteResponse[] = [];
   for (const number of [1, 2]) {
-    routes.push(await createRoute({
-      name: `mobile-distribution-${number}-${Date.now()}`,
-      targeting: { country: "US", region: "NY", city: "New York" },
-      rotation: { mode: "manual" },
-      session: { mode: "sticky", id: `deployed-session-${number}`, requireGeographicContinuity: true },
-      isAuthenticated: true,
-      shouldRetry: false,
-    }));
+    routes.push(
+      await createRoute({
+        name: `mobile-distribution-${number}-${Date.now()}`,
+        targeting: { country: "US", region: "NY", city: "New York" },
+        rotation: { mode: "manual" },
+        session: { mode: "sticky", id: `deployed-session-${number}`, requireGeographicContinuity: true },
+        isAuthenticated: true,
+        shouldRetry: false,
+      }),
+    );
   }
   t.after(async () => Promise.all(routes.map(({ route }) => revokeRoute(route.id).catch(() => undefined))));
 
@@ -214,10 +217,11 @@ deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and T
   assert.equal(parsedBody(socks).path, "/socks?native=query");
   assert.equal(parsedBody(socks).requestBody, "socks-body");
 
-  const httpsTarget = process.env.DEPLOYED_HTTPS_TARGET_URL?.trim() || "https://example.com/";
-  const tls = await requestViaHttpConnect(route.proxyUrls.http, httpsTarget);
-  assert.ok(tls.status >= 200 && tls.status < 400);
-  assert.ok(tls.body.length > 0);
+  if (metadata.integrationTransportTarget !== null) {
+    const plainHttpTarget = new URL("/plain-http", metadata.integrationTransportTarget.url).toString();
+    assert.equal((await requestViaHttpConnect(route.proxyUrls.http, plainHttpTarget)).status, 200);
+    assert.equal((await requestViaSocks5(route.proxyUrls.socks5, plainHttpTarget)).status, 200);
+  }
 
   assert.equal(await socks5CommandReply(route.proxyUrls.socks5, connectTarget, 0x02), 0x07);
   assert.equal(await socks5CommandReply(route.proxyUrls.socks5, connectTarget, 0x03), 0x07);

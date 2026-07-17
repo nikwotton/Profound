@@ -2,17 +2,9 @@ import type { AppConfig } from "./config.js";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createServer } from "node:http";
-import {
-  HealthAlertCoordinator,
-  parseHealthAlertDestinationConfig,
-  WebhookNotificationAdapter,
-} from "./alerting.js";
+import { HealthAlertCoordinator, parseHealthAlertDestinationConfig, WebhookNotificationAdapter } from "./alerting.js";
 import { DynamoRouteStore } from "./dynamo-store.js";
-import {
-  CapabilityHealthAggregator,
-  CooldownSyntheticValidator,
-  HealthAggregatorServer,
-} from "./health-aggregator.js";
+import { CapabilityHealthAggregator, CooldownSyntheticValidator, HealthAggregatorServer } from "./health-aggregator.js";
 import { LocalGeoIpResolver, MaxMindGeoLiteUpdater } from "./geoip.js";
 import { IntegrationTargetServer } from "./integration-target.js";
 import type { Logger } from "./logger.js";
@@ -26,22 +18,29 @@ import { BrightDataSimulator } from "./simulators/bright-data.js";
 import { ProxidizeSimulator } from "./simulators/proxidize.js";
 import { SqliteRouteStore, type RouteStore } from "./store.js";
 import { StatusApplicationServer } from "./status-app.js";
+import {
+  unallocatedDeviceCapacityRecord,
+  UsageAccountingWorker,
+  type ProviderCostTotal,
+  type UnallocatedDeviceCapacity,
+  type UsageVarianceThresholds,
+} from "./usage-accounting.js";
 
 export interface RunningService {
   stop(): Promise<void>;
 }
 
-export async function startIntegrationTargetService(
-  logger: Logger,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<RunningService> {
+export async function startIntegrationTargetService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
   if (env.NODE_ENV === "production" && env.ALLOW_INTEGRATION_TARGET !== "true") {
     throw new Error("The integration target requires ALLOW_INTEGRATION_TARGET=true");
   }
-  const server = new IntegrationTargetServer({
-    host: env.INTEGRATION_TARGET_HOST ?? "127.0.0.1",
-    port: integer(env.INTEGRATION_TARGET_PORT, 8091, "INTEGRATION_TARGET_PORT", 0),
-  }, logger);
+  const server = new IntegrationTargetServer(
+    {
+      host: env.INTEGRATION_TARGET_HOST ?? "127.0.0.1",
+      port: integer(env.INTEGRATION_TARGET_PORT, 8091, "INTEGRATION_TARGET_PORT", 0),
+    },
+    logger,
+  );
   const address = await server.start();
   logger.info("Integration target started", { address });
   return { stop: () => server.stop() };
@@ -59,6 +58,12 @@ function required(value: string | undefined, name: string): string {
   return normalized;
 }
 
+function nonnegativeNumber(value: string | undefined, fallback: number, name: string): number {
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative number`);
+  return parsed;
+}
+
 function createStore(config: AppConfig): RouteStore {
   if (config.persistenceBackend === "dynamodb") {
     if (config.routeTableName === undefined) throw new Error("DynamoDB route table name is missing");
@@ -67,10 +72,7 @@ function createStore(config: AppConfig): RouteStore {
   return new SqliteRouteStore(config.sqlitePath);
 }
 
-async function createHealthProviders(
-  config: AppConfig,
-  logger: Logger,
-): Promise<{ providers: ProviderAdapter[]; stop(): Promise<void> }> {
+async function createHealthProviders(config: AppConfig, logger: Logger): Promise<{ providers: ProviderAdapter[]; stop(): Promise<void> }> {
   let brightConfig = config.brightData;
   let proxidizeConfig = config.proxidize;
   let brightSimulator: BrightDataSimulator | undefined;
@@ -91,10 +93,7 @@ async function createHealthProviders(
       apiToken: config.proxidize.apiToken,
       logger,
     });
-    const [brightAddress, proxidizeAddress] = await Promise.all([
-      brightSimulator.start(),
-      proxidizeSimulator.start(),
-    ]);
+    const [brightAddress, proxidizeAddress] = await Promise.all([brightSimulator.start(), proxidizeSimulator.start()]);
     brightConfig = { ...brightConfig, host: brightAddress.host, port: brightAddress.port };
     proxidizeConfig = {
       ...proxidizeConfig,
@@ -136,47 +135,59 @@ export async function startHealthAggregatorService(
   const providerRuntime = await createHealthProviders(config, logger);
   const canaryUrl = env.HEALTH_CANARY_URL?.trim();
   const signingSecret = env.CANARY_SIGNING_SECRET?.trim();
-  const probe = canaryUrl && signingSecret
-    ? new SignedCanaryProbe({
-        canaryUrl,
-        signingSecret,
-        ...(env.HEALTH_PROXY_URL?.trim() ? { proxyUrl: env.HEALTH_PROXY_URL.trim() } : {}),
-        ...(env.HEALTH_PROXY_USERNAME?.trim() ? { proxyUsername: env.HEALTH_PROXY_USERNAME.trim() } : {}),
-        ...(env.HEALTH_PROXY_PASSWORD?.trim() ? { proxyPassword: env.HEALTH_PROXY_PASSWORD.trim() } : {}),
-        timeoutMs: integer(env.HEALTH_SYNTHETIC_TIMEOUT_MS, 10_000, "HEALTH_SYNTHETIC_TIMEOUT_MS"),
-      })
-    : undefined;
-  const syntheticValidator = probe === undefined
-    ? undefined
-    : new CooldownSyntheticValidator(
-        (scope) => probe.run(scope),
-        integer(env.HEALTH_SYNTHETIC_COOLDOWN_MS, 300_000, "HEALTH_SYNTHETIC_COOLDOWN_MS"),
-      );
+  const probe =
+    canaryUrl && signingSecret
+      ? new SignedCanaryProbe({
+          canaryUrl,
+          signingSecret,
+          ...(env.HEALTH_PROXY_URL?.trim() ? { proxyUrl: env.HEALTH_PROXY_URL.trim() } : {}),
+          ...(env.HEALTH_PROXY_USERNAME?.trim() ? { proxyUsername: env.HEALTH_PROXY_USERNAME.trim() } : {}),
+          ...(env.HEALTH_PROXY_PASSWORD?.trim() ? { proxyPassword: env.HEALTH_PROXY_PASSWORD.trim() } : {}),
+          timeoutMs: integer(env.HEALTH_SYNTHETIC_TIMEOUT_MS, 10_000, "HEALTH_SYNTHETIC_TIMEOUT_MS"),
+        })
+      : undefined;
+  const syntheticValidator =
+    probe === undefined
+      ? undefined
+      : new CooldownSyntheticValidator(
+          (scope) => probe.run(scope),
+          integer(env.HEALTH_SYNTHETIC_COOLDOWN_MS, 300_000, "HEALTH_SYNTHETIC_COOLDOWN_MS"),
+        );
   requireServiceOwnedCapabilityAlerts(env);
   const configuredDestinationIds = (env.HEALTH_ALERT_DESTINATION_IDS ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const alerting = new HealthAlertCoordinator(store, {
-    configurationVersion: env.HEALTH_ALERT_CONFIGURATION_VERSION?.trim() || "unconfigured",
-    destinationIds: configuredDestinationIds,
-    degradedDelayMs: integer(env.HEALTH_ALERT_DEGRADED_DELAY_MS, 300_000, "HEALTH_ALERT_DEGRADED_DELAY_MS", 0),
-  }, logger);
-  const aggregator = new CapabilityHealthAggregator(store, providerRuntime.providers, {
-    passiveValidationMaxAgeMs: integer(
-      env.HEALTH_PASSIVE_MAX_AGE_MS,
-      300_000,
-      "HEALTH_PASSIVE_MAX_AGE_MS",
-    ),
-    ...(syntheticValidator === undefined ? {} : { syntheticValidator }),
-    alerting,
-  }, logger);
-  const server = new HealthAggregatorServer(aggregator, store, {
-    host: env.HEALTH_AGGREGATOR_HOST ?? "127.0.0.1",
-    port: integer(env.HEALTH_AGGREGATOR_PORT, 8082, "HEALTH_AGGREGATOR_PORT", 0),
-    token: required(env.HEALTH_AGGREGATOR_TOKEN, "HEALTH_AGGREGATOR_TOKEN"),
-    refreshIntervalMs: integer(env.HEALTH_PROVIDER_REFRESH_MS, 60_000, "HEALTH_PROVIDER_REFRESH_MS"),
-  }, logger);
+  const alerting = new HealthAlertCoordinator(
+    store,
+    {
+      configurationVersion: env.HEALTH_ALERT_CONFIGURATION_VERSION?.trim() || "unconfigured",
+      destinationIds: configuredDestinationIds,
+      degradedDelayMs: integer(env.HEALTH_ALERT_DEGRADED_DELAY_MS, 300_000, "HEALTH_ALERT_DEGRADED_DELAY_MS", 0),
+    },
+    logger,
+  );
+  const aggregator = new CapabilityHealthAggregator(
+    store,
+    providerRuntime.providers,
+    {
+      passiveValidationMaxAgeMs: integer(env.HEALTH_PASSIVE_MAX_AGE_MS, 300_000, "HEALTH_PASSIVE_MAX_AGE_MS"),
+      ...(syntheticValidator === undefined ? {} : { syntheticValidator }),
+      alerting,
+    },
+    logger,
+  );
+  const server = new HealthAggregatorServer(
+    aggregator,
+    store,
+    {
+      host: env.HEALTH_AGGREGATOR_HOST ?? "127.0.0.1",
+      port: integer(env.HEALTH_AGGREGATOR_PORT, 8082, "HEALTH_AGGREGATOR_PORT", 0),
+      token: required(env.HEALTH_AGGREGATOR_TOKEN, "HEALTH_AGGREGATOR_TOKEN"),
+      refreshIntervalMs: integer(env.HEALTH_PROVIDER_REFRESH_MS, 60_000, "HEALTH_PROVIDER_REFRESH_MS"),
+    },
+    logger,
+  );
   try {
     const address = await server.start();
     logger.info("Health aggregator started", { address });
@@ -194,10 +205,7 @@ export async function startHealthAggregatorService(
   }
 }
 
-export async function startNotificationService(
-  logger: Logger,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<RunningService> {
+export async function startNotificationService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
   const backend = env.PERSISTENCE_BACKEND ?? "sqlite";
   let store: RouteStore;
   if (backend === "dynamodb") {
@@ -210,15 +218,16 @@ export async function startNotificationService(
     throw new Error("PERSISTENCE_BACKEND must be sqlite or dynamodb");
   }
   const config = parseHealthAlertDestinationConfig(env.HEALTH_ALERT_DESTINATIONS_JSON);
-  const notifier = new WebhookNotificationAdapter(store, config.destinations, {
-    timeoutMs: integer(env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS, 5_000, "HEALTH_ALERT_WEBHOOK_TIMEOUT_MS"),
-    maxAttempts: integer(env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS, 5, "HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS"),
-    initialBackoffMs: integer(
-      env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS,
-      1_000,
-      "HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS",
-    ),
-  }, logger);
+  const notifier = new WebhookNotificationAdapter(
+    store,
+    config.destinations,
+    {
+      timeoutMs: integer(env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS, 5_000, "HEALTH_ALERT_WEBHOOK_TIMEOUT_MS"),
+      maxAttempts: integer(env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS, 5, "HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS"),
+      initialBackoffMs: integer(env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS, 1_000, "HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS"),
+    },
+    logger,
+  );
   const intervalMs = integer(env.NOTIFICATION_POLL_INTERVAL_MS, 5_000, "NOTIFICATION_POLL_INTERVAL_MS");
   let lastError: string | undefined;
   let running = false;
@@ -277,10 +286,7 @@ export async function startNotificationService(
   }
 }
 
-export async function startStatusApplicationService(
-  logger: Logger,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<RunningService> {
+export async function startStatusApplicationService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
   const backend = env.PERSISTENCE_BACKEND ?? "sqlite";
   let store: RouteStore;
   if (backend === "dynamodb") {
@@ -292,14 +298,18 @@ export async function startStatusApplicationService(
   } else {
     throw new Error("PERSISTENCE_BACKEND must be sqlite or dynamodb");
   }
-  const server = new StatusApplicationServer(store, {
-    host: env.STATUS_APP_HOST ?? "127.0.0.1",
-    port: integer(env.STATUS_APP_PORT, 8083, "STATUS_APP_PORT", 0),
-    staleAfterMs: integer(env.STATUS_STALE_AFTER_MS, 300_000, "STATUS_STALE_AFTER_MS"),
-    historyLimit: integer(env.STATUS_HISTORY_LIMIT, 100, "STATUS_HISTORY_LIMIT"),
-    ...(env.HEALTH_AGGREGATOR_URL?.trim() ? { healthAggregatorUrl: env.HEALTH_AGGREGATOR_URL.trim() } : {}),
-    ...(env.HEALTH_AGGREGATOR_TOKEN?.trim() ? { healthAggregatorToken: env.HEALTH_AGGREGATOR_TOKEN.trim() } : {}),
-  }, logger);
+  const server = new StatusApplicationServer(
+    store,
+    {
+      host: env.STATUS_APP_HOST ?? "127.0.0.1",
+      port: integer(env.STATUS_APP_PORT, 8083, "STATUS_APP_PORT", 0),
+      staleAfterMs: integer(env.STATUS_STALE_AFTER_MS, 300_000, "STATUS_STALE_AFTER_MS"),
+      historyLimit: integer(env.STATUS_HISTORY_LIMIT, 100, "STATUS_HISTORY_LIMIT"),
+      ...(env.HEALTH_AGGREGATOR_URL?.trim() ? { healthAggregatorUrl: env.HEALTH_AGGREGATOR_URL.trim() } : {}),
+      ...(env.HEALTH_AGGREGATOR_TOKEN?.trim() ? { healthAggregatorToken: env.HEALTH_AGGREGATOR_TOKEN.trim() } : {}),
+    },
+    logger,
+  );
   try {
     const address = await server.start();
     logger.info("Status application started", { address });
@@ -310,6 +320,124 @@ export async function startStatusApplicationService(
       },
     };
   } catch (error) {
+    await store.close();
+    throw error;
+  }
+}
+
+function jsonArray<T>(value: string | undefined, name: string): T[] {
+  if (value?.trim() === undefined || value.trim() === "") return [];
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) throw new Error(`${name} must be a JSON array`);
+  return parsed as T[];
+}
+
+export async function startUsageAccountingService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
+  const backend = env.PERSISTENCE_BACKEND ?? "sqlite";
+  let store: RouteStore;
+  if (backend === "dynamodb") store = new DynamoRouteStore(required(env.ROUTE_TABLE_NAME, "ROUTE_TABLE_NAME"));
+  else if (backend === "sqlite") {
+    const path = resolve(env.SQLITE_PATH ?? "./data/profound.db");
+    mkdirSync(dirname(path), { recursive: true });
+    store = new SqliteRouteStore(path);
+  } else throw new Error("PERSISTENCE_BACKEND must be sqlite or dynamodb");
+
+  let providerTotals = jsonArray<ProviderCostTotal>(env.PROVIDER_COST_TOTALS_JSON, "PROVIDER_COST_TOTALS_JSON");
+  let capacity = jsonArray<UnallocatedDeviceCapacity>(env.UNALLOCATED_DEVICE_CAPACITY_JSON, "UNALLOCATED_DEVICE_CAPACITY_JSON");
+  const sourceUrl = env.USAGE_ACCOUNTING_SOURCE_URL?.trim() || undefined;
+  const thresholds: UsageVarianceThresholds = {
+    absoluteFloorUsd: nonnegativeNumber(env.USAGE_VARIANCE_ABSOLUTE_FLOOR_USD, 1, "USAGE_VARIANCE_ABSOLUTE_FLOOR_USD"),
+    warningRelative: nonnegativeNumber(env.USAGE_VARIANCE_WARNING_RELATIVE, 0.05, "USAGE_VARIANCE_WARNING_RELATIVE"),
+    errorRelative: nonnegativeNumber(env.USAGE_VARIANCE_ERROR_RELATIVE, 0.15, "USAGE_VARIANCE_ERROR_RELATIVE"),
+  };
+  const worker = new UsageAccountingWorker(
+    store,
+    () => providerTotals,
+    thresholds,
+    (record) => {
+      const attributes = {
+        "event.name": "profound.usage.reconciliation_variance",
+        provider: record.provider,
+        periodStartedAt: record.periodStartedAt,
+        periodEndsAt: record.periodEndsAt,
+        estimatedTotalUsd: record.estimatedTotalUsd,
+        reportedTotalUsd: record.reportedTotalUsd,
+        varianceUsd: record.varianceUsd,
+        relativeVariance: record.relativeVariance,
+        varianceAttribution: record.varianceAttribution,
+        severity: record.severity,
+      };
+      if (record.severity === "error") logger.error("Usage reconciliation variance is severe or repeated", attributes);
+      else if (record.severity === "warning") logger.warn("Usage reconciliation variance exceeded a warning threshold", attributes);
+      else logger.info("Usage reconciliation completed", attributes);
+    },
+  );
+  const intervalMs = integer(env.USAGE_ACCOUNTING_INTERVAL_MS, 60_000, "USAGE_ACCOUNTING_INTERVAL_MS", 1_000);
+  let lastError: string | undefined;
+  let running = false;
+  const run = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      if (sourceUrl !== undefined) {
+        const response = await fetch(sourceUrl, {
+          headers: env.USAGE_ACCOUNTING_SOURCE_TOKEN?.trim() ? { authorization: `Bearer ${env.USAGE_ACCOUNTING_SOURCE_TOKEN.trim()}` } : {},
+          signal: AbortSignal.timeout(integer(env.USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS, 10_000, "USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS")),
+        });
+        if (!response.ok) throw new Error(`usage_accounting_source_${response.status}`);
+        const published = (await response.json()) as {
+          providerTotals?: ProviderCostTotal[];
+          unallocatedDeviceCapacity?: UnallocatedDeviceCapacity[];
+        };
+        if (published.providerTotals !== undefined) providerTotals = published.providerTotals;
+        if (published.unallocatedDeviceCapacity !== undefined) capacity = published.unallocatedDeviceCapacity;
+      }
+      for (const item of capacity) await store.recordUsage(unallocatedDeviceCapacityRecord(item));
+      const to = new Date().toISOString();
+      const from = new Date(Date.now() - 32 * 86_400_000).toISOString();
+      const rollupCount = await worker.run(from, to);
+      lastError = undefined;
+      logger.info("Usage accounting rollups completed", { rollupCount, costTotals: providerTotals.length });
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "unknown";
+      logger.error("Usage accounting rollups failed", { error: lastError });
+    } finally {
+      running = false;
+    }
+  };
+  const server = createServer((request, response) => {
+    if (request.method === "GET" && request.url === "/health/live") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "live" }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/health/ready") {
+      response.writeHead(lastError === undefined ? 200 : 503, { "content-type": "application/json" });
+      response.end(JSON.stringify(lastError === undefined ? { status: "ready" } : { status: "failed" }));
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not_found" }));
+  });
+  try {
+    const address = await listen(
+      server,
+      env.USAGE_ACCOUNTING_HOST ?? "127.0.0.1",
+      integer(env.USAGE_ACCOUNTING_PORT, 8085, "USAGE_ACCOUNTING_PORT", 0),
+    );
+    await run();
+    const timer = setInterval(() => void run(), intervalMs);
+    timer.unref();
+    logger.info("Usage accounting service started", { address });
+    return {
+      stop: async () => {
+        clearInterval(timer);
+        await closeServer(server);
+        await store.close();
+      },
+    };
+  } catch (error) {
+    await closeServer(server).catch(() => undefined);
     await store.close();
     throw error;
   }
@@ -326,22 +454,26 @@ export async function startPublicCanaryService(
     throw new Error("MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY must be configured together");
   }
   const databasePath = resolve(env.GEOIP_DATABASE_PATH ?? "./data/GeoLite2-City.mmdb");
-  const geoIp = new LocalGeoIpResolver({
-    databasePath,
-    maximumAccuracyRadiusKm: integer(
-      env.GEOIP_MAX_ACCURACY_RADIUS_KM,
-      100,
-      "GEOIP_MAX_ACCURACY_RADIUS_KM",
-    ),
-  }, logger);
+  const geoIp = new LocalGeoIpResolver(
+    {
+      databasePath,
+      maximumAccuracyRadiusKm: integer(env.GEOIP_MAX_ACCURACY_RADIUS_KM, 100, "GEOIP_MAX_ACCURACY_RADIUS_KM"),
+    },
+    logger,
+  );
   await geoIp.load();
-  const updater = accountId === undefined || licenseKey === undefined
-    ? undefined
-    : new MaxMindGeoLiteUpdater(geoIp, {
-        accountId,
-        licenseKey,
-        intervalMs: integer(env.GEOIP_UPDATE_INTERVAL_MS, 302_400_000, "GEOIP_UPDATE_INTERVAL_MS"),
-      }, logger);
+  const updater =
+    accountId === undefined || licenseKey === undefined
+      ? undefined
+      : new MaxMindGeoLiteUpdater(
+          geoIp,
+          {
+            accountId,
+            licenseKey,
+            intervalMs: integer(env.GEOIP_UPDATE_INTERVAL_MS, 302_400_000, "GEOIP_UPDATE_INTERVAL_MS"),
+          },
+          logger,
+        );
   if (updater !== undefined) {
     try {
       await updater.refresh();
@@ -353,16 +485,20 @@ export async function startPublicCanaryService(
     }
     updater.start();
   }
-  const server = new PublicCanaryServer({
-    host: env.CANARY_HOST ?? "127.0.0.1",
-    port: integer(env.CANARY_PORT, 8090, "CANARY_PORT", 0),
-    signingSecret: required(env.CANARY_SIGNING_SECRET, "CANARY_SIGNING_SECRET"),
-    trustedProxyCidrs: (env.CANARY_TRUSTED_PROXY_CIDRS ?? "")
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean),
-    requestsPerMinute: integer(env.CANARY_REQUESTS_PER_MINUTE, 60, "CANARY_REQUESTS_PER_MINUTE"),
-  }, securityLogger, geoIp);
+  const server = new PublicCanaryServer(
+    {
+      host: env.CANARY_HOST ?? "127.0.0.1",
+      port: integer(env.CANARY_PORT, 8090, "CANARY_PORT", 0),
+      signingSecret: required(env.CANARY_SIGNING_SECRET, "CANARY_SIGNING_SECRET"),
+      trustedProxyCidrs: (env.CANARY_TRUSTED_PROXY_CIDRS ?? "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+      requestsPerMinute: integer(env.CANARY_REQUESTS_PER_MINUTE, 60, "CANARY_REQUESTS_PER_MINUTE"),
+    },
+    securityLogger,
+    geoIp,
+  );
   try {
     const address = await server.start();
     logger.info("Public canary started", {

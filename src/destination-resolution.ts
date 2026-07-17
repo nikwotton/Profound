@@ -29,51 +29,57 @@ export function recordDestinationResolution(options: {
   span: Span;
   context: Record<string, unknown>;
 }): void {
-  const localPromise: Promise<LocalResolutionObservation> = options.validation?.localResolution ??
-    Promise.resolve({ status: "unavailable", addresses: [] });
-  void localPromise.catch((): LocalResolutionObservation => ({ status: "unavailable", addresses: [] })).then((local) => {
-    const localAddresses = [...local.addresses].sort();
-    const providerAddresses = [...(options.providerMetadata?.resolvedDestinationAddresses ?? [])].sort();
-    const providerStatus = providerAddresses.length === 0 ? "unavailable" : "available";
-    const verificationAvailability = local.status === "available" && providerStatus === "available"
-      ? "available"
-      : "unavailable";
-    const divergence = verificationAvailability === "available"
-      ? sameAddresses(localAddresses, providerAddresses) ? "match" : "different"
-      : "unavailable";
-    const unsafeLocalAddresses = localAddresses.filter((address) => !isPublicAddress(address));
-    const unsafeProviderAddresses = providerAddresses.filter((address) => !isPublicAddress(address));
-    const resolverCountry = options.providerMetadata?.resolverCountry;
-    const geographyVerification = resolverCountry === undefined || options.expectedCountry === undefined
-      ? "unavailable"
-      : resolverCountry.toUpperCase() === options.expectedCountry.toUpperCase() ? "match" : "mismatch";
-    const warning = unsafeLocalAddresses.length > 0 || unsafeProviderAddresses.length > 0 || geographyVerification === "mismatch";
-    const attributes = {
-      "proxy.destination_resolution.local.status": local.status,
-      "proxy.destination_resolution.local.addresses": localAddresses,
-      "proxy.destination_resolution.provider.status": providerStatus,
-      "proxy.destination_resolution.provider.addresses": providerAddresses,
-      "proxy.destination_resolution.divergence": divergence,
-      "proxy.destination_resolution.verification_availability": verificationAvailability,
-      "proxy.destination_resolution.geography_verification": geographyVerification,
-      "proxy.destination_resolution.warning": warning,
-      ...(resolverCountry === undefined ? {} : { "proxy.destination_resolution.provider.resolver_country": resolverCountry }),
-    } as const;
-    options.span.addEvent("proxy.destination_resolution.observed", attributes);
-    const context = {
-      ...options.context,
-      localResolutionStatus: local.status,
-      localResolvedAddresses: localAddresses,
-      providerResolutionStatus: providerStatus,
-      providerResolvedAddresses: providerAddresses,
-      resolutionDivergence: divergence,
-      resolutionVerificationAvailability: verificationAvailability,
-      resolutionGeographyVerification: geographyVerification,
-      ...(unsafeLocalAddresses.length === 0 ? {} : { unsafeLocalResolvedAddresses: unsafeLocalAddresses }),
-      ...(unsafeProviderAddresses.length === 0 ? {} : { unsafeProviderResolvedAddresses: unsafeProviderAddresses }),
-      ...(resolverCountry === undefined ? {} : { providerResolverCountry: resolverCountry }),
-    };
-    if (warning) options.logger.warn("Destination resolution requires operator review", context);
-    else options.logger.info("Destination resolution observed", context);
-  });
+  const localPromise: Promise<LocalResolutionObservation> =
+    options.validation?.localResolution ?? Promise.resolve({ status: "unavailable", addresses: [] });
+  void localPromise
+    .catch((): LocalResolutionObservation => ({ status: "unavailable", addresses: [] }))
+    .then((local) => {
+      const localAddresses = [...local.addresses].sort();
+      const providerAddresses = [...(options.providerMetadata?.resolvedDestinationAddresses ?? [])].sort();
+      const providerStatus = providerAddresses.length === 0 ? "unavailable" : "available";
+      const verificationAvailability = local.status === "available" && providerStatus === "available" ? "available" : "unavailable";
+      const divergence =
+        verificationAvailability === "available"
+          ? sameAddresses(localAddresses, providerAddresses)
+            ? "match"
+            : "different"
+          : "unavailable";
+      const unsafeLocalAddresses = localAddresses.filter((address) => !isPublicAddress(address));
+      const unsafeProviderAddresses = providerAddresses.filter((address) => !isPublicAddress(address));
+      const resolverCountry = options.providerMetadata?.resolverCountry;
+      const geographyVerification =
+        resolverCountry === undefined || options.expectedCountry === undefined
+          ? "unavailable"
+          : resolverCountry.toUpperCase() === options.expectedCountry.toUpperCase()
+            ? "match"
+            : "mismatch";
+      const warning = unsafeLocalAddresses.length > 0 || unsafeProviderAddresses.length > 0 || geographyVerification === "mismatch";
+      const attributes = {
+        "proxy.destination_resolution.local.status": local.status,
+        "proxy.destination_resolution.local.addresses": localAddresses,
+        "proxy.destination_resolution.provider.status": providerStatus,
+        "proxy.destination_resolution.provider.addresses": providerAddresses,
+        "proxy.destination_resolution.divergence": divergence,
+        "proxy.destination_resolution.verification_availability": verificationAvailability,
+        "proxy.destination_resolution.geography_verification": geographyVerification,
+        "proxy.destination_resolution.warning": warning,
+        ...(resolverCountry === undefined ? {} : { "proxy.destination_resolution.provider.resolver_country": resolverCountry }),
+      } as const;
+      options.span.addEvent("proxy.destination_resolution.observed", attributes);
+      const context = {
+        ...options.context,
+        localResolutionStatus: local.status,
+        localResolvedAddresses: localAddresses,
+        providerResolutionStatus: providerStatus,
+        providerResolvedAddresses: providerAddresses,
+        resolutionDivergence: divergence,
+        resolutionVerificationAvailability: verificationAvailability,
+        resolutionGeographyVerification: geographyVerification,
+        ...(unsafeLocalAddresses.length === 0 ? {} : { unsafeLocalResolvedAddresses: unsafeLocalAddresses }),
+        ...(unsafeProviderAddresses.length === 0 ? {} : { unsafeProviderResolvedAddresses: unsafeProviderAddresses }),
+        ...(resolverCountry === undefined ? {} : { providerResolverCountry: resolverCountry }),
+      };
+      if (warning) options.logger.warn("Destination resolution requires operator review", context);
+      else options.logger.info("Destination resolution observed", context);
+    });
 }

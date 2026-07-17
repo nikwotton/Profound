@@ -1,12 +1,4 @@
-import {
-  HttpApi,
-  HttpApiEndpoint,
-  HttpApiGroup,
-  HttpApiMiddleware,
-  HttpApiSchema,
-  HttpApiSecurity,
-  OpenApi,
-} from "@effect/platform";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, HttpApiSecurity, OpenApi } from "@effect/platform";
 import { Context, Schema } from "effect";
 
 export const CONTROL_API_VERSION = "0.5.0";
@@ -41,23 +33,17 @@ export class InternalError extends Schema.TaggedError<InternalError>()(
   HttpApiSchema.annotations({ status: 500 }),
 ) {}
 
-export class AuthenticatedUser extends Context.Tag("Profound/AuthenticatedUser")<
-  AuthenticatedUser,
-  { readonly userId: string }
->() {}
+export class AuthenticatedUser extends Context.Tag("Profound/AuthenticatedUser")<AuthenticatedUser, { readonly userId: string }>() {}
 
-export class AdminAuthorization extends HttpApiMiddleware.Tag<AdminAuthorization>()(
-  "Profound/AdminAuthorization",
-  {
-    failure: Unauthorized,
-    provides: AuthenticatedUser,
-    security: {
-      bearer: HttpApiSecurity.bearer.pipe(
-        HttpApiSecurity.annotate(OpenApi.Description, "Administrator token supplied through CONTROL_API_TOKEN"),
-      ),
-    },
+export class AdminAuthorization extends HttpApiMiddleware.Tag<AdminAuthorization>()("Profound/AdminAuthorization", {
+  failure: Unauthorized,
+  provides: AuthenticatedUser,
+  security: {
+    bearer: HttpApiSecurity.bearer.pipe(
+      HttpApiSecurity.annotate(OpenApi.Description, "Administrator token supplied through CONTROL_API_TOKEN"),
+    ),
   },
-) {}
+}) {}
 
 const Targeting = Schema.Struct({
   country: Schema.String,
@@ -79,17 +65,21 @@ export const RouteProfilePayload = Schema.Struct({
   allowedProtocols: Schema.optional(Schema.Array(Schema.Literal("http", "https", "socks5"))),
   targeting: Targeting,
   rotation: Schema.optional(Rotation),
-  session: Schema.optional(Schema.Struct({
-    mode: Schema.Literal("none", "sticky"),
-    id: Schema.optional(Schema.String),
-    requireGeographicContinuity: Schema.optional(Schema.Boolean),
-  })),
+  session: Schema.optional(
+    Schema.Struct({
+      mode: Schema.Literal("none", "sticky"),
+      id: Schema.optional(Schema.String),
+      requireGeographicContinuity: Schema.optional(Schema.Boolean),
+    }),
+  ),
   customerId: Schema.String,
   isAuthenticated: Schema.Boolean,
   shouldRetry: Schema.Boolean,
-  retryPolicy: Schema.optional(Schema.Struct({
-    maxAttempts: Schema.optional(Schema.Number),
-  })),
+  retryPolicy: Schema.optional(
+    Schema.Struct({
+      maxAttempts: Schema.optional(Schema.Number),
+    }),
+  ),
   forceProvider: Schema.optional(Schema.Literal("bright_data", "proxidize")),
 }).annotations({ identifier: "RouteProfileInput" });
 
@@ -205,11 +195,7 @@ const routeId = HttpApiSchema.param("id", Schema.String);
 const accessGrantId = HttpApiSchema.param("grantId", Schema.String);
 
 const health = HttpApiGroup.make("health", { topLevel: true })
-  .add(
-    HttpApiEndpoint.get("live", "/health/live")
-      .addSuccess(LiveResponse)
-      .annotate(OpenApi.Description, "Process liveness"),
-  )
+  .add(HttpApiEndpoint.get("live", "/health/live").addSuccess(LiveResponse).annotate(OpenApi.Description, "Process liveness"))
   .add(
     HttpApiEndpoint.get("ready", "/health/ready")
       .addSuccess(ReadyResponse)
@@ -226,22 +212,9 @@ const routes = HttpApiGroup.make("routes", { topLevel: true })
       .addError(ServiceUnavailable)
       .addError(InternalError),
   )
-  .add(
-    HttpApiEndpoint.get("listRoutes", "/v1/routes")
-      .addSuccess(RoutesResponse)
-      .addError(InternalError),
-  )
-  .add(
-    HttpApiEndpoint.get("getRoute")`/v1/routes/${routeId}`
-      .addSuccess(RouteResponse)
-      .addError(RouteNotFound)
-      .addError(InternalError),
-  )
-  .add(
-    HttpApiEndpoint.del("deleteRoute")`/v1/routes/${routeId}`
-      .addError(RouteNotFound)
-      .addError(InternalError),
-  )
+  .add(HttpApiEndpoint.get("listRoutes", "/v1/routes").addSuccess(RoutesResponse).addError(InternalError))
+  .add(HttpApiEndpoint.get("getRoute")`/v1/routes/${routeId}`.addSuccess(RouteResponse).addError(RouteNotFound).addError(InternalError))
+  .add(HttpApiEndpoint.del("deleteRoute")`/v1/routes/${routeId}`.addError(RouteNotFound).addError(InternalError))
   .add(
     HttpApiEndpoint.post("rotateRoute")`/v1/routes/${routeId}/rotate`
       .addSuccess(RouteResponse, { status: 202 })
@@ -267,20 +240,22 @@ const routes = HttpApiGroup.make("routes", { topLevel: true })
       .addSuccess(IssuedAccessGrant)
       .addError(RouteNotFound)
       .addError(InternalError)
-      .annotate(OpenApi.Description, "Rotate this grant's bearer credential without changing its device lease; return the replacement secret only in this response"),
+      .annotate(
+        OpenApi.Description,
+        "Rotate this grant's bearer credential without changing its device lease; return the replacement secret only in this response",
+      ),
   )
   .add(
     HttpApiEndpoint.post("emergencyRotateAccessGrantCredential")`/v1/access-grants/${accessGrantId}/credentials/emergency-rotate`
       .addSuccess(IssuedAccessGrant)
       .addError(RouteNotFound)
       .addError(InternalError)
-      .annotate(OpenApi.Description, "Replace a suspected-compromised credential immediately without overlap; return the replacement secret only in this response"),
+      .annotate(
+        OpenApi.Description,
+        "Replace a suspected-compromised credential immediately without overlap; return the replacement secret only in this response",
+      ),
   )
-  .add(
-    HttpApiEndpoint.del("revokeAccessGrant")`/v1/access-grants/${accessGrantId}`
-      .addError(RouteNotFound)
-      .addError(InternalError),
-  )
+  .add(HttpApiEndpoint.del("revokeAccessGrant")`/v1/access-grants/${accessGrantId}`.addError(RouteNotFound).addError(InternalError))
   .add(
     HttpApiEndpoint.post("releaseAccessGrantLease")`/v1/access-grants/${accessGrantId}/release`
       .addError(RouteNotFound)
@@ -302,16 +277,8 @@ const routes = HttpApiGroup.make("routes", { topLevel: true })
   .middleware(AdminAuthorization);
 
 const providers = HttpApiGroup.make("providers", { topLevel: true })
-  .add(
-    HttpApiEndpoint.get("providerDescriptors", "/v1/providers")
-      .addSuccess(ProviderDescriptorsResponse)
-      .addError(InternalError),
-  )
-  .add(
-    HttpApiEndpoint.get("providerHealth", "/v1/providers/health")
-      .addSuccess(ProvidersHealthResponse)
-      .addError(InternalError),
-  )
+  .add(HttpApiEndpoint.get("providerDescriptors", "/v1/providers").addSuccess(ProviderDescriptorsResponse).addError(InternalError))
+  .add(HttpApiEndpoint.get("providerHealth", "/v1/providers/health").addSuccess(ProvidersHealthResponse).addError(InternalError))
   .middleware(AdminAuthorization);
 
 export const ControlApi = HttpApi.make("ProfoundControlApi")

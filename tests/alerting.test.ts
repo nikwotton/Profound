@@ -1,48 +1,54 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import {
-  HealthAlertCoordinator,
-  parseHealthAlertDestinationConfig,
-  WebhookNotificationAdapter,
-} from "../src/alerting.js";
+import { HealthAlertCoordinator, parseHealthAlertDestinationConfig, WebhookNotificationAdapter } from "../src/alerting.js";
 import { silentLogger } from "../src/logger.js";
 import { requireServiceOwnedCapabilityAlerts } from "../src/runtime-services.js";
 import { SqliteRouteStore } from "../src/store.js";
 import type { CapabilityHealthSnapshot, HealthAlertEvent } from "../src/types.js";
 
-function snapshot(
-  id: string,
-  generatedAt: string,
-  status: "operational" | "degraded" | "unavailable",
-): CapabilityHealthSnapshot {
+function snapshot(id: string, generatedAt: string, status: "operational" | "degraded" | "unavailable"): CapabilityHealthSnapshot {
   return {
     id,
     generatedAt,
     capabilities: [{ capability: "all_traffic", status }],
     providers: [],
-    geographies: status === "operational" ? [] : [{
-      country: "US",
-      city: "New York",
-      status: "degraded",
-      validatedAt: generatedAt,
-      source: "passive",
-    }],
+    geographies:
+      status === "operational"
+        ? []
+        : [
+            {
+              country: "US",
+              city: "New York",
+              status: "degraded",
+              validatedAt: generatedAt,
+              source: "passive",
+            },
+          ],
   };
 }
 
 function coordinator(store: SqliteRouteStore, degradedDelayMs = 300_000): HealthAlertCoordinator {
-  const notifier = new WebhookNotificationAdapter(store, [], {
-    timeoutMs: 100,
-    maxAttempts: 3,
-    initialBackoffMs: 10,
-  }, silentLogger);
-  return new HealthAlertCoordinator(store, {
-    configurationVersion: "ops-v1",
-    destinationIds: [],
-    degradedDelayMs,
-    notifier,
-  }, silentLogger);
+  const notifier = new WebhookNotificationAdapter(
+    store,
+    [],
+    {
+      timeoutMs: 100,
+      maxAttempts: 3,
+      initialBackoffMs: 10,
+    },
+    silentLogger,
+  );
+  return new HealthAlertCoordinator(
+    store,
+    {
+      configurationVersion: "ops-v1",
+      destinationIds: [],
+      degradedDelayMs,
+      notifier,
+    },
+    silentLogger,
+  );
 }
 
 test("alert episodes persist, delay degraded alerts, alert unavailable immediately, and recover", async (t) => {
@@ -121,17 +127,24 @@ test("webhook delivery is signed, retried, deduplicated, and tracked", async (t)
   };
   assert.equal(await store.createHealthAlertEvent(event, ["ops"]), true);
   assert.equal(await store.createHealthAlertEvent({ ...event, id: "duplicate" }, ["ops"]), false);
-  const notifier = new WebhookNotificationAdapter(store, [{
-    id: "ops",
-    url: "https://alerts.example.test/health",
-    secret,
-  }], {
-    timeoutMs: 100,
-    maxAttempts: 3,
-    initialBackoffMs: 100,
-    now: () => now,
-    fetch: request,
-  }, silentLogger);
+  const notifier = new WebhookNotificationAdapter(
+    store,
+    [
+      {
+        id: "ops",
+        url: "https://alerts.example.test/health",
+        secret,
+      },
+    ],
+    {
+      timeoutMs: 100,
+      maxAttempts: 3,
+      initialBackoffMs: 100,
+      now: () => now,
+      fetch: request,
+    },
+    silentLogger,
+  );
   await notifier.flush();
   assert.equal(requests.length, 1);
   assert.equal((await store.pendingHealthAlertDeliveries(new Date(now + 99).toISOString(), 10)).length, 0);
@@ -152,21 +165,29 @@ test("alert destination configuration is versioned and requires secure operator 
     version: "unconfigured",
     destinations: [],
   });
-  assert.equal(parseHealthAlertDestinationConfig(JSON.stringify({
-    version: "2026-07-15",
-    destinations: [{ id: "primary-ops", url: "https://alerts.example.test/hook", secret: "long-enough-secret" }],
-  })).destinations[0]?.id, "primary-ops");
-  assert.throws(() => parseHealthAlertDestinationConfig(JSON.stringify({
-    version: "bad",
-    destinations: [{ id: "ops", url: "http://alerts.example.test/hook", secret: "long-enough-secret" }],
-  })), /must use HTTPS/);
+  assert.equal(
+    parseHealthAlertDestinationConfig(
+      JSON.stringify({
+        version: "2026-07-15",
+        destinations: [{ id: "primary-ops", url: "https://alerts.example.test/hook", secret: "long-enough-secret" }],
+      }),
+    ).destinations[0]?.id,
+    "primary-ops",
+  );
+  assert.throws(
+    () =>
+      parseHealthAlertDestinationConfig(
+        JSON.stringify({
+          version: "bad",
+          destinations: [{ id: "ops", url: "http://alerts.example.test/hook", secret: "long-enough-secret" }],
+        }),
+      ),
+    /must use HTTPS/,
+  );
 });
 
 test("capability health and recovery alert ownership remains with the service in v0", () => {
   assert.doesNotThrow(() => requireServiceOwnedCapabilityAlerts({}));
   assert.doesNotThrow(() => requireServiceOwnedCapabilityAlerts({ HEALTH_ALERT_RULE_OWNER: "service" }));
-  assert.throws(
-    () => requireServiceOwnedCapabilityAlerts({ HEALTH_ALERT_RULE_OWNER: "platform" }),
-    /must remain service/,
-  );
+  assert.throws(() => requireServiceOwnedCapabilityAlerts({ HEALTH_ALERT_RULE_OWNER: "platform" }), /must remain service/);
 });

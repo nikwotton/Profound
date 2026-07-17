@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: pnpm install --frozen-lockfile
+      - name: Ignore superseded main candidates
+        id: candidate
+        run: node scripts/assert-current-main.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ github.sha }}
+      - name: Build candidate once
+        id: image
+        if: steps.candidate.outputs.current == 'true'
+        shell: bash
+        run: |
+          registry="$(aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --query 'repositories[0].repositoryUri' --output text)"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "${registry%/*}"
+          docker build --tag "$registry:${GITHUB_SHA}" .
+          docker push "$registry:${GITHUB_SHA}"
+          digest="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)"
+          echo "uri=$registry@$digest" >> "$GITHUB_OUTPUT"
+      - name: Deploy unchanged candidate to staging
+        if: steps.candidate.outputs.current == 'true'
+        run: pnpm aws:deploy --stage staging
+        env:
+          RELEASE_IMAGE_URI: ${{ steps.image.outputs.uri }}
+          RELEASE_SHA: ${{ github.sha }}
+          PROVIDER_MODE: live
+          PROXY_DOMAIN: ${{ vars.STAGING_PROXY_DOMAIN }}
+          PROXY_CERT_ARN: ${{ vars.STAGING_PROXY_CERT_ARN }}
+          CONTROL_DOMAIN: ${{ vars.STAGING_CONTROL_DOMAIN }}
+          CONTROL_CERT_ARN: ${{ vars.STAGING_CONTROL_CERT_ARN }}
+          DATA_PLANE_ALLOWED_CIDRS: ${{ vars.STAGING_DATA_PLANE_ALLOWED_CIDRS }}
+          CONTROL_PLANE_ALLOWED_CIDRS: ${{ vars.STAGING_CONTROL_PLANE_ALLOWED_CIDRS }}
+      - name: Staging release validation
+        if: steps.candidate.outputs.current == 'true'
+        run: pnpm test:live
+        env:
+          RUN_LIVE_PROXY_TESTS: "1"
+          LIVE_PROXY_SMOKE_STAGE: staging
+          PROVIDER_MODE: live
+          BRIGHT_DATA_CUSTOMER_ID: ${{ secrets.BRIGHT_DATA_CUSTOMER_ID }}
+          BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
+          BRIGHT_DATA_PASSWORD: ${{ secrets.BRIGHT_DATA_PASSWORD }}
+          BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
+          PROXIDIZE_API_TOKEN: ${{ secrets.PROXIDIZE_API_TOKEN }}
+      - name: Reconcile to latest eligible main candidate
+        id: reconciled
+        if: steps.candidate.outputs.current == 'true'
+        run: node scripts/assert-current-main.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ github.sha }}
+      - name: Promote the identical image to production
+        if: steps.reconciled.outputs.current == 'true'
+        run: pnpm aws:deploy --stage production
+        env:
+          RELEASE_IMAGE_URI: ${{ steps.image.outputs.uri }}
+          RELEASE_SHA: ${{ github.sha }}
+          PROVIDER_MODE: live
+          PROXY_DOMAIN: ${{ vars.PROXY_DOMAIN }}
+          PROXY_CERT_ARN: ${{ vars.PROXY_CERT_ARN }}
+          CONTROL_DOMAIN: ${{ vars.CONTROL_DOMAIN }}
+          CONTROL_CERT_ARN: ${{ vars.CONTROL_CERT_ARN }}
+          DATA_PLANE_ALLOWED_CIDRS: ${{ vars.DATA_PLANE_ALLOWED_CIDRS }}
+          CONTROL_PLANE_ALLOWED_CIDRS: ${{ vars.CONTROL_PLANE_ALLOWED_CIDRS }}
+      - name: Record deployed manifest and cumulative release notes
+        if: steps.reconciled.outputs.current == 'true'
+        run: node scripts/record-release.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPLOYED_SHA: ${{ github.sha }}
+          RELEASE_IMAGE_URI: ${{ steps.image.outputs.uri }}

@@ -47,9 +47,10 @@ const head = await fetch(downloadUrl, {
 });
 if (!head.ok) throw new Error(`MaxMind update check returned HTTP ${head.status}`);
 const remoteTimestampHeader = head.headers.get("last-modified");
-const buildTimestamp = remoteTimestampHeader && Number.isFinite(Date.parse(remoteTimestampHeader))
-  ? new Date(remoteTimestampHeader).toISOString()
-  : new Date().toISOString();
+const buildTimestamp =
+  remoteTimestampHeader && Number.isFinite(Date.parse(remoteTimestampHeader))
+    ? new Date(remoteTimestampHeader).toISOString()
+    : new Date().toISOString();
 const currentTimestamp = await existingBuildTimestamp();
 if (currentTimestamp && Date.parse(currentTimestamp) >= Date.parse(buildTimestamp)) {
   console.log(JSON.stringify({ status: "current", databasePath, buildTimestamp: currentTimestamp }));
@@ -71,8 +72,8 @@ try {
     cwd: temporaryDirectory,
     strict: true,
     preservePaths: false,
-    filter: (path, entry) => !path.startsWith("/") && !path.split("/").includes("..") &&
-      basename(path) === "GeoLite2-City.mmdb" && entry.isFile(),
+    filter: (path, entry) =>
+      !path.startsWith("/") && !path.split("/").includes("..") && basename(path) === "GeoLite2-City.mmdb" && entry.isFile(),
   });
   const source = await findDatabase(temporaryDirectory);
   if (!source) throw new Error("MaxMind archive did not contain GeoLite2-City.mmdb");
@@ -80,11 +81,15 @@ try {
   const stagedDatabase = `${databasePath}.tmp`;
   const stagedMetadata = `${metadataPath}.tmp`;
   await copyFile(source, stagedDatabase);
-  await writeFile(stagedMetadata, JSON.stringify({
-    vendor: "MaxMind",
-    edition: "GeoLite2-City",
-    buildTimestamp,
-  }), { mode: 0o600 });
+  await writeFile(
+    stagedMetadata,
+    JSON.stringify({
+      vendor: "MaxMind",
+      edition: "GeoLite2-City",
+      buildTimestamp,
+    }),
+    { mode: 0o600 },
+  );
   await rename(stagedDatabase, databasePath);
   await rename(stagedMetadata, metadataPath);
   console.log(JSON.stringify({ status: "prepared", databasePath, buildTimestamp }));

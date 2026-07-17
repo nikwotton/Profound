@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { IntegrationTargetServer } from "../src/integration-target.js";
 import { silentLogger } from "../src/logger.js";
 
-test("the disposable deployed origin echoes native requests, statuses, redirects, and replay counts", async (t) => {
+test("the ephemeral CI transport origin echoes native requests, statuses, redirects, and replay counts", async (t) => {
   const target = new IntegrationTargetServer({ host: "127.0.0.1", port: 0 }, silentLogger);
   const address = await target.start();
   t.after(() => target.stop());
@@ -33,11 +33,18 @@ test("the disposable deployed origin echoes native requests, statuses, redirects
 
   const status = await fetch(`${base}/status/503`, { headers: { "x-profound-test-id": "status-test" } });
   assert.equal(status.status, 503);
-  assert.equal((await status.json() as { requestCount: number }).requestCount, 1);
+  assert.equal(((await status.json()) as { requestCount: number }).requestCount, 1);
   const repeated = await fetch(`${base}/status/503`, { headers: { "x-profound-test-id": "status-test" } });
-  assert.equal((await repeated.json() as { requestCount: number }).requestCount, 2);
+  assert.equal(((await repeated.json()) as { requestCount: number }).requestCount, 2);
 
   const redirect = await fetch(`${base}/redirect?to=%2Fcaller-owned`, { redirect: "manual" });
   assert.equal(redirect.status, 302);
   assert.equal(redirect.headers.get("location"), "/caller-owned");
+
+  const simulated = await fetch(`${base}/simulate?responseStatus=418&responseHeader=x-simulated%3Ayes&responseBody=caller-owned&delayMs=5`);
+  assert.equal(simulated.status, 418);
+  assert.equal(simulated.headers.get("x-simulated"), "yes");
+  assert.equal(await simulated.json(), "caller-owned");
+
+  await assert.rejects(fetch(`${base}/simulate?connection=reset`));
 });

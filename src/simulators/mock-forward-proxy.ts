@@ -131,19 +131,23 @@ export class MockForwardProxy {
     }
 
     const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
-    const upstream = transport(target, {
-      method: request.method,
-      headers: copyHeaders(request.headers),
-    }, (upstreamResponse) => {
-      const resolvedDestination = upstreamResponse.socket.remoteAddress;
-      response.writeHead(upstreamResponse.statusCode ?? 502, {
-        ...copyResponseHeaders(upstreamResponse.headers),
-        ...identityHeaders(identity),
-        ...(resolvedDestination === undefined ? {} : { "x-mock-resolved-destination": resolvedDestination }),
-        "x-mock-resolver-country": identity.country,
-      });
-      upstreamResponse.pipe(response);
-    });
+    const upstream = transport(
+      target,
+      {
+        method: request.method,
+        headers: copyHeaders(request.headers),
+      },
+      (upstreamResponse) => {
+        const resolvedDestination = upstreamResponse.socket.remoteAddress;
+        response.writeHead(upstreamResponse.statusCode ?? 502, {
+          ...copyResponseHeaders(upstreamResponse.headers),
+          ...identityHeaders(identity),
+          ...(resolvedDestination === undefined ? {} : { "x-mock-resolved-destination": resolvedDestination }),
+          "x-mock-resolver-country": identity.country,
+        });
+        upstreamResponse.pipe(response);
+      },
+    );
     upstream.setTimeout(10_000, () => upstream.destroy(new Error("Target timed out")));
     upstream.on("error", (error) => {
       this.options.logger.warn("Mock provider target request failed", { error: error.message, target });
@@ -189,9 +193,9 @@ export class MockForwardProxy {
       const resolvedDestination = targetSocket.remoteAddress;
       clientSocket.write(
         "HTTP/1.1 200 Connection Established\r\n" +
-        (resolvedDestination === undefined ? "" : `X-Mock-Resolved-Destination: ${resolvedDestination}\r\n`) +
-        `X-Mock-Resolver-Country: ${identity.country}\r\n` +
-        "\r\n",
+          (resolvedDestination === undefined ? "" : `X-Mock-Resolved-Destination: ${resolvedDestination}\r\n`) +
+          `X-Mock-Resolver-Country: ${identity.country}\r\n` +
+          "\r\n",
       );
       if (head.length > 0) targetSocket.write(head);
       clientSocket.pipe(targetSocket);

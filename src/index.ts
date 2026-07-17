@@ -8,6 +8,7 @@ import {
   startNotificationService,
   startPublicCanaryService,
   startStatusApplicationService,
+  startUsageAccountingService,
   type RunningService,
 } from "./runtime-services.js";
 
@@ -45,6 +46,9 @@ try {
     case "status":
       application = await startStatusApplicationService(logger);
       break;
+    case "usage-accounting":
+      application = await startUsageAccountingService(logger);
+      break;
     case "notification":
       application = await startNotificationService(logger);
       break;
@@ -56,7 +60,7 @@ try {
       break;
     default:
       throw new Error(
-        "SERVICE_MODE must be proxy, data-plane, control-plane, health-aggregator, status, notification, canary, or integration-target",
+        "SERVICE_MODE must be proxy, data-plane, control-plane, health-aggregator, status, usage-accounting, notification, canary, or integration-target",
       );
   }
 } catch (error) {

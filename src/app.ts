@@ -86,10 +86,7 @@ async function createRoutingRuntime(
         apiToken: config.proxidize.apiToken,
         logger,
       });
-      const [brightAddress, proxidizeAddresses] = await Promise.all([
-        brightData.start(),
-        proxidize.start(),
-      ]);
+      const [brightAddress, proxidizeAddresses] = await Promise.all([brightData.start(), proxidize.start()]);
       simulators = { brightData, proxidize };
       brightConfig = { ...config.brightData, host: brightAddress.host, port: brightAddress.port };
       proxidizeConfig = {
@@ -118,24 +115,19 @@ async function createRoutingRuntime(
       telemetry,
       config.retryDefaults,
       DEVICE_LEASE_IDLE_TIMEOUT_MS,
+      config.deploymentId,
       dependencies.now,
     );
     return {
       routes,
       ...(simulators === undefined ? {} : { simulators }),
       stop: async () => {
-        await Promise.allSettled([
-          ...(simulators === undefined
-            ? []
-            : [simulators.brightData.stop(), simulators.proxidize.stop()]),
-        ]);
+        await Promise.allSettled([...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()])]);
         await store.close();
       },
     };
   } catch (error) {
-    await Promise.allSettled([
-      ...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()]),
-    ]);
+    await Promise.allSettled([...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()])]);
     await store.close();
     throw error;
   }
@@ -147,7 +139,9 @@ export async function startApplication(
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningApplication> {
   const ownsTelemetry = dependencies.telemetry === undefined;
-  const telemetry = dependencies.telemetry ?? new Telemetry({
+  const telemetry =
+    dependencies.telemetry ??
+    new Telemetry({
       serviceName: config.telemetry.serviceName,
       serviceVersion: config.telemetry.serviceVersion,
       environment: process.env,
@@ -220,22 +214,14 @@ export async function startApplication(
       stop: async () => {
         if (stopped) return;
         stopped = true;
-        await Promise.allSettled([
-          control.stop(),
-          forward.stop(),
-          socks5.stop(),
-        ]);
+        await Promise.allSettled([control.stop(), forward.stop(), socks5.stop()]);
         await runtime.stop();
         logger.info("Proxy router stopped");
         if (ownsTelemetry) await telemetry.shutdown();
       },
     };
   } catch (error) {
-    await Promise.allSettled([
-      control.stop(),
-      forward.stop(),
-      socks5.stop(),
-    ]);
+    await Promise.allSettled([control.stop(), forward.stop(), socks5.stop()]);
     await runtime.stop();
     if (ownsTelemetry) await telemetry.shutdown();
     throw error;
@@ -248,17 +234,25 @@ export async function startDataPlaneApplication(
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningDataPlaneApplication> {
   const ownsTelemetry = dependencies.telemetry === undefined;
-  const telemetry = dependencies.telemetry ?? new Telemetry({
-    serviceName: config.telemetry.serviceName,
-    serviceVersion: config.telemetry.serviceVersion,
-    environment: process.env,
-  });
+  const telemetry =
+    dependencies.telemetry ??
+    new Telemetry({
+      serviceName: config.telemetry.serviceName,
+      serviceVersion: config.telemetry.serviceVersion,
+      environment: process.env,
+    });
   let forwardAddress: ListenAddress | undefined;
   let socks5Address: ListenAddress | undefined;
-  const runtime = await createRoutingRuntime(config, logger, telemetry, () => {
-    if (forwardAddress === undefined || socks5Address === undefined) throw new Error("Data-plane proxies have not started");
-    return { http: forwardAddress, socks5: socks5Address };
-  }, dependencies);
+  const runtime = await createRoutingRuntime(
+    config,
+    logger,
+    telemetry,
+    () => {
+      if (forwardAddress === undefined || socks5Address === undefined) throw new Error("Data-plane proxies have not started");
+      return { http: forwardAddress, socks5: socks5Address };
+    },
+    dependencies,
+  );
   const forward = new ForwardProxyServer(runtime.routes, {
     host: config.forwardHost,
     port: config.forwardPort,
@@ -313,15 +307,23 @@ export async function startControlPlaneApplication(
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningControlPlaneApplication> {
   const ownsTelemetry = dependencies.telemetry === undefined;
-  const telemetry = dependencies.telemetry ?? new Telemetry({
-    serviceName: config.telemetry.serviceName,
-    serviceVersion: config.telemetry.serviceVersion,
-    environment: process.env,
-  });
-  const runtime = await createRoutingRuntime(config, logger, telemetry, () => ({
-    http: { host: config.advertisedProxyHost, port: config.forwardPort },
-    socks5: { host: config.advertisedProxyHost, port: config.socks5Port },
-  }), dependencies);
+  const telemetry =
+    dependencies.telemetry ??
+    new Telemetry({
+      serviceName: config.telemetry.serviceName,
+      serviceVersion: config.telemetry.serviceVersion,
+      environment: process.env,
+    });
+  const runtime = await createRoutingRuntime(
+    config,
+    logger,
+    telemetry,
+    () => ({
+      http: { host: config.advertisedProxyHost, port: config.forwardPort },
+      socks5: { host: config.advertisedProxyHost, port: config.socks5Port },
+    }),
+    dependencies,
+  );
   const control = new ControlApiServer(runtime.routes, {
     host: config.controlHost,
     port: config.controlPort,

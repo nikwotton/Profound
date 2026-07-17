@@ -1,32 +1,29 @@
 /// <reference path="../../.sst/platform/config.d.ts" />
 
 import { existsSync } from "node:fs";
+import { resolveStageConfiguration } from "../stage-config.js";
 
 export const awsDeployment: Parameters<typeof $config>[0] = {
   app(input: { stage: string }) {
+    const stage = resolveStageConfiguration(input.stage, process.env);
     return {
       name: "profound-proxy-router",
       home: "aws" as const,
-      protect: input.stage === "production",
-      removal: input.stage === "production" ? "retain" as const : "remove" as const,
+      protect: stage.protect,
+      removal: stage.removal,
     };
   },
   async run() {
-    const production = $app.stage === "production";
+    const stage = resolveStageConfiguration($app.stage, process.env);
+    const production = stage.production;
+    const cloudTestStage = stage.cloudTest;
     const devControlApiToken = "change-me";
     const devHealthAggregatorToken = "local-health-secret";
     const devCanarySigningSecret = "local-canary-secret";
-    const providerMode = process.env.PROVIDER_MODE ?? (production ? "live" : "mock");
-    const integrationTargetEnabled = process.env.DEPLOY_INTEGRATION_TARGET === "true";
+    const providerMode = stage.providerMode;
     const geoIpDatabaseSource = process.env.GEOIP_DATABASE_SOURCE?.trim() || ".sst/geoip/GeoLite2-City.mmdb";
     const geoIpMetadataSource = `${geoIpDatabaseSource}.metadata.json`;
     const geoIpBundleConfigured = existsSync(geoIpDatabaseSource) && existsSync(geoIpMetadataSource);
-    if (providerMode !== "mock" && providerMode !== "live") {
-      throw new Error("PROVIDER_MODE must be mock or live");
-    }
-    if (production && integrationTargetEnabled) {
-      throw new Error("DEPLOY_INTEGRATION_TARGET is forbidden in production");
-    }
     if (production && !geoIpBundleConfigured) {
       throw new Error("Run pnpm geoip:prepare before production deployment so the canary bundle includes GeoLite2 City");
     }
@@ -37,6 +34,9 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     const controlCertificateArn = process.env.CONTROL_CERT_ARN?.trim() || undefined;
     if (production && proxyDomain === undefined) {
       throw new Error("PROXY_DOMAIN is required for production so proxy credentials use TLS");
+    }
+    if (proxyDomain !== undefined && proxyCertificateArn === undefined) {
+      throw new Error("PROXY_CERT_ARN is required when PROXY_DOMAIN enables the TLS proxy listener");
     }
     if (production && controlDomain === undefined) {
       throw new Error("CONTROL_DOMAIN is required for production so control API tokens use TLS");
@@ -50,8 +50,8 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     const tlsEnabled = proxyDomain !== undefined;
     const dataPlaneCidrs = cidrs(process.env.DATA_PLANE_ALLOWED_CIDRS);
     const controlPlaneCidrs = cidrs(process.env.CONTROL_PLANE_ALLOWED_CIDRS);
-    const minimumTasks = positiveInteger(process.env.MIN_TASKS, production ? 2 : 1, "MIN_TASKS");
-    const maximumTasks = positiveInteger(process.env.MAX_TASKS, production ? 4 : 2, "MAX_TASKS");
+    const minimumTasks = stage.minimumTasks;
+    const maximumTasks = stage.maximumTasks;
     const nlbTcpIdleTimeoutSeconds = boundedInteger(
       process.env.NLB_TCP_IDLE_TIMEOUT_SECONDS,
       1_200,
@@ -66,29 +66,20 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
       0,
       3_600,
     );
-    const telemetryRetentionDays = positiveInteger(
-      process.env.TELEMETRY_RETENTION_DAYS,
-      30,
-      "TELEMETRY_RETENTION_DAYS",
-    );
-    const axiomEndpoint = normalizedHttpsOrigin(
-      process.env.AXIOM_OTLP_ENDPOINT ?? "https://api.axiom.co",
-      "AXIOM_OTLP_ENDPOINT",
-    );
+    const telemetryRetentionDays = positiveInteger(process.env.TELEMETRY_RETENTION_DAYS, 30, "TELEMETRY_RETENTION_DAYS");
+    const axiomEndpoint = normalizedHttpsOrigin(process.env.AXIOM_OTLP_ENDPOINT ?? "https://api.axiom.co", "AXIOM_OTLP_ENDPOINT");
     const axiomDatasets = {
       logs: datasetName(process.env.AXIOM_LOGS_DATASET, `${$app.name}-${$app.stage}-logs`, "AXIOM_LOGS_DATASET"),
-      traces: datasetName(
-        process.env.AXIOM_TRACES_DATASET,
-        `${$app.name}-${$app.stage}-traces`,
-        "AXIOM_TRACES_DATASET",
-      ),
-      metrics: datasetName(
-        process.env.AXIOM_METRICS_DATASET,
-        `${$app.name}-${$app.stage}-metrics`,
-        "AXIOM_METRICS_DATASET",
-      ),
+      traces: datasetName(process.env.AXIOM_TRACES_DATASET, `${$app.name}-${$app.stage}-traces`, "AXIOM_TRACES_DATASET"),
+      metrics: datasetName(process.env.AXIOM_METRICS_DATASET, `${$app.name}-${$app.stage}-metrics`, "AXIOM_METRICS_DATASET"),
     };
-    if (maximumTasks < minimumTasks) throw new Error("MAX_TASKS must be greater than or equal to MIN_TASKS");
+    const releaseImageUri = process.env.RELEASE_IMAGE_URI?.trim();
+    if (releaseImageUri !== undefined && releaseImageUri !== "" && !/@sha256:[a-f0-9]{64}$/.test(releaseImageUri)) {
+      throw new Error("RELEASE_IMAGE_URI must be an immutable ECR image digest URI");
+    }
+    const applicationImage = releaseImageUri || { context: ".", dockerfile: "Dockerfile" };
+    const deploymentId = process.env.RELEASE_SHA?.trim() || `sst-${$app.stage}`;
+    const partition = aws.getPartitionOutput({}).partition;
 
     const routeState = new sst.aws.Dynamo("RouteState", {
       fields: {
@@ -104,7 +95,34 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
         EntityCreatedAt: { hashKey: "entity", rangeKey: "createdAt" },
         EndpointAssignments: { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
       },
+      ttl: "expiresAtSeconds",
       deletionProtection: production,
+    });
+    const deploymentNotifications = new aws.sns.Topic("DeploymentNotifications", {
+      displayName: `${$app.name}-${$app.stage}-deployment-drain`,
+    });
+    const deploymentCoordinator = new sst.aws.Function("DeploymentCoordinator", {
+      handler: "src/deployment-coordinator.handler",
+      runtime: "nodejs22.x",
+      timeout: "15 minutes",
+      memory: "512 MB",
+      environment: {
+        ROUTE_TABLE_NAME: routeState.name,
+        DEPLOYMENT_ID: deploymentId,
+        DEPLOYMENT_NOTIFICATION_TOPIC_ARN: deploymentNotifications.arn,
+      },
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+          resources: [routeState.arn, $interpolate`${routeState.arn}/index/*`],
+        },
+        { actions: ["sns:Publish"], resources: [deploymentNotifications.arn] },
+      ],
+    });
+    new sst.aws.Cron("DeploymentDrainPoller", {
+      schedule: "rate(15 minutes)",
+      enabled: !stage.developer,
+      function: deploymentCoordinator,
     });
 
     // The bastion is required by `sst tunnel` so operators and the deployed
@@ -120,8 +138,7 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     const healthAggregatorPassiveEndpoint = $interpolate`http://${healthAggregatorServiceHost}:8082/v1/passive-signals/otlp`;
     const telemetryCollectorServiceHost = $interpolate`TelemetryCollector.${$app.stage}.${$app.name}.${vpc.nodes.cloudmapNamespace.name}`;
     const telemetryCollectorEndpoint = $interpolate`http://${telemetryCollectorServiceHost}:4318`;
-    const canaryTelemetryCollectorServiceHost =
-      $interpolate`CanaryTelemetryCollector.${$app.stage}.${$app.name}.${canaryVpc.nodes.cloudmapNamespace.name}`;
+    const canaryTelemetryCollectorServiceHost = $interpolate`CanaryTelemetryCollector.${$app.stage}.${$app.name}.${canaryVpc.nodes.cloudmapNamespace.name}`;
     const canaryTelemetryCollectorEndpoint = $interpolate`http://${canaryTelemetryCollectorServiceHost}:4318`;
 
     function otelEnvironment(
@@ -141,8 +158,7 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
         OTEL_NODE_EXPERIMENTAL_SDK_METRICS: "true",
         OTEL_METRIC_EXPORT_INTERVAL: "30000",
         OTEL_BSP_SCHEDULE_DELAY: "5000",
-        OTEL_RESOURCE_ATTRIBUTES:
-          `service.version=0.3.0,deployment.environment.name=${$app.stage},cloud.provider=aws,cloud.platform=${cloudPlatform}`,
+        OTEL_RESOURCE_ATTRIBUTES: `service.version=0.3.0,deployment.environment.name=${$app.stage},cloud.provider=aws,cloud.platform=${cloudPlatform}`,
       };
     }
 
@@ -363,86 +379,43 @@ service:
       exporters: [otlp_http/axiom_traces]
 `;
     }
-    const adotImage = "public.ecr.aws/aws-observability/aws-otel-collector@sha256:d2bdfff2c377c3d71d78bd5d9ce9862fd535b12134a5739d87a07801297cf9fd";
+    const adotImage =
+      "public.ecr.aws/aws-observability/aws-otel-collector@sha256:d2bdfff2c377c3d71d78bd5d9ce9862fd535b12134a5739d87a07801297cf9fd";
 
-    const axiomToken = containerSecret(
-      "AxiomIngestToken",
-      new sst.Secret("AxiomIngestToken").value,
-      production,
-    );
-    const controlApiToken = containerSecret(
-      "ControlApiToken",
-      new sst.Secret("ControlApiToken").value,
-      production,
-    );
-    const controlIdentitiesSecret = process.env.CONTROL_API_IDENTITIES_CONFIGURED === "true"
-      ? containerSecret(
-          "ControlApiIdentities",
-          new sst.Secret("ControlApiIdentities").value,
-          production,
-        )
-      : undefined;
-    const healthAggregatorToken = containerSecret(
-      "HealthAggregatorToken",
-      new sst.Secret("HealthAggregatorToken").value,
-      production,
-    );
+    const axiomToken = containerSecret("AxiomIngestToken", new sst.Secret("AxiomIngestToken").value, production);
+    const controlApiToken = containerSecret("ControlApiToken", new sst.Secret("ControlApiToken").value, production);
+    const controlIdentitiesSecret =
+      process.env.CONTROL_API_IDENTITIES_CONFIGURED === "true"
+        ? containerSecret("ControlApiIdentities", new sst.Secret("ControlApiIdentities").value, production)
+        : undefined;
+    const healthAggregatorToken = containerSecret("HealthAggregatorToken", new sst.Secret("HealthAggregatorToken").value, production);
     const canarySigningSecretValue = new sst.Secret("CanarySigningSecret").value;
-    const canarySigningSecret = containerSecret(
-      "CanarySigningSecret",
-      canarySigningSecretValue,
-      production,
-    );
-    const providerSecrets = providerMode === "live"
-      ? {
-          BRIGHT_DATA_CUSTOMER_ID: containerSecret(
-            "BrightDataCustomerId",
-            new sst.Secret("BrightDataCustomerId").value,
-            production,
-          ),
-          BRIGHT_DATA_ZONE: containerSecret(
-            "BrightDataZone",
-            new sst.Secret("BrightDataZone").value,
-            production,
-          ),
-          BRIGHT_DATA_PASSWORD: containerSecret(
-            "BrightDataPassword",
-            new sst.Secret("BrightDataPassword").value,
-            production,
-          ),
-          BRIGHT_DATA_API_KEY: containerSecret(
-            "BrightDataApiKey",
-            new sst.Secret("BrightDataApiKey").value,
-            production,
-          ),
-          PROXIDIZE_API_TOKEN: containerSecret(
-            "ProxidizeApiToken",
-            new sst.Secret("ProxidizeApiToken").value,
-            production,
-          ),
-        }
-      : undefined;
-    const syntheticRouteSecrets = process.env.HEALTH_SYNTHETIC_ROUTE_CONFIGURED === "true"
-      ? {
-          HEALTH_PROXY_USERNAME: containerSecret(
-            "HealthProxyUsername",
-            new sst.Secret("HealthProxyUsername").value,
-            production,
-          ),
-          HEALTH_PROXY_PASSWORD: containerSecret(
-            "HealthProxyPassword",
-            new sst.Secret("HealthProxyPassword").value,
-            production,
-          ),
-        }
-      : undefined;
-    const alertDestinationSecret = process.env.HEALTH_ALERTING_CONFIGURED === "true"
-      ? containerSecret(
-          "HealthAlertDestinations",
-          new sst.Secret("HealthAlertDestinations").value,
-          production,
-        )
-      : undefined;
+    const canarySigningSecret = containerSecret("CanarySigningSecret", canarySigningSecretValue, production);
+    const providerSecrets =
+      providerMode === "live"
+        ? {
+            BRIGHT_DATA_CUSTOMER_ID: containerSecret("BrightDataCustomerId", new sst.Secret("BrightDataCustomerId").value, production),
+            BRIGHT_DATA_ZONE: containerSecret("BrightDataZone", new sst.Secret("BrightDataZone").value, production),
+            BRIGHT_DATA_PASSWORD: containerSecret("BrightDataPassword", new sst.Secret("BrightDataPassword").value, production),
+            BRIGHT_DATA_API_KEY: containerSecret("BrightDataApiKey", new sst.Secret("BrightDataApiKey").value, production),
+            PROXIDIZE_API_TOKEN: containerSecret("ProxidizeApiToken", new sst.Secret("ProxidizeApiToken").value, production),
+          }
+        : undefined;
+    const syntheticRouteSecrets =
+      process.env.HEALTH_SYNTHETIC_ROUTE_CONFIGURED === "true"
+        ? {
+            HEALTH_PROXY_USERNAME: containerSecret("HealthProxyUsername", new sst.Secret("HealthProxyUsername").value, production),
+            HEALTH_PROXY_PASSWORD: containerSecret("HealthProxyPassword", new sst.Secret("HealthProxyPassword").value, production),
+          }
+        : undefined;
+    const alertDestinationSecret =
+      process.env.HEALTH_ALERTING_CONFIGURED === "true"
+        ? containerSecret("HealthAlertDestinations", new sst.Secret("HealthAlertDestinations").value, production)
+        : undefined;
+    const usageAccountingSourceToken =
+      process.env.USAGE_ACCOUNTING_SOURCE_TOKEN_CONFIGURED === "true"
+        ? containerSecret("UsageAccountingSourceToken", new sst.Secret("UsageAccountingSourceToken").value, production)
+        : undefined;
     const proxyContainerSecretArns = providerSecrets === undefined ? [] : Object.values(providerSecrets);
     const controlContainerSecretArns = [
       controlApiToken,
@@ -461,28 +434,36 @@ service:
       architecture: "x86_64",
       cpu: "0.5 vCPU",
       memory: "1 GB",
-      containers: [{
-        name: "otel-collector",
-        image: adotImage,
-        environment: {
-          ...axiomCollectorEnvironment,
-          AOT_CONFIG_CONTENT: proxyCollectorConfig(),
+      containers: [
+        {
+          name: "otel-collector",
+          image: adotImage,
+          environment: {
+            ...axiomCollectorEnvironment,
+            AOT_CONFIG_CONTENT: proxyCollectorConfig(),
+          },
+          ssm: { AXIOM_TOKEN: axiomToken, HEALTH_AGGREGATOR_TOKEN: healthAggregatorToken },
+          logging: { retention: "1 month" },
         },
-        ssm: { AXIOM_TOKEN: axiomToken, HEALTH_AGGREGATOR_TOKEN: healthAggregatorToken },
-        logging: { retention: "1 month" },
-      }],
+      ],
       serviceRegistry: { port: 4318 },
       scaling: { min: 1, max: production ? 3 : 1, cpuUtilization: 60, memoryUtilization: 70 },
       wait: true,
       transform: {
         executionRole(args) {
-          args.inlinePolicies = [{
-            name: "ReadTelemetrySecrets",
-            policy: aws.iam.getPolicyDocumentOutput({ statements: [{
-              actions: ["secretsmanager:GetSecretValue"],
-              resources: [axiomToken, healthAggregatorToken],
-            }] }).json,
-          }];
+          args.inlinePolicies = [
+            {
+              name: "ReadTelemetrySecrets",
+              policy: aws.iam.getPolicyDocumentOutput({
+                statements: [
+                  {
+                    actions: ["secretsmanager:GetSecretValue"],
+                    resources: [axiomToken, healthAggregatorToken],
+                  },
+                ],
+              }).json,
+            },
+          ];
         },
       },
     });
@@ -492,54 +473,159 @@ service:
       architecture: "x86_64",
       cpu: "0.5 vCPU",
       memory: "1 GB",
-      containers: [{
-        name: "otel-collector",
-        image: adotImage,
-        environment: {
-          ...axiomCollectorEnvironment,
-          AOT_CONFIG_CONTENT: canaryCollectorConfig(),
+      containers: [
+        {
+          name: "otel-collector",
+          image: adotImage,
+          environment: {
+            ...axiomCollectorEnvironment,
+            AOT_CONFIG_CONTENT: canaryCollectorConfig(),
+          },
+          ssm: { AXIOM_TOKEN: axiomToken },
+          logging: { retention: "1 month" },
         },
-        ssm: { AXIOM_TOKEN: axiomToken },
-        logging: { retention: "1 month" },
-      }],
+      ],
       serviceRegistry: { port: 4318 },
       scaling: { min: 1, max: production ? 2 : 1, cpuUtilization: 60, memoryUtilization: 70 },
       wait: true,
       transform: {
         executionRole(args) {
-          args.inlinePolicies = [{
-            name: "ReadCanaryTelemetrySecret",
-            policy: aws.iam.getPolicyDocumentOutput({ statements: [{
-              actions: ["secretsmanager:GetSecretValue"],
-              resources: [axiomToken],
-            }] }).json,
-          }];
+          args.inlinePolicies = [
+            {
+              name: "ReadCanaryTelemetrySecret",
+              policy: aws.iam.getPolicyDocumentOutput({
+                statements: [
+                  {
+                    actions: ["secretsmanager:GetSecretValue"],
+                    resources: [axiomToken],
+                  },
+                ],
+              }).json,
+            },
+          ];
         },
       },
     });
 
+    // Native ECS blue/green needs two target groups per listener. SST still
+    // owns the task definition and service, while these raw resources expose
+    // the alternate target groups required by the ECS deployment strategy.
+    const proxyLoadBalancerSecurityGroup = new aws.ec2.SecurityGroup("ProxyLoadBalancerSecurityGroup", {
+      vpcId: vpc.id,
+      description: "Restrict the private proxy listeners to approved client networks",
+      ingress: [...portIngress(8080, dataPlaneCidrs), ...portIngress(1080, dataPlaneCidrs)],
+      egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
+    });
+    const proxyTaskSecurityGroup = new aws.ec2.SecurityGroup("ProxyTaskSecurityGroup", {
+      vpcId: vpc.id,
+      description: "Accept proxy traffic only from the data-plane load balancer",
+      ingress: [
+        {
+          protocol: "tcp",
+          fromPort: 8080,
+          toPort: 8080,
+          securityGroups: [proxyLoadBalancerSecurityGroup.id],
+        },
+        {
+          protocol: "tcp",
+          fromPort: 1080,
+          toPort: 1080,
+          securityGroups: [proxyLoadBalancerSecurityGroup.id],
+        },
+      ],
+      egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
+    });
+    const proxyLoadBalancer = new aws.lb.LoadBalancer("ProxyLoadBalancer", {
+      internal: true,
+      loadBalancerType: "network",
+      subnets: vpc.privateSubnets,
+      securityGroups: [proxyLoadBalancerSecurityGroup.id],
+      enableCrossZoneLoadBalancing: true,
+    });
+    const targetGroupDefaults = {
+      protocol: "TCP",
+      targetType: "ip",
+      vpcId: vpc.id,
+      deregistrationDelay: nlbDeregistrationDelaySeconds,
+      connectionTermination: false,
+      preserveClientIp: "false",
+      healthCheck: {
+        enabled: true,
+        protocol: "TCP",
+        interval: 30,
+        healthyThreshold: 3,
+        unhealthyThreshold: 3,
+      },
+    } as const;
+    const httpBlueTarget = new aws.lb.TargetGroup("ProxyHttpBlueTarget", {
+      ...targetGroupDefaults,
+      port: 8080,
+    });
+    const httpGreenTarget = new aws.lb.TargetGroup("ProxyHttpGreenTarget", {
+      ...targetGroupDefaults,
+      port: 8080,
+    });
+    const socksBlueTarget = new aws.lb.TargetGroup("ProxySocksBlueTarget", {
+      ...targetGroupDefaults,
+      port: 1080,
+    });
+    const socksGreenTarget = new aws.lb.TargetGroup("ProxySocksGreenTarget", {
+      ...targetGroupDefaults,
+      port: 1080,
+    });
+    const httpListener = new aws.lb.Listener("ProxyHttpListener", {
+      loadBalancerArn: proxyLoadBalancer.arn,
+      port: 8080,
+      protocol: tlsEnabled ? "TLS" : "TCP",
+      certificateArn: tlsEnabled ? proxyCertificateArn : undefined,
+      tcpIdleTimeoutSeconds: tlsEnabled ? undefined : nlbTcpIdleTimeoutSeconds,
+      defaultActions: [{ type: "forward", targetGroupArn: httpBlueTarget.arn }],
+    });
+    const socksListener = new aws.lb.Listener("ProxySocksListener", {
+      loadBalancerArn: proxyLoadBalancer.arn,
+      port: 1080,
+      protocol: "TCP",
+      tcpIdleTimeoutSeconds: nlbTcpIdleTimeoutSeconds,
+      defaultActions: [{ type: "forward", targetGroupArn: socksBlueTarget.arn }],
+    });
+    const ecsInfrastructureRole = new aws.iam.Role("ProxyEcsInfrastructureRole", {
+      assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({ Service: "ecs.amazonaws.com" }),
+    });
+    new aws.iam.RolePolicyAttachment("ProxyEcsInfrastructureLoadBalancerPolicy", {
+      role: ecsInfrastructureRole.name,
+      policyArn: $interpolate`arn:${partition}:iam::aws:policy/AmazonECSInfrastructureRolePolicyForLoadBalancers`,
+    });
+    const ecsLifecycleHookRole = new aws.iam.Role("ProxyEcsLifecycleHookRole", {
+      assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({ Service: "ecs.amazonaws.com" }),
+      inlinePolicies: [
+        {
+          name: "InvokeDeploymentCoordinator",
+          policy: deploymentCoordinator.arn.apply((functionArn) =>
+            JSON.stringify({
+              Version: "2012-10-17",
+              Statement: [{ Effect: "Allow", Action: "lambda:InvokeFunction", Resource: functionArn }],
+            }),
+          ),
+        },
+      ],
+    });
+
     const service = new sst.aws.Service("ProxyRouter", {
       cluster,
-      dev: { url: "http://127.0.0.1:8081" },
+      dev: { url: "http://127.0.0.1:8080" },
       architecture: "x86_64",
       cpu: "1 vCPU",
       memory: "2 GB",
       permissions: [
         {
-          actions: [
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-            "dynamodb:TransactWriteItems",
-            "dynamodb:Query",
-          ],
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:TransactWriteItems", "dynamodb:Query"],
           resources: [routeState.arn, $interpolate`${routeState.arn}/index/*`],
         },
       ],
       containers: [
         {
           name: "app",
-          image: { context: ".", dockerfile: "Dockerfile" },
+          image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
           dev: { command: "pnpm dev" },
@@ -549,6 +635,7 @@ service:
             PROVIDER_MODE: providerMode,
             PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
+            DEPLOYMENT_ID: deploymentId,
             FORWARD_PROXY_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             FORWARD_PROXY_PORT: "8080",
             SOCKS5_PROXY_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
@@ -561,8 +648,8 @@ service:
             OPERATION_TIMEOUT_MS: process.env.OPERATION_TIMEOUT_MS ?? "30000",
             STREAM_IDLE_TIMEOUT_MS: process.env.STREAM_IDLE_TIMEOUT_MS ?? String(nlbTcpIdleTimeoutSeconds * 1_000),
             RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
-            PROXIDIZE_EXACT_CITY_SUPPORT: process.env.PROXIDIZE_EXACT_CITY_SUPPORT ??
-              (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+            PROXIDIZE_EXACT_CITY_SUPPORT:
+              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
             ...otelEnvironment(`profound-proxy-router-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: proxyAppSsm,
@@ -579,26 +666,6 @@ service:
           logging: { retention: "1 month" },
         },
       ],
-      loadBalancer: {
-        public: false,
-        ...(proxyDomain === undefined
-          ? {}
-          : {
-              domain: proxyCertificateArn === undefined
-                ? proxyDomain
-                : { name: proxyDomain, dns: false as const, cert: proxyCertificateArn },
-            }),
-        rules: [
-          tlsEnabled
-            ? { listen: "8080/tls", forward: "8080/tcp", container: "app" }
-            : { listen: "8080/tcp", forward: "8080/tcp", container: "app" },
-          { listen: "1080/tcp", forward: "1080/tcp", container: "app" },
-        ],
-        health: {
-          "8080/tcp": { interval: "30 seconds" },
-          "1080/tcp": { interval: "30 seconds" },
-        },
-      },
       scaling: {
         min: minimumTasks,
         max: maximumTasks,
@@ -608,36 +675,68 @@ service:
       wait: true,
       transform: {
         executionRole(args) {
-          args.inlinePolicies = proxyContainerSecretArns.length === 0 ? [] : [{
-            name: "ReadContainerSecrets",
-            policy: aws.iam.getPolicyDocumentOutput({
-              statements: [{
-                actions: ["secretsmanager:GetSecretValue"],
-                resources: proxyContainerSecretArns,
-              }],
-            }).json,
-          }];
+          args.inlinePolicies =
+            proxyContainerSecretArns.length === 0
+              ? []
+              : [
+                  {
+                    name: "ReadContainerSecrets",
+                    policy: aws.iam.getPolicyDocumentOutput({
+                      statements: [
+                        {
+                          actions: ["secretsmanager:GetSecretValue"],
+                          resources: proxyContainerSecretArns,
+                        },
+                      ],
+                    }).json,
+                  },
+                ];
         },
-        listener(args) {
-          // AWS exposes a configurable idle timeout only for TCP listeners. TLS
-          // listeners have a fixed 350-second idle timeout.
-          if (args.protocol === "TCP") {
-            args.tcpIdleTimeoutSeconds = nlbTcpIdleTimeoutSeconds;
-          }
-        },
-        target(args) {
-          args.deregistrationDelay = nlbDeregistrationDelaySeconds;
-          args.connectionTermination = false;
-        },
-        loadBalancerSecurityGroup(args) {
-          args.ingress = [
-            ...portIngress(8080, dataPlaneCidrs),
-            ...portIngress(1080, dataPlaneCidrs),
+        service(args) {
+          args.networkConfiguration = {
+            assignPublicIp: true,
+            subnets: vpc.publicSubnets,
+            securityGroups: [proxyTaskSecurityGroup.id],
+          };
+          args.deploymentCircuitBreaker = undefined;
+          args.deploymentConfiguration = {
+            strategy: "BLUE_GREEN",
+            bakeTimeInMinutes: "360",
+            lifecycleHooks: [
+              {
+                hookTargetArn: deploymentCoordinator.arn,
+                roleArn: ecsLifecycleHookRole.arn,
+                lifecycleStages: ["POST_PRODUCTION_TRAFFIC_SHIFT"],
+                hookDetails: JSON.stringify({ policy: "durable-tunnel-drain", pollIntervalMinutes: 15 }),
+              },
+            ],
+          };
+          args.loadBalancers = [
+            {
+              containerName: "app",
+              containerPort: 8080,
+              targetGroupArn: httpBlueTarget.arn,
+              advancedConfiguration: {
+                alternateTargetGroupArn: httpGreenTarget.arn,
+                productionListenerRule: httpListener.arn,
+                roleArn: ecsInfrastructureRole.arn,
+              },
+            },
+            {
+              containerName: "app",
+              containerPort: 1080,
+              targetGroupArn: socksBlueTarget.arn,
+              advancedConfiguration: {
+                alternateTargetGroupArn: socksGreenTarget.arn,
+                productionListenerRule: socksListener.arn,
+                roleArn: ecsInfrastructureRole.arn,
+              },
+            },
           ];
         },
       },
     });
-    const host = proxyDomain ?? service.url.apply((value) => new URL(value).hostname);
+    const host = $dev ? "127.0.0.1" : (proxyDomain ?? proxyLoadBalancer.dnsName);
 
     const controlPlane = new sst.aws.Service("ControlPlane", {
       cluster,
@@ -647,20 +746,14 @@ service:
       memory: "1 GB",
       permissions: [
         {
-          actions: [
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-            "dynamodb:TransactWriteItems",
-            "dynamodb:Query",
-          ],
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:TransactWriteItems", "dynamodb:Query"],
           resources: [routeState.arn, $interpolate`${routeState.arn}/index/*`],
         },
       ],
       containers: [
         {
           name: "app",
-          image: { context: ".", dockerfile: "Dockerfile" },
+          image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
           dev: { command: "pnpm dev" },
@@ -680,8 +773,8 @@ service:
             CONNECT_TIMEOUT_MS: process.env.CONNECT_TIMEOUT_MS ?? "10000",
             OPERATION_TIMEOUT_MS: process.env.OPERATION_TIMEOUT_MS ?? "30000",
             RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
-            PROXIDIZE_EXACT_CITY_SUPPORT: process.env.PROXIDIZE_EXACT_CITY_SUPPORT ??
-              (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+            PROXIDIZE_EXACT_CITY_SUPPORT:
+              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
             ...otelEnvironment(`profound-proxy-control-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev ? { CONTROL_API_TOKEN: devControlApiToken } : {}),
           },
@@ -704,28 +797,37 @@ service:
         ...(controlDomain === undefined
           ? {}
           : {
-              domain: controlCertificateArn === undefined
-                ? controlDomain
-                : { name: controlDomain, dns: false as const, cert: controlCertificateArn },
+              domain:
+                controlCertificateArn === undefined
+                  ? controlDomain
+                  : { name: controlDomain, dns: false as const, cert: controlCertificateArn },
             }),
-        rules: [{
-          listen: controlDomain === undefined ? "80/http" : "443/https",
-          forward: "8081/http",
-          container: "app",
-        }],
+        rules: [
+          {
+            listen: controlDomain === undefined ? "80/http" : "443/https",
+            forward: "8081/http",
+            container: "app",
+          },
+        ],
         health: { "8081/http": { path: "/health/ready", interval: "30 seconds" } },
       },
       scaling: { min: 1, max: production ? 2 : 1, cpuUtilization: 60, memoryUtilization: 70 },
       wait: true,
       transform: {
         executionRole(args) {
-          args.inlinePolicies = [{
-            name: "ReadControlSecrets",
-            policy: aws.iam.getPolicyDocumentOutput({ statements: [{
-              actions: ["secretsmanager:GetSecretValue"],
-              resources: controlContainerSecretArns,
-            }] }).json,
-          }];
+          args.inlinePolicies = [
+            {
+              name: "ReadControlSecrets",
+              policy: aws.iam.getPolicyDocumentOutput({
+                statements: [
+                  {
+                    actions: ["secretsmanager:GetSecretValue"],
+                    resources: controlContainerSecretArns,
+                  },
+                ],
+              }).json,
+            },
+          ];
         },
         loadBalancerSecurityGroup(args) {
           args.ingress = portIngress(controlDomain === undefined ? 80 : 443, controlPlaneCidrs);
@@ -739,16 +841,8 @@ service:
       transform: {
         stage(args) {
           args.defaultRouteSettings = {
-            throttlingBurstLimit: positiveInteger(
-              process.env.CANARY_THROTTLE_BURST,
-              30,
-              "CANARY_THROTTLE_BURST",
-            ),
-            throttlingRateLimit: positiveInteger(
-              process.env.CANARY_THROTTLE_RATE,
-              10,
-              "CANARY_THROTTLE_RATE",
-            ),
+            throttlingBurstLimit: positiveInteger(process.env.CANARY_THROTTLE_BURST, 30, "CANARY_THROTTLE_BURST"),
+            throttlingRateLimit: positiveInteger(process.env.CANARY_THROTTLE_RATE, 10, "CANARY_THROTTLE_RATE"),
           };
         },
       },
@@ -776,35 +870,86 @@ service:
       },
     });
 
-    const integrationTarget = integrationTargetEnabled
-      ? new sst.aws.Service("IntegrationTarget", {
+    // Every non-production stage gets a request-priced recipient for semantic,
+    // HTTPS CONNECT, SOCKS5, and telemetry checks. The dedicated TTL table
+    // makes replay detection reliable across Lambda cold starts and concurrency.
+    // It intentionally remains outside every VPC: that prevents access to the
+    // product network while preserving access to the DynamoDB service endpoint.
+    const integrationTargetState = production
+      ? undefined
+      : new sst.aws.Dynamo("IntegrationTargetState", {
+          fields: { id: "string" },
+          primaryIndex: { hashKey: "id" },
+          ttl: "expiresAt",
+        });
+    const integrationTargetApi = production
+      ? undefined
+      : new sst.aws.ApiGatewayV2("IntegrationTargetApi", {
+          cors: false,
+          accessLog: { retention: "1 week" },
+          transform: {
+            stage(args) {
+              args.defaultRouteSettings = {
+                throttlingBurstLimit: 30,
+                throttlingRateLimit: 10,
+              };
+            },
+          },
+        });
+    const integrationTargetRoute =
+      integrationTargetApi === undefined || integrationTargetState === undefined
+        ? undefined
+        : integrationTargetApi.route("$default", {
+            handler: "src/integration-target-lambda.handler",
+            runtime: "nodejs22.x",
+            timeout: "10 seconds",
+            memory: "512 MB",
+            concurrency: { reserved: 5 },
+            permissions: [
+              {
+                actions: ["dynamodb:UpdateItem"],
+                resources: [integrationTargetState.arn],
+              },
+            ],
+            environment: {
+              INTEGRATION_TARGET_TABLE_NAME: integrationTargetState.name,
+            },
+          });
+
+    // CI stages additionally retain a conventional plain-HTTP socket origin.
+    // It is short-lived with the CI stack and validates behavior that an API
+    // Gateway/Lambda event adapter cannot represent faithfully.
+    const integrationTransportTarget = cloudTestStage
+      ? new sst.aws.Service("IntegrationTransportTarget", {
           cluster: canaryCluster,
           architecture: "x86_64",
           cpu: "0.25 vCPU",
           memory: "0.5 GB",
-          containers: [{
-            name: "app",
-            image: { context: ".", dockerfile: "Dockerfile" },
-            environment: {
-              NODE_ENV: "production",
-              SERVICE_MODE: "integration-target",
-              ALLOW_INTEGRATION_TARGET: "true",
-              INTEGRATION_TARGET_HOST: "0.0.0.0",
-              INTEGRATION_TARGET_PORT: "8091",
-              OTEL_SDK_DISABLED: "true",
+          containers: [
+            {
+              name: "app",
+              image: applicationImage,
+              environment: {
+                NODE_ENV: "production",
+                SERVICE_MODE: "integration-target",
+                ALLOW_INTEGRATION_TARGET: "true",
+                INTEGRATION_TARGET_HOST: "0.0.0.0",
+                INTEGRATION_TARGET_PORT: "8091",
+                OTEL_SDK_DISABLED: "true",
+              },
+              health: {
+                command: [
+                  "CMD-SHELL",
+                  "node -e \"fetch('http://127.0.0.1:8091/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+                ],
+                startPeriod: "20 seconds",
+                interval: "30 seconds",
+                timeout: "5 seconds",
+                retries: 3,
+              },
+              logging: { retention: "1 week" },
             },
-            health: {
-              command: [
-                "CMD-SHELL",
-                "node -e \"fetch('http://127.0.0.1:8091/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
-              ],
-              startPeriod: "20 seconds",
-              interval: "30 seconds",
-              timeout: "5 seconds",
-              retries: 3,
-            },
-            logging: { retention: "1 week" },
-          }],
+          ],
           loadBalancer: {
             public: true,
             rules: [{ listen: "80/tcp", forward: "8091/tcp", container: "app" }],
@@ -836,7 +981,7 @@ service:
       containers: [
         {
           name: "app",
-          image: { context: ".", dockerfile: "Dockerfile" },
+          image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
           dev: { command: "pnpm dev" },
@@ -855,17 +1000,18 @@ service:
             HEALTH_ALERT_DEGRADED_DELAY_MS: process.env.HEALTH_ALERT_DEGRADED_DELAY_MS ?? "300000",
             HEALTH_ALERT_WEBHOOK_TIMEOUT_MS: process.env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS ?? "5000",
             HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS: process.env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS ?? "5",
-            HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS:
-              process.env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS ?? "1000",
+            HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS: process.env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS ?? "1000",
             HEALTH_ALERT_DESTINATION_IDS: process.env.HEALTH_ALERT_DESTINATION_IDS ?? "",
             HEALTH_ALERT_CONFIGURATION_VERSION: process.env.HEALTH_ALERT_CONFIGURATION_VERSION ?? "unconfigured",
             HEALTH_CANARY_URL: $interpolate`${canaryApi.url}/v1/challenge`,
-            ...(syntheticRouteSecrets === undefined ? {} : {
-              HEALTH_PROXY_URL: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
-            }),
+            ...(syntheticRouteSecrets === undefined
+              ? {}
+              : {
+                  HEALTH_PROXY_URL: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
+                }),
             CONNECT_TIMEOUT_MS: process.env.CONNECT_TIMEOUT_MS ?? "10000",
-            PROXIDIZE_EXACT_CITY_SUPPORT: process.env.PROXIDIZE_EXACT_CITY_SUPPORT ??
-              (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
+            PROXIDIZE_EXACT_CITY_SUPPORT:
+              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "unsupported"),
             ...otelEnvironment(`profound-proxy-health-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev
               ? {
@@ -904,18 +1050,24 @@ service:
       wait: true,
       transform: {
         executionRole(args) {
-          args.inlinePolicies = [{
-            name: "ReadHealthSecrets",
-            policy: aws.iam.getPolicyDocumentOutput({ statements: [{
-              actions: ["secretsmanager:GetSecretValue"],
-              resources: aggregatorSecrets,
-            }] }).json,
-          }];
+          args.inlinePolicies = [
+            {
+              name: "ReadHealthSecrets",
+              policy: aws.iam.getPolicyDocumentOutput({
+                statements: [
+                  {
+                    actions: ["secretsmanager:GetSecretValue"],
+                    resources: aggregatorSecrets,
+                  },
+                ],
+              }).json,
+            },
+          ];
         },
       },
     });
 
-    const status = new sst.aws.Service("StatusApplication", {
+    const status = new sst.aws.Service("InternalDashboard", {
       cluster,
       dev: { url: "http://127.0.0.1:8083" },
       architecture: "x86_64",
@@ -930,7 +1082,7 @@ service:
       containers: [
         {
           name: "app",
-          image: { context: ".", dockerfile: "Dockerfile" },
+          image: applicationImage,
           cpu: "0.25 vCPU",
           memory: "0.5 GB",
           dev: { command: "pnpm dev" },
@@ -969,13 +1121,100 @@ service:
       wait: true,
       transform: {
         executionRole(args) {
-          args.inlinePolicies = [{
-            name: "ReadStatusSecrets",
-            policy: aws.iam.getPolicyDocumentOutput({ statements: [{
-              actions: ["secretsmanager:GetSecretValue"],
-              resources: [healthAggregatorToken],
-            }] }).json,
-          }];
+          args.inlinePolicies = [
+            {
+              name: "ReadStatusSecrets",
+              policy: aws.iam.getPolicyDocumentOutput({
+                statements: [
+                  {
+                    actions: ["secretsmanager:GetSecretValue"],
+                    resources: [healthAggregatorToken],
+                  },
+                ],
+              }).json,
+            },
+          ];
+        },
+      },
+    });
+
+    const usageAccounting = new sst.aws.Service("UsageAccounting", {
+      cluster,
+      dev: { url: "http://127.0.0.1:8085" },
+      architecture: "x86_64",
+      cpu: "0.5 vCPU",
+      memory: "1 GB",
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+          resources: [routeState.arn, $interpolate`${routeState.arn}/index/*`],
+        },
+      ],
+      containers: [
+        {
+          name: "app",
+          image: applicationImage,
+          cpu: "0.5 vCPU",
+          memory: "1 GB",
+          dev: { command: "pnpm dev" },
+          environment: {
+            NODE_ENV: "production",
+            SERVICE_MODE: "usage-accounting",
+            PERSISTENCE_BACKEND: "dynamodb",
+            ROUTE_TABLE_NAME: routeState.name,
+            USAGE_ACCOUNTING_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
+            USAGE_ACCOUNTING_PORT: "8085",
+            USAGE_ACCOUNTING_INTERVAL_MS: process.env.USAGE_ACCOUNTING_INTERVAL_MS ?? "60000",
+            PROVIDER_COST_TOTALS_JSON: process.env.PROVIDER_COST_TOTALS_JSON ?? "[]",
+            UNALLOCATED_DEVICE_CAPACITY_JSON: process.env.UNALLOCATED_DEVICE_CAPACITY_JSON ?? "[]",
+            ...(process.env.USAGE_ACCOUNTING_SOURCE_URL?.trim()
+              ? { USAGE_ACCOUNTING_SOURCE_URL: process.env.USAGE_ACCOUNTING_SOURCE_URL.trim() }
+              : {}),
+            USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS: process.env.USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS ?? "10000",
+            USAGE_VARIANCE_ABSOLUTE_FLOOR_USD: process.env.USAGE_VARIANCE_ABSOLUTE_FLOOR_USD ?? "1",
+            USAGE_VARIANCE_WARNING_RELATIVE: process.env.USAGE_VARIANCE_WARNING_RELATIVE ?? "0.05",
+            USAGE_VARIANCE_ERROR_RELATIVE: process.env.USAGE_VARIANCE_ERROR_RELATIVE ?? "0.15",
+            ...otelEnvironment(`profound-proxy-usage-accounting-${$app.stage}`, telemetryCollectorEndpoint),
+          },
+          ssm: usageAccountingSourceToken === undefined ? {} : { USAGE_ACCOUNTING_SOURCE_TOKEN: usageAccountingSourceToken },
+          health: {
+            command: [
+              "CMD-SHELL",
+              "node -e \"fetch('http://127.0.0.1:8085/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+            ],
+            startPeriod: "20 seconds",
+            interval: "30 seconds",
+            timeout: "5 seconds",
+            retries: 3,
+          },
+          logging: { retention: "1 month" },
+        },
+      ],
+      loadBalancer: {
+        public: false,
+        rules: [{ listen: "80/http", forward: "8085/http", container: "app" }],
+        health: { "8085/http": { path: "/health/ready", interval: "30 seconds" } },
+      },
+      scaling: { min: 1, max: 1 },
+      wait: true,
+      transform: {
+        executionRole(args) {
+          args.inlinePolicies =
+            usageAccountingSourceToken === undefined
+              ? []
+              : [
+                  {
+                    name: "ReadUsageAccountingSourceSecret",
+                    policy: aws.iam.getPolicyDocumentOutput({
+                      statements: [
+                        {
+                          actions: ["secretsmanager:GetSecretValue"],
+                          resources: [usageAccountingSourceToken],
+                        },
+                      ],
+                    }).json,
+                  },
+                ];
         },
       },
     });
@@ -986,45 +1225,46 @@ service:
       architecture: "x86_64",
       cpu: "0.5 vCPU",
       memory: "1 GB",
-      permissions: [{
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
-        resources: [routeState.arn, $interpolate`${routeState.arn}/index/*`],
-      }],
-      containers: [{
-        name: "app",
-        image: { context: ".", dockerfile: "Dockerfile" },
-        cpu: "0.5 vCPU",
-        memory: "1 GB",
-        dev: { command: "pnpm dev" },
-        environment: {
-          NODE_ENV: "production",
-          SERVICE_MODE: "notification",
-          PERSISTENCE_BACKEND: "dynamodb",
-          ROUTE_TABLE_NAME: routeState.name,
-          NOTIFICATION_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
-          NOTIFICATION_PORT: "8084",
-          NOTIFICATION_POLL_INTERVAL_MS: process.env.NOTIFICATION_POLL_INTERVAL_MS ?? "5000",
-          HEALTH_ALERT_WEBHOOK_TIMEOUT_MS: process.env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS ?? "5000",
-          HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS: process.env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS ?? "5",
-          HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS:
-            process.env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS ?? "1000",
-          ...otelEnvironment(`profound-proxy-notification-${$app.stage}`, telemetryCollectorEndpoint),
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+          resources: [routeState.arn, $interpolate`${routeState.arn}/index/*`],
         },
-        ssm: alertDestinationSecret === undefined
-          ? {}
-          : { HEALTH_ALERT_DESTINATIONS_JSON: alertDestinationSecret },
-        health: {
-          command: [
-            "CMD-SHELL",
-            "node -e \"fetch('http://127.0.0.1:8084/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
-          ],
-          startPeriod: "20 seconds",
-          interval: "30 seconds",
-          timeout: "5 seconds",
-          retries: 3,
+      ],
+      containers: [
+        {
+          name: "app",
+          image: applicationImage,
+          cpu: "0.5 vCPU",
+          memory: "1 GB",
+          dev: { command: "pnpm dev" },
+          environment: {
+            NODE_ENV: "production",
+            SERVICE_MODE: "notification",
+            PERSISTENCE_BACKEND: "dynamodb",
+            ROUTE_TABLE_NAME: routeState.name,
+            NOTIFICATION_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
+            NOTIFICATION_PORT: "8084",
+            NOTIFICATION_POLL_INTERVAL_MS: process.env.NOTIFICATION_POLL_INTERVAL_MS ?? "5000",
+            HEALTH_ALERT_WEBHOOK_TIMEOUT_MS: process.env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS ?? "5000",
+            HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS: process.env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS ?? "5",
+            HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS: process.env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS ?? "1000",
+            ...otelEnvironment(`profound-proxy-notification-${$app.stage}`, telemetryCollectorEndpoint),
+          },
+          ssm: alertDestinationSecret === undefined ? {} : { HEALTH_ALERT_DESTINATIONS_JSON: alertDestinationSecret },
+          health: {
+            command: [
+              "CMD-SHELL",
+              "node -e \"fetch('http://127.0.0.1:8084/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+            ],
+            startPeriod: "20 seconds",
+            interval: "30 seconds",
+            timeout: "5 seconds",
+            retries: 3,
+          },
+          logging: { retention: "1 month" },
         },
-        logging: { retention: "1 month" },
-      }],
+      ],
       loadBalancer: {
         public: false,
         rules: [{ listen: "80/http", forward: "8084/http", container: "app" }],
@@ -1034,13 +1274,22 @@ service:
       wait: true,
       transform: {
         executionRole(args) {
-          args.inlinePolicies = alertDestinationSecret === undefined ? [] : [{
-            name: "ReadNotificationSecret",
-            policy: aws.iam.getPolicyDocumentOutput({ statements: [{
-              actions: ["secretsmanager:GetSecretValue"],
-              resources: [alertDestinationSecret],
-            }] }).json,
-          }];
+          args.inlinePolicies =
+            alertDestinationSecret === undefined
+              ? []
+              : [
+                  {
+                    name: "ReadNotificationSecret",
+                    policy: aws.iam.getPolicyDocumentOutput({
+                      statements: [
+                        {
+                          actions: ["secretsmanager:GetSecretValue"],
+                          resources: [alertDestinationSecret],
+                        },
+                      ],
+                    }).json,
+                  },
+                ];
         },
       },
     });
@@ -1052,14 +1301,17 @@ service:
           name: integrationMetadataParameterName,
           type: "String",
           value: $jsonStringify({
-            schemaVersion: 2,
+            schemaVersion: 3,
             app: $app.name,
             stage: $app.stage,
+            expiresAt: stage.cloudTest ? new Date(Date.now() + 24 * 60 * 60_000).toISOString() : undefined,
             deploymentProvider: "aws",
             region,
             providerMode,
             geoIpBundleConfigured,
             routeTable: routeState.name,
+            deploymentId,
+            deploymentNotificationTopic: deploymentNotifications.arn,
             compute: {
               orchestration: "ecs",
               launchType: "FARGATE",
@@ -1084,6 +1336,8 @@ service:
             controlApi: controlPlane.url,
             publicCanary: canaryApi.url,
             statusApplication: status.url,
+            internalDashboard: status.url,
+            usageAccounting: usageAccounting.url,
             healthAggregator: healthAggregator.url,
             productVpcId: vpc.id,
             canaryVpcId: canaryVpc.id,
@@ -1116,6 +1370,13 @@ service:
                 taskRole: status.nodes.taskRole.arn,
                 executionRole: status.nodes.executionRole!.arn,
               },
+              usageAccounting: {
+                cluster: cluster.nodes.cluster.name,
+                service: usageAccounting.nodes.service.name,
+                taskDefinition: usageAccounting.nodes.taskDefinition.arn,
+                taskRole: usageAccounting.nodes.taskRole.arn,
+                executionRole: usageAccounting.nodes.executionRole!.arn,
+              },
               notification: {
                 cluster: cluster.nodes.cluster.name,
                 service: notification.nodes.service.name,
@@ -1145,20 +1406,33 @@ service:
               functionArn: canaryRoute.nodes.function.arn,
               geoIpPackaged: geoIpBundleConfigured,
             },
-            integrationTarget: integrationTarget === undefined
-              ? null
-              : {
-                  url: integrationTarget.url,
-                  cluster: canaryCluster.nodes.cluster.name,
-                  service: integrationTarget.nodes.service.name,
-                  taskDefinition: integrationTarget.nodes.taskDefinition.arn,
-                },
+            integrationTarget:
+              integrationTargetApi === undefined || integrationTargetRoute === undefined || integrationTargetState === undefined
+                ? null
+                : {
+                    url: integrationTargetApi.url,
+                    compute: "lambda",
+                    api: "api-gateway-v2",
+                    apiId: integrationTargetApi.nodes.api.id,
+                    functionArn: integrationTargetRoute.nodes.function.arn,
+                    stateTable: integrationTargetState.name,
+                  },
+            integrationTransportTarget:
+              integrationTransportTarget === undefined
+                ? null
+                : {
+                    url: integrationTransportTarget.url,
+                    compute: "ecs-fargate",
+                    cluster: canaryCluster.nodes.cluster.name,
+                    service: integrationTransportTarget.nodes.service.name,
+                    taskDefinition: integrationTransportTarget.nodes.taskDefinition.arn,
+                  },
           }),
         });
 
     return {
       proxyHost: host,
-      loadBalancerHost: $dev ? "not-deployed-in-sst-dev" : service.nodes.loadBalancer.dnsName,
+      loadBalancerHost: $dev ? "not-deployed-in-sst-dev" : proxyLoadBalancer.dnsName,
       httpProxy: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
       socks5Proxy: $interpolate`socks5h://${host}:1080`,
       controlApi: controlPlane.url,
@@ -1171,16 +1445,23 @@ service:
       axiomDatasets,
       telemetryRetentionDays,
       statusApplication: status.url,
+      internalDashboard: status.url,
+      usageAccounting: usageAccounting.url,
       healthAggregator: healthAggregator.url,
       publicCanary: canaryApi.url,
-      integrationTarget: integrationTarget?.url ?? "not-deployed",
+      integrationTarget: integrationTargetApi?.url ?? "not-deployed",
+      integrationTransportTarget: integrationTransportTarget?.url ?? "not-deployed",
       integrationMetadataParameter: integrationMetadata?.name ?? "not-deployed-in-sst-dev",
+      deploymentNotificationTopic: deploymentNotifications.arn,
     };
   },
 };
 
 function cidrs(value: string | undefined): string[] {
-  const result = (value ?? "0.0.0.0/0").split(",").map((entry) => entry.trim()).filter(Boolean);
+  const result = (value ?? "0.0.0.0/0")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   if (result.length === 0) throw new Error("Allowed CIDR lists must not be empty");
   return result;
 }
@@ -1191,13 +1472,7 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
   return parsed;
 }
 
-function boundedInteger(
-  value: string | undefined,
-  fallback: number,
-  name: string,
-  minimum: number,
-  maximum: number,
-): number {
+function boundedInteger(value: string | undefined, fallback: number, name: string, minimum: number, maximum: number): number {
   const parsed = value === undefined ? fallback : Number(value);
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
     throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
@@ -1212,8 +1487,14 @@ function normalizedHttpsOrigin(value: string, name: string): string {
   } catch {
     throw new Error(`${name} must be a valid HTTPS origin`);
   }
-  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" ||
-      url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
     throw new Error(`${name} must be an HTTPS origin without credentials, path, query, or fragment`);
   }
   return url.origin;
@@ -1236,11 +1517,7 @@ function portIngress(port: number, allowedCidrs: string[]): aws.types.input.ec2.
   }));
 }
 
-function containerSecret(
-  name: string,
-  value: InstanceType<typeof sst.Secret>["value"],
-  production: boolean,
-) {
+function containerSecret(name: string, value: InstanceType<typeof sst.Secret>["value"], production: boolean) {
   const secret = new aws.secretsmanager.Secret(`${name}ContainerSecret`, {
     description: `Managed by SST for ${$app.name}/${$app.stage}`,
     recoveryWindowInDays: production ? 30 : 0,

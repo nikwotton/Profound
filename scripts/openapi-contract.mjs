@@ -11,7 +11,11 @@ const [command, compatibilityBaseline] = process.argv.slice(2).filter((argument)
 function sortJson(value) {
   if (Array.isArray(value)) return value.map(sortJson);
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, sortJson(value[key])]),
+    );
   }
   return value;
 }
@@ -20,7 +24,9 @@ const document = sortJson(OpenApi.fromApi(ControlApi));
 const output = `${JSON.stringify(document, null, 2)}\n`;
 const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 if (document.info?.version !== CONTROL_API_VERSION || packageJson.version !== CONTROL_API_VERSION) {
-  throw new Error(`Control API, package, and artifact versions must match (${document.info?.version}, ${packageJson.version}, ${CONTROL_API_VERSION})`);
+  throw new Error(
+    `Control API, package, and artifact versions must match (${document.info?.version}, ${packageJson.version}, ${CONTROL_API_VERSION})`,
+  );
 }
 
 if (command === "generate") {

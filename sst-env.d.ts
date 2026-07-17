@@ -30,6 +30,10 @@ declare module "sst" {
       "type": "sst.aws.Service"
       "url": string
     }
+    "DeploymentCoordinator": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "HealthAggregator": {
       "service": string
       "type": "sst.aws.Service"
@@ -38,6 +42,19 @@ declare module "sst" {
     "HealthAggregatorToken": {
       "type": "sst.sst.Secret"
       "value": string
+    }
+    "IntegrationTargetApi": {
+      "type": "sst.aws.ApiGatewayV2"
+      "url": string
+    }
+    "IntegrationTargetState": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "InternalDashboard": {
+      "service": string
+      "type": "sst.aws.Service"
+      "url": string
     }
     "Network": {
       "bastion": string
@@ -51,7 +68,6 @@ declare module "sst" {
     "ProxyRouter": {
       "service": string
       "type": "sst.aws.Service"
-      "url": string
     }
     "PublicCanary": {
       "type": "sst.aws.ApiGatewayV2"
@@ -61,14 +77,14 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Dynamo"
     }
-    "StatusApplication": {
-      "service": string
-      "type": "sst.aws.Service"
-      "url": string
-    }
     "TelemetryCollector": {
       "service": string
       "type": "sst.aws.Service"
+    }
+    "UsageAccounting": {
+      "service": string
+      "type": "sst.aws.Service"
+      "url": string
     }
   }
 }

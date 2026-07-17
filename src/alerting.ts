@@ -98,10 +98,7 @@ export class WebhookNotificationAdapter {
 
   async flush(): Promise<void> {
     const now = this.options.now?.() ?? Date.now();
-    const deliveries = await this.store.pendingHealthAlertDeliveries(
-      new Date(now).toISOString(),
-      this.options.batchSize ?? 100,
-    );
+    const deliveries = await this.store.pendingHealthAlertDeliveries(new Date(now).toISOString(), this.options.batchSize ?? 100);
     for (const delivery of deliveries) await this.#deliver(delivery, now);
   }
 
@@ -160,7 +157,7 @@ export class WebhookNotificationAdapter {
       return;
     }
     const exhausted = attemptCount >= this.options.maxAttempts;
-    const backoffMs = this.options.initialBackoffMs * (2 ** Math.max(0, attemptCount - 1));
+    const backoffMs = this.options.initialBackoffMs * 2 ** Math.max(0, attemptCount - 1);
     await this.store.saveHealthAlertDelivery({
       ...delivery,
       status: exhausted ? "failed" : "pending",
@@ -213,15 +210,9 @@ export class HealthAlertCoordinator implements HealthAlertEvaluator {
     await this.options.notifier?.flush();
   }
 
-  async #evaluateCapability(
-    snapshot: CapabilityHealthSnapshot,
-    capability: CapabilityName,
-    status: CapabilityStatus,
-  ): Promise<void> {
+  async #evaluateCapability(snapshot: CapabilityHealthSnapshot, capability: CapabilityName, status: CapabilityStatus): Promise<void> {
     const prior = await this.store.getHealthAlertState(capability);
-    const observedSince = prior === undefined || prior.observedStatus !== status
-      ? snapshot.generatedAt
-      : prior.observedSince;
+    const observedSince = prior === undefined || prior.observedStatus !== status ? snapshot.generatedAt : prior.observedSince;
     let state: HealthAlertState = {
       capability,
       observedStatus: status,
@@ -238,8 +229,8 @@ export class HealthAlertCoordinator implements HealthAlertEvaluator {
       await this.#emit(snapshot, capability, status, "recovery", observedSince, previousStatus);
       state = { capability, observedStatus: status, observedSince, updatedAt: snapshot.generatedAt };
     } else if (status !== "operational") {
-      const delaySatisfied = status === "unavailable" ||
-        Date.parse(snapshot.generatedAt) - Date.parse(observedSince) >= this.options.degradedDelayMs;
+      const delaySatisfied =
+        status === "unavailable" || Date.parse(snapshot.generatedAt) - Date.parse(observedSince) >= this.options.degradedDelayMs;
       if (delaySatisfied && state.alertedStatus !== status) {
         await this.#emit(snapshot, capability, status, "alert", observedSince);
         state = { ...state, alertedStatus: status, alertedAt: snapshot.generatedAt };
@@ -272,8 +263,12 @@ export class HealthAlertCoordinator implements HealthAlertEvaluator {
     };
     const created = await this.store.createHealthAlertEvent(event, this.options.destinationIds);
     if (!created) return;
-    const log = event.severity === "critical" ? this.logger.error.bind(this.logger) :
-      event.severity === "warning" ? this.logger.warn.bind(this.logger) : this.logger.info.bind(this.logger);
+    const log =
+      event.severity === "critical"
+        ? this.logger.error.bind(this.logger)
+        : event.severity === "warning"
+          ? this.logger.warn.bind(this.logger)
+          : this.logger.info.bind(this.logger);
     log("Health alert finalized", {
       "event.name": "profound.health.alert",
       alertId: event.id,

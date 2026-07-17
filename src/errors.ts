@@ -57,10 +57,10 @@ export function attributeProvider(error: unknown, provider: string): unknown {
   return attributed;
 }
 
-export function providerIdFromError(error: unknown): string | undefined {
+export function providerIdFromError(error: unknown): ProviderId | undefined {
   if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
   const provider = (error as { providerId?: unknown }).providerId;
-  return typeof provider === "string" ? provider : undefined;
+  return provider === "bright_data" || provider === "proxidize" ? provider : undefined;
 }
 
 export function attributeAssignment(error: unknown, assignment: AssignmentEvidence): unknown {
@@ -76,22 +76,16 @@ export function attributeAssignment(error: unknown, assignment: AssignmentEviden
 export function assignmentFromError(error: unknown): AssignmentEvidence | undefined {
   if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
   const assignment = (error as { assignmentEvidence?: unknown }).assignmentEvidence;
-  return assignment !== null && typeof assignment === "object" ? assignment as AssignmentEvidence : undefined;
+  return assignment !== null && typeof assignment === "object" ? (assignment as AssignmentEvidence) : undefined;
 }
 
 export function isRetryableUpstreamFailure(error: unknown): boolean {
   if (error instanceof ProviderUnavailableError) return true;
   if (!(error instanceof Error)) return false;
   const code = (error as NodeJS.ErrnoException).code;
-  return code !== undefined && new Set([
-    "ECONNREFUSED",
-    "ECONNRESET",
-    "ETIMEDOUT",
-    "EPIPE",
-    "ENETDOWN",
-    "ENETUNREACH",
-    "EHOSTDOWN",
-    "EHOSTUNREACH",
-  ]).has(code);
+  return (
+    code !== undefined &&
+    new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENETDOWN", "ENETUNREACH", "EHOSTDOWN", "EHOSTUNREACH"]).has(code)
+  );
 }
-import type { AssignmentEvidence } from "./types.js";
+import type { AssignmentEvidence, ProviderId } from "./types.js";

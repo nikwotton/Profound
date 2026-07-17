@@ -1,0 +1,8 @@
+{
+  "provider": "proxidize",
+  "version": "v0-reviewed-2026-07-13",
+  "inventory": ["subscriptions", "proxies"],
+  "control": ["rotate", "rotation_interval"],
+  "authentication": "bearer",
+  "affinity": "device"
+}

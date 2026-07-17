@@ -11,11 +11,7 @@ export function operationDeadline(startedAt: number, operationTimeoutMs: number)
   return startedAt + operationTimeoutMs;
 }
 
-export function beginAttemptBudget(
-  overallDeadline: number,
-  attemptTimeoutMs: number,
-  callerSignal?: AbortSignal,
-): AttemptBudget {
+export function beginAttemptBudget(overallDeadline: number, attemptTimeoutMs: number, callerSignal?: AbortSignal): AttemptBudget {
   const now = Date.now();
   const remainingOverall = overallDeadline - now;
   if (remainingOverall <= 0) throw new ProviderUnavailableError("Candidate establishment exceeded the operation deadline");
@@ -45,7 +41,5 @@ export function beginAttemptBudget(
 }
 
 export function abortReason(signal: AbortSignal): unknown {
-  return signal.reason instanceof Error
-    ? signal.reason
-    : new ProviderUnavailableError("Candidate establishment was cancelled");
+  return signal.reason instanceof Error ? signal.reason : new ProviderUnavailableError("Candidate establishment was cancelled");
 }

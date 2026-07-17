@@ -20,10 +20,21 @@ export type TargetValidator = (
 export type Lookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
 const IPV4_BLOCKS: ReadonlyArray<readonly [number, number]> = [
-  [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8],
-  [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0000200, 24],
-  [0xc0586300, 24], [0xc0a80000, 16], [0xc6120000, 15], [0xc6336400, 24],
-  [0xcb007100, 24], [0xe0000000, 4], [0xf0000000, 4],
+  [0x00000000, 8],
+  [0x0a000000, 8],
+  [0x64400000, 10],
+  [0x7f000000, 8],
+  [0xa9fe0000, 16],
+  [0xac100000, 12],
+  [0xc0000000, 24],
+  [0xc0000200, 24],
+  [0xc0586300, 24],
+  [0xc0a80000, 16],
+  [0xc6120000, 15],
+  [0xc6336400, 24],
+  [0xcb007100, 24],
+  [0xe0000000, 4],
+  [0xf0000000, 4],
 ];
 
 function ipv4Number(address: string): number | undefined {
@@ -63,9 +74,7 @@ function ipv6Bytes(address: string): Uint8Array | undefined {
   const right = parse(rightRaw);
   const compressed = normalized.includes("::");
   if ((!compressed && left.length !== 8) || left.length + right.length > 8) return undefined;
-  const groups = compressed
-    ? [...left, ...Array.from({ length: 8 - left.length - right.length }, () => 0), ...right]
-    : left;
+  const groups = compressed ? [...left, ...Array.from({ length: 8 - left.length - right.length }, () => 0), ...right] : left;
   if (groups.length !== 8 || groups.some((group) => !Number.isInteger(group) || group < 0 || group > 0xffff)) {
     return undefined;
   }
@@ -111,7 +120,10 @@ export function createTargetValidator(
 ): TargetValidator {
   return (rawHost, port) => {
     if (!allowedPorts.has(port)) throw new AppError("Target port is not allowed", "target_port_forbidden", 403);
-    const host = rawHost.replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "").toLowerCase();
+    const host = rawHost
+      .replace(/^\[(.*)\]$/, "$1")
+      .replace(/\.$/, "")
+      .toLowerCase();
     if (host === "localhost" || host.endsWith(".localhost")) {
       throw new AppError("Target must be a public Internet hostname", "target_forbidden", 403);
     }
@@ -123,10 +135,13 @@ export function createTargetValidator(
         localResolution: Promise.resolve({ status: "not_applicable", addresses: [host] }),
       };
     }
-    const localResolution = Promise.resolve().then(() => lookup(host)).then((addresses): LocalResolutionObservation => ({
-      status: addresses.length === 0 ? "unavailable" : "available",
-      addresses: [...new Set(addresses.map(({ address }) => address))].sort(),
-    })).catch((): LocalResolutionObservation => ({ status: "unavailable", addresses: [] }));
+    const localResolution = Promise.resolve()
+      .then(() => lookup(host))
+      .then((addresses): LocalResolutionObservation => ({
+        status: addresses.length === 0 ? "unavailable" : "available",
+        addresses: [...new Set(addresses.map(({ address }) => address))].sort(),
+      }))
+      .catch((): LocalResolutionObservation => ({ status: "unavailable", addresses: [] }));
     return { localResolution };
   };
 }

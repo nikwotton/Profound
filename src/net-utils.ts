@@ -44,8 +44,13 @@ export function parseHostPort(authority: string, defaultPort: number): { host: s
   try {
     const url = new URL(`http://${authority}`);
     if (
-      authority.trim() === "" || url.hostname === "" || url.username !== "" || url.password !== "" ||
-      url.pathname !== "/" || url.search !== "" || url.hash !== ""
+      authority.trim() === "" ||
+      url.hostname === "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.pathname !== "/" ||
+      url.search !== "" ||
+      url.hash !== ""
     ) {
       throw new Error("Invalid authority");
     }

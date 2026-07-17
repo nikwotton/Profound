@@ -1,0 +1,38 @@
+name: Live provider smoke
+
+on:
+  schedule:
+    - cron: "43 7 * * 2,5"
+  pull_request:
+    paths:
+      - "src/providers/**"
+      - "config/providers/**"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: live-provider-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:live
+        env:
+          PROVIDER_MODE: live
+          BRIGHT_DATA_CUSTOMER_ID: ${{ secrets.BRIGHT_DATA_CUSTOMER_ID }}
+          BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
+          BRIGHT_DATA_PASSWORD: ${{ secrets.BRIGHT_DATA_PASSWORD }}
+          BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
+          PROXIDIZE_API_TOKEN: ${{ secrets.PROXIDIZE_API_TOKEN }}

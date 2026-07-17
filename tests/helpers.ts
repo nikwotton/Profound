@@ -62,13 +62,15 @@ export async function startHttpTarget(): Promise<TestTarget> {
     request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
     request.on("end", () => {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        method: request.method,
-        path: request.url,
-        body: "target-response",
-        requestBody: Buffer.concat(chunks).toString("utf8"),
-        authorization: request.headers.authorization,
-      }));
+      response.end(
+        JSON.stringify({
+          method: request.method,
+          path: request.url,
+          body: "target-response",
+          requestBody: Buffer.concat(chunks).toString("utf8"),
+          authorization: request.headers.authorization,
+        }),
+      );
     });
   });
   const address = await listen(server, "127.0.0.1", 0);
@@ -160,7 +162,7 @@ export async function createRoute(
     }),
   });
   if (response.status !== 201) throw new Error(`Route creation failed: ${response.status} ${await response.text()}`);
-  return await response.json() as CreatedRouteResponse;
+  return (await response.json()) as CreatedRouteResponse;
 }
 
 export async function requestViaProxy(
@@ -170,27 +172,29 @@ export async function requestViaProxy(
 ): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
   const proxy = new URL(proxyUrl);
   return await new Promise((resolve, reject) => {
-    const request = httpRequest({
-      host: proxy.hostname,
-      port: Number(proxy.port),
-      method: options.method ?? "GET",
-      path: targetUrl,
-      headers: {
-        "proxy-authorization": basicAuth(
-          decodeURIComponent(proxy.username),
-          decodeURIComponent(proxy.password),
-        ),
-        ...options.headers,
+    const request = httpRequest(
+      {
+        host: proxy.hostname,
+        port: Number(proxy.port),
+        method: options.method ?? "GET",
+        path: targetUrl,
+        headers: {
+          "proxy-authorization": basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password)),
+          ...options.headers,
+        },
       },
-    }, (response) => {
-      const chunks: Buffer[] = [];
-      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-      response.on("end", () => resolve({
-        status: response.statusCode ?? 0,
-        headers: response.headers,
-        body: Buffer.concat(chunks).toString("utf8"),
-      }));
-    });
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
+        );
+      },
+    );
     request.on("error", reject);
     request.end(options.body);
   });
@@ -207,7 +211,7 @@ export async function exchangeViaHttpConnect(
     await once(socket, "connect");
     socket.write(
       `CONNECT ${targetAuthority} HTTP/1.1\r\nHost: ${targetAuthority}\r\n` +
-      `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
+        `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
     );
     let buffer = Buffer.alloc(0);
     while (buffer.indexOf("\r\n\r\n") < 0) {
@@ -236,8 +240,12 @@ async function readExactly(socket: Socket, length: number): Promise<Buffer> {
       if (socket.readableEnded || socket.destroyed) throw new Error("Socket ended before the expected response arrived");
       await Promise.race([
         once(socket, "readable"),
-        once(socket, "end").then(() => { throw new Error("Socket ended before the expected response arrived"); }),
-        once(socket, "close").then(() => { throw new Error("Socket closed before the expected response arrived"); }),
+        once(socket, "end").then(() => {
+          throw new Error("Socket ended before the expected response arrived");
+        }),
+        once(socket, "close").then(() => {
+          throw new Error("Socket closed before the expected response arrived");
+        }),
       ]);
     }
   }
@@ -259,15 +267,13 @@ export async function exchangeViaSocks5(
     assertBytes(await readExactly(socket, 2), [0x05, 0x02]);
     const username = Buffer.from(decodeURIComponent(proxy.username));
     const password = Buffer.from(decodeURIComponent(proxy.password));
-    socket.write(Buffer.concat([
-      Buffer.from([0x01, username.length]), username,
-      Buffer.from([password.length]), password,
-    ]));
+    socket.write(Buffer.concat([Buffer.from([0x01, username.length]), username, Buffer.from([password.length]), password]));
     assertBytes(await readExactly(socket, 2), [0x01, 0x00]);
     const host = Buffer.from(targetHost);
-    const address = isIP(targetHost) === 4
-      ? Buffer.from([0x01, ...targetHost.split(".").map(Number)])
-      : Buffer.concat([Buffer.from([0x03, host.length]), host]);
+    const address =
+      isIP(targetHost) === 4
+        ? Buffer.from([0x01, ...targetHost.split(".").map(Number)])
+        : Buffer.concat([Buffer.from([0x03, host.length]), host]);
     const port = Buffer.alloc(2);
     port.writeUInt16BE(targetPort);
     socket.write(Buffer.concat([Buffer.from([0x05, command, 0x00]), address, port]));
@@ -289,10 +295,7 @@ export async function socks5AuthenticationStatus(proxyUrl: string): Promise<numb
     assertBytes(await readExactly(socket, 2), [0x05, 0x02]);
     const username = Buffer.from(decodeURIComponent(proxy.username));
     const password = Buffer.from(decodeURIComponent(proxy.password));
-    socket.write(Buffer.concat([
-      Buffer.from([0x01, username.length]), username,
-      Buffer.from([password.length]), password,
-    ]));
+    socket.write(Buffer.concat([Buffer.from([0x01, username.length]), username, Buffer.from([password.length]), password]));
     return (await readExactly(socket, 2))[1]!;
   } finally {
     socket.destroy();
@@ -305,15 +308,11 @@ function assertBytes(actual: Buffer, expected: number[]): void {
   }
 }
 
-export async function waitForRouteStatus(
-  app: RunningApplication,
-  id: string,
-  status: string,
-): Promise<void> {
+export async function waitForRouteStatus(app: RunningApplication, id: string, status: string): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const response = await controlRequest(app, `/v1/routes/${id}`);
-    const body = await response.json() as { route: { status: string } };
+    const body = (await response.json()) as { route: { status: string } };
     if (body.route.status === status) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

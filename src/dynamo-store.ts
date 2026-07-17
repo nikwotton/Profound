@@ -10,15 +10,13 @@ import {
   type QueryCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { NotFoundError } from "./errors.js";
-import {
-  ACCESS_GRANT_CREDENTIAL_OVERLAP_MS,
-  createStoredCredential,
-  type RouteStore,
-} from "./store.js";
+import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, type RouteStore } from "./store.js";
 import { DEVICE_LEASE_IDLE_TIMEOUT_MS } from "./types.js";
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
+  ActiveTunnel,
+  DeploymentDrainState,
   DeviceLease,
   HealthAlertDelivery,
   HealthAlertEvent,
@@ -29,6 +27,9 @@ import type {
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredRoute,
+  UsageRecord,
+  UsageReconciliation,
+  UsageRollup,
 } from "./types.js";
 
 const ENTITY_INDEX = "EntityCreatedAt";
@@ -118,6 +119,49 @@ interface DeviceLeaseLockItem {
   expiresAtMs: number;
 }
 
+interface ActiveTunnelItem {
+  pk: string;
+  sk: "STATE";
+  entity: "active_tunnel";
+  createdAt: string;
+  gsi1pk: string;
+  gsi1sk: string;
+  expiresAtSeconds: number;
+  tunnel: ActiveTunnel;
+}
+
+interface DeploymentDrainItem {
+  pk: string;
+  sk: "DRAIN";
+  entity: "deployment_drain";
+  createdAt: string;
+  state: DeploymentDrainState;
+}
+
+interface UsageRecordItem {
+  pk: string;
+  sk: "RECORD";
+  entity: "usage_record";
+  createdAt: string;
+  record: UsageRecord;
+}
+
+interface UsageRollupItem {
+  pk: string;
+  sk: string;
+  entity: "usage_rollup";
+  createdAt: string;
+  rollup: UsageRollup;
+}
+
+interface UsageReconciliationItem {
+  pk: string;
+  sk: "RECORD";
+  entity: "usage_reconciliation";
+  createdAt: string;
+  reconciliation: UsageReconciliation;
+}
+
 function routeKey(id: string): { pk: string; sk: string } {
   return { pk: `ROUTE#${id}`, sk: "STATE" };
 }
@@ -144,8 +188,11 @@ function conditionalNotFound(error: unknown): never {
 }
 
 function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number): boolean {
-  return credential.status !== "revoked" && Date.parse(credential.expiresAt) > nowMs &&
-    (credential.revokeAt === undefined || Date.parse(credential.revokeAt) > nowMs);
+  return (
+    credential.status !== "revoked" &&
+    Date.parse(credential.expiresAt) > nowMs &&
+    (credential.revokeAt === undefined || Date.parse(credential.revokeAt) > nowMs)
+  );
 }
 
 function grantItem(grant: StoredAccessGrant): AccessGrantItem {
@@ -157,10 +204,12 @@ function grantItem(grant: StoredAccessGrant): AccessGrantItem {
     routeId: grant.routeId,
     principalId: grant.principalId,
     grant,
-    ...(grant.endpointId === undefined ? {} : {
-      gsi1pk: `ENDPOINT#${grant.endpointId}`,
-      gsi1sk: `${grant.createdAt}#${grant.id}`,
-    }),
+    ...(grant.endpointId === undefined
+      ? {}
+      : {
+          gsi1pk: `ENDPOINT#${grant.endpointId}`,
+          gsi1sk: `${grant.createdAt}#${grant.id}`,
+        }),
   };
 }
 
@@ -171,17 +220,14 @@ export class DynamoRouteStore implements RouteStore {
     private readonly tableName: string,
     client?: DynamoDBDocumentClient,
   ) {
-    this.#client = client ?? DynamoDBDocumentClient.from(new DynamoDBClient({}), {
-      marshallOptions: { removeUndefinedValues: true },
-    });
+    this.#client =
+      client ??
+      DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+        marshallOptions: { removeUndefinedValues: true },
+      });
   }
 
-  async create(
-    id: string,
-    profile: RouteProfile,
-    provider: StoredRoute["provider"],
-    endpointId?: string,
-  ): Promise<StoredRoute> {
+  async create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
     const route: StoredRoute = {
       id,
@@ -211,24 +257,26 @@ export class DynamoRouteStore implements RouteStore {
       createdAt: now,
       status: route.status,
       route,
-      ...(endpointId === undefined
-        ? {}
-        : { gsi1pk: `ENDPOINT#${endpointId}`, gsi1sk: `${now}#${id}` }),
+      ...(endpointId === undefined ? {} : { gsi1pk: `ENDPOINT#${endpointId}`, gsi1sk: `${now}#${id}` }),
     };
-    await this.#client.send(new PutCommand({
-      TableName: this.tableName,
-      Item: item,
-      ConditionExpression: "attribute_not_exists(pk)",
-    }));
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: item,
+        ConditionExpression: "attribute_not_exists(pk)",
+      }),
+    );
     return route;
   }
 
   async get(id: string, includeRevoked = false): Promise<StoredRoute> {
-    const result = await this.#client.send(new GetCommand({
-      TableName: this.tableName,
-      Key: routeKey(id),
-      ConsistentRead: true,
-    }));
+    const result = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: routeKey(id),
+        ConsistentRead: true,
+      }),
+    );
     const item = result.Item as RouteItem | undefined;
     if (item === undefined || (!includeRevoked && item.route.status === "revoked")) throw new NotFoundError();
     return item.route;
@@ -238,10 +286,12 @@ export class DynamoRouteStore implements RouteStore {
     const items: Record<string, unknown>[] = [];
     let exclusiveStartKey: Record<string, unknown> | undefined;
     do {
-      const result = await this.#client.send(new QueryCommand({
-        ...input,
-        ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
-      }));
+      const result = await this.#client.send(
+        new QueryCommand({
+          ...input,
+          ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
+        }),
+      );
       items.push(...(result.Items ?? []));
       exclusiveStartKey = result.LastEvaluatedKey;
     } while (exclusiveStartKey !== undefined);
@@ -279,20 +329,24 @@ export class DynamoRouteStore implements RouteStore {
       createdAt: now,
       updatedAt: now,
     };
-    await this.#client.send(new PutCommand({
-      TableName: this.tableName,
-      Item: grantItem(grant),
-      ConditionExpression: "attribute_not_exists(pk)",
-    }));
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: grantItem(grant),
+        ConditionExpression: "attribute_not_exists(pk)",
+      }),
+    );
     return grant;
   }
 
   async getAccessGrant(id: string, includeRevoked = false): Promise<StoredAccessGrant> {
-    const result = await this.#client.send(new GetCommand({
-      TableName: this.tableName,
-      Key: accessGrantKey(id),
-      ConsistentRead: true,
-    }));
+    const result = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: accessGrantKey(id),
+        ConsistentRead: true,
+      }),
+    );
     const item = result.Item as AccessGrantItem | undefined;
     if (item === undefined || (!includeRevoked && item.grant.status === "revoked")) throw new NotFoundError();
     return item.grant;
@@ -304,8 +358,7 @@ export class DynamoRouteStore implements RouteStore {
       TableName: this.tableName,
       IndexName: ENTITY_INDEX,
       KeyConditionExpression: "#entity = :entity",
-      FilterExpression: "routeId = :routeId" +
-        (principalId === undefined ? "" : " AND principalId = :principalId"),
+      FilterExpression: "routeId = :routeId" + (principalId === undefined ? "" : " AND principalId = :principalId"),
       ExpressionAttributeNames: { "#entity": "entity" },
       ExpressionAttributeValues: {
         ":entity": "access_grant",
@@ -336,20 +389,23 @@ export class DynamoRouteStore implements RouteStore {
     const credential = grant.credentials[credentialIndex]!;
     credential.lastUsedAt = now;
     grant.updatedAt = now;
-    await this.#client.send(new UpdateCommand({
-      TableName: this.tableName,
-      Key: accessGrantKey(id),
-      UpdateExpression: `SET #grant.#credentials[${credentialIndex}].#lastUsedAt = :now, #grant.updatedAt = :now`,
-      ConditionExpression: "attribute_exists(pk) AND #status <> :revoked AND #grant.#credentials[" + credentialIndex + "].#tokenHash = :tokenHash",
-      ExpressionAttributeNames: {
-        "#grant": "grant",
-        "#credentials": "credentials",
-        "#lastUsedAt": "lastUsedAt",
-        "#tokenHash": "tokenHash",
-        "#status": "status",
-      },
-      ExpressionAttributeValues: { ":now": now, ":revoked": "revoked", ":tokenHash": credential.tokenHash },
-    }));
+    await this.#client.send(
+      new UpdateCommand({
+        TableName: this.tableName,
+        Key: accessGrantKey(id),
+        UpdateExpression: `SET #grant.#credentials[${credentialIndex}].#lastUsedAt = :now, #grant.updatedAt = :now`,
+        ConditionExpression:
+          "attribute_exists(pk) AND #status <> :revoked AND #grant.#credentials[" + credentialIndex + "].#tokenHash = :tokenHash",
+        ExpressionAttributeNames: {
+          "#grant": "grant",
+          "#credentials": "credentials",
+          "#lastUsedAt": "lastUsedAt",
+          "#tokenHash": "tokenHash",
+          "#status": "status",
+        },
+        ExpressionAttributeValues: { ":now": now, ":revoked": "revoked", ":tokenHash": credential.tokenHash },
+      }),
+    );
     return grant;
   }
 
@@ -375,13 +431,15 @@ export class DynamoRouteStore implements RouteStore {
     grant.credentials.push(createStoredCredential(credentialId, token, now));
     grant.updatedAt = now;
     try {
-      await this.#client.send(new PutCommand({
-        TableName: this.tableName,
-        Item: grantItem(grant),
-        ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-        ExpressionAttributeNames: { "#status": "status" },
-        ExpressionAttributeValues: { ":revoked": "revoked" },
-      }));
+      await this.#client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: grantItem(grant),
+          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: { ":revoked": "revoked" },
+        }),
+      );
       return grant;
     } catch (error) {
       conditionalNotFound(error);
@@ -391,14 +449,17 @@ export class DynamoRouteStore implements RouteStore {
   async revokeAccessGrant(id: string, terminateActive = false): Promise<void> {
     const now = new Date().toISOString();
     try {
-      await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: accessGrantKey(id),
-        UpdateExpression: "SET #status = :revoked, #grant.#status = :revoked, #grant.terminateActive = :terminate, #grant.updatedAt = :now REMOVE gsi1pk, gsi1sk",
-        ConditionExpression: "attribute_exists(pk)",
-        ExpressionAttributeNames: { "#status": "status", "#grant": "grant" },
-        ExpressionAttributeValues: { ":revoked": "revoked", ":terminate": terminateActive, ":now": now },
-      }));
+      await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: accessGrantKey(id),
+          UpdateExpression:
+            "SET #status = :revoked, #grant.#status = :revoked, #grant.terminateActive = :terminate, #grant.updatedAt = :now REMOVE gsi1pk, gsi1sk",
+          ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeNames: { "#status": "status", "#grant": "grant" },
+          ExpressionAttributeValues: { ":revoked": "revoked", ":terminate": terminateActive, ":now": now },
+        }),
+      );
     } catch (error) {
       conditionalNotFound(error);
     }
@@ -406,27 +467,32 @@ export class DynamoRouteStore implements RouteStore {
 
   async setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant> {
     const now = new Date().toISOString();
-    const update = endpointId === undefined
-      ? "SET #grant.updatedAt = :now REMOVE #grant.endpointId, gsi1pk, gsi1sk"
-      : "SET #grant.endpointId = :endpointId, #grant.updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk";
+    const update =
+      endpointId === undefined
+        ? "SET #grant.updatedAt = :now REMOVE #grant.endpointId, gsi1pk, gsi1sk"
+        : "SET #grant.endpointId = :endpointId, #grant.updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk";
     try {
-      const result = await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: accessGrantKey(id),
-        UpdateExpression: update,
-        ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-        ExpressionAttributeNames: { "#status": "status", "#grant": "grant" },
-        ExpressionAttributeValues: {
-          ":now": now,
-          ":revoked": "revoked",
-          ...(endpointId === undefined ? {} : {
-            ":endpointId": endpointId,
-            ":gsi1pk": `ENDPOINT#${endpointId}`,
-            ":gsi1sk": `${now}#${id}`,
-          }),
-        },
-        ReturnValues: "ALL_NEW",
-      }));
+      const result = await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: accessGrantKey(id),
+          UpdateExpression: update,
+          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
+          ExpressionAttributeNames: { "#status": "status", "#grant": "grant" },
+          ExpressionAttributeValues: {
+            ":now": now,
+            ":revoked": "revoked",
+            ...(endpointId === undefined
+              ? {}
+              : {
+                  ":endpointId": endpointId,
+                  ":gsi1pk": `ENDPOINT#${endpointId}`,
+                  ":gsi1sk": `${now}#${id}`,
+                }),
+          },
+          ReturnValues: "ALL_NEW",
+        }),
+      );
       return (result.Attributes as unknown as AccessGrantItem).grant;
     } catch (error) {
       conditionalNotFound(error);
@@ -436,16 +502,17 @@ export class DynamoRouteStore implements RouteStore {
   async revoke(id: string, terminateActive = false): Promise<void> {
     const now = new Date().toISOString();
     try {
-      await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: routeKey(id),
-        UpdateExpression: "SET #status = :status, #route.#status = :status, #route.terminateActive = :terminate, #route.updatedAt = :now REMOVE gsi1pk, gsi1sk",
-        ConditionExpression: terminateActive
-          ? "attribute_exists(pk)"
-          : "attribute_exists(pk) AND #status <> :status",
-        ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-        ExpressionAttributeValues: { ":status": "revoked", ":terminate": terminateActive, ":now": now },
-      }));
+      await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: routeKey(id),
+          UpdateExpression:
+            "SET #status = :status, #route.#status = :status, #route.terminateActive = :terminate, #route.updatedAt = :now REMOVE gsi1pk, gsi1sk",
+          ConditionExpression: terminateActive ? "attribute_exists(pk)" : "attribute_exists(pk) AND #status <> :status",
+          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
+          ExpressionAttributeValues: { ":status": "revoked", ":terminate": terminateActive, ":now": now },
+        }),
+      );
     } catch (error) {
       conditionalNotFound(error);
     }
@@ -460,29 +527,133 @@ export class DynamoRouteStore implements RouteStore {
     }
   }
 
+  async registerActiveTunnel(tunnel: ActiveTunnel): Promise<void> {
+    const item: ActiveTunnelItem = {
+      pk: `ACTIVE_TUNNEL#${tunnel.id}`,
+      sk: "STATE",
+      entity: "active_tunnel",
+      createdAt: tunnel.startedAt,
+      gsi1pk: `DEPLOYMENT#${tunnel.deploymentId}`,
+      gsi1sk: `${tunnel.startedAt}#${tunnel.id}`,
+      expiresAtSeconds: Math.ceil(Date.parse(tunnel.expiresAt) / 1_000),
+      tunnel,
+    };
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: item,
+        ConditionExpression: "attribute_not_exists(pk)",
+      }),
+    );
+  }
+
+  async heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
+    try {
+      await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
+          UpdateExpression: "SET #tunnel.lastHeartbeatAt = :heartbeat, #tunnel.expiresAt = :expiresAt, expiresAtSeconds = :ttl",
+          ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeNames: { "#tunnel": "tunnel" },
+          ExpressionAttributeValues: {
+            ":heartbeat": lastHeartbeatAt,
+            ":expiresAt": expiresAt,
+            ":ttl": Math.ceil(Date.parse(expiresAt) / 1_000),
+          },
+        }),
+      );
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
+    }
+  }
+
+  async removeActiveTunnel(id: string): Promise<void> {
+    await this.#client.send(
+      new UpdateCommand({
+        TableName: this.tableName,
+        Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
+        UpdateExpression: "REMOVE gsi1pk, gsi1sk SET expiresAtSeconds = :expired",
+        ExpressionAttributeValues: { ":expired": Math.floor(Date.now() / 1_000) - 1 },
+      }),
+    );
+  }
+
+  async listActiveTunnels(deploymentId: string, now = new Date().toISOString()): Promise<ActiveTunnel[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ASSIGNMENT_INDEX,
+      KeyConditionExpression: "gsi1pk = :deployment",
+      ExpressionAttributeValues: { ":deployment": `DEPLOYMENT#${deploymentId}` },
+    });
+    return items.map((item) => (item as unknown as ActiveTunnelItem).tunnel).filter((tunnel) => tunnel.expiresAt > now);
+  }
+
+  async listAllActiveTunnels(now = new Date().toISOString()): Promise<ActiveTunnel[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity",
+      ExpressionAttributeNames: { "#entity": "entity" },
+      ExpressionAttributeValues: { ":entity": "active_tunnel" },
+    });
+    return items.map((item) => (item as unknown as ActiveTunnelItem).tunnel).filter((tunnel) => tunnel.expiresAt > now);
+  }
+
+  async getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined> {
+    const result = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk: `DEPLOYMENT#${deploymentId}`, sk: "DRAIN" },
+        ConsistentRead: true,
+      }),
+    );
+    return (result.Item as DeploymentDrainItem | undefined)?.state;
+  }
+
+  async saveDeploymentDrain(state: DeploymentDrainState): Promise<void> {
+    const item: DeploymentDrainItem = {
+      pk: `DEPLOYMENT#${state.deploymentId}`,
+      sk: "DRAIN",
+      entity: "deployment_drain",
+      createdAt: state.startedAt,
+      state,
+    };
+    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  }
+
+  async shouldTerminateDeployment(deploymentId: string): Promise<boolean> {
+    return (await this.getDeploymentDrain(deploymentId))?.terminateRemaining === true;
+  }
+
   async setEndpoint(id: string, endpointId?: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
-    const update = endpointId === undefined
-      ? "SET #route.updatedAt = :now REMOVE #route.endpointId, gsi1pk, gsi1sk"
-      : "SET #route.endpointId = :endpointId, #route.updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk";
+    const update =
+      endpointId === undefined
+        ? "SET #route.updatedAt = :now REMOVE #route.endpointId, gsi1pk, gsi1sk"
+        : "SET #route.endpointId = :endpointId, #route.updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk";
     try {
-      const result = await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: routeKey(id),
-        UpdateExpression: update,
-        ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-        ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-        ExpressionAttributeValues: {
-          ":now": now,
-          ":revoked": "revoked",
-          ...(endpointId === undefined ? {} : {
-            ":endpointId": endpointId,
-            ":gsi1pk": `ENDPOINT#${endpointId}`,
-            ":gsi1sk": `${now}#${id}`,
-          }),
-        },
-        ReturnValues: "ALL_NEW",
-      }));
+      const result = await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: routeKey(id),
+          UpdateExpression: update,
+          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
+          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
+          ExpressionAttributeValues: {
+            ":now": now,
+            ":revoked": "revoked",
+            ...(endpointId === undefined
+              ? {}
+              : {
+                  ":endpointId": endpointId,
+                  ":gsi1pk": `ENDPOINT#${endpointId}`,
+                  ":gsi1sk": `${now}#${id}`,
+                }),
+          },
+          ReturnValues: "ALL_NEW",
+        }),
+      );
       return (result.Attributes as unknown as RouteItem).route;
     } catch (error) {
       conditionalNotFound(error);
@@ -498,11 +669,13 @@ export class DynamoRouteStore implements RouteStore {
   ): Promise<DeviceLease | undefined> {
     if (candidateEndpointIds.length === 0) return undefined;
     const nowMs = Date.parse(now);
-    const existingResult = await this.#client.send(new GetCommand({
-      TableName: this.tableName,
-      Key: deviceLeaseKey(leaseKey),
-      ConsistentRead: true,
-    }));
+    const existingResult = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: deviceLeaseKey(leaseKey),
+        ConsistentRead: true,
+      }),
+    );
     const existing = existingResult.Item as DeviceLeaseItem | undefined;
     if (existing !== undefined && existing.expiresAtMs > nowMs) {
       if (candidateEndpointIds.includes(existing.lease.endpointId)) {
@@ -538,34 +711,40 @@ export class DynamoRouteStore implements RouteStore {
         expiresAtMs,
       };
       try {
-        await this.#client.send(new TransactWriteCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: leaseItem,
-                ConditionExpression: "attribute_not_exists(pk) OR expiresAtMs <= :now OR leaseKey = :leaseKey",
-                ExpressionAttributeValues: { ":now": nowMs, ":leaseKey": leaseKey },
+        await this.#client.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: leaseItem,
+                  ConditionExpression: "attribute_not_exists(pk) OR expiresAtMs <= :now OR leaseKey = :leaseKey",
+                  ExpressionAttributeValues: { ":now": nowMs, ":leaseKey": leaseKey },
+                },
               },
-            },
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: lockItem,
-                ConditionExpression: "attribute_not_exists(pk) OR expiresAtMs <= :now OR leaseKey = :leaseKey",
-                ExpressionAttributeValues: { ":now": nowMs, ":leaseKey": leaseKey },
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: lockItem,
+                  ConditionExpression: "attribute_not_exists(pk) OR expiresAtMs <= :now OR leaseKey = :leaseKey",
+                  ExpressionAttributeValues: { ":now": nowMs, ":leaseKey": leaseKey },
+                },
               },
-            },
-            ...(existing === undefined || existing.lease.endpointId === endpointId ? [] : [{
-              Delete: {
-                TableName: this.tableName,
-                Key: deviceLockKey(existing.lease.endpointId),
-                ConditionExpression: "leaseKey = :leaseKey",
-                ExpressionAttributeValues: { ":leaseKey": leaseKey },
-              },
-            }]),
-          ],
-        }));
+              ...(existing === undefined || existing.lease.endpointId === endpointId
+                ? []
+                : [
+                    {
+                      Delete: {
+                        TableName: this.tableName,
+                        Key: deviceLockKey(existing.lease.endpointId),
+                        ConditionExpression: "leaseKey = :leaseKey",
+                        ExpressionAttributeValues: { ":leaseKey": leaseKey },
+                      },
+                    },
+                  ]),
+            ],
+          }),
+        );
         return lease;
       } catch (error) {
         if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
@@ -574,12 +753,7 @@ export class DynamoRouteStore implements RouteStore {
     return undefined;
   }
 
-  async renewDeviceLease(
-    leaseKey: string,
-    now: string,
-    activeUntil: string,
-    recordActivity: boolean,
-  ): Promise<DeviceLease | undefined> {
+  async renewDeviceLease(leaseKey: string, now: string, activeUntil: string, recordActivity: boolean): Promise<DeviceLease | undefined> {
     const existing = await this.getDeviceLease(leaseKey);
     if (existing === undefined) return undefined;
     const lease: DeviceLease = {
@@ -590,29 +764,31 @@ export class DynamoRouteStore implements RouteStore {
     };
     const expiresAtMs = leaseExpiry(lease, DEVICE_LEASE_IDLE_TIMEOUT_MS);
     try {
-      await this.#client.send(new TransactWriteCommand({
-        TransactItems: [
-          {
-            Update: {
-              TableName: this.tableName,
-              Key: deviceLeaseKey(leaseKey),
-              UpdateExpression: "SET #lease = :lease, expiresAtMs = :expiresAtMs",
-              ConditionExpression: "leaseKey = :leaseKey",
-              ExpressionAttributeNames: { "#lease": "lease" },
-              ExpressionAttributeValues: { ":lease": lease, ":expiresAtMs": expiresAtMs, ":leaseKey": leaseKey },
+      await this.#client.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Update: {
+                TableName: this.tableName,
+                Key: deviceLeaseKey(leaseKey),
+                UpdateExpression: "SET #lease = :lease, expiresAtMs = :expiresAtMs",
+                ConditionExpression: "leaseKey = :leaseKey",
+                ExpressionAttributeNames: { "#lease": "lease" },
+                ExpressionAttributeValues: { ":lease": lease, ":expiresAtMs": expiresAtMs, ":leaseKey": leaseKey },
+              },
             },
-          },
-          {
-            Update: {
-              TableName: this.tableName,
-              Key: deviceLockKey(lease.endpointId),
-              UpdateExpression: "SET expiresAtMs = :expiresAtMs",
-              ConditionExpression: "leaseKey = :leaseKey",
-              ExpressionAttributeValues: { ":expiresAtMs": expiresAtMs, ":leaseKey": leaseKey },
+            {
+              Update: {
+                TableName: this.tableName,
+                Key: deviceLockKey(lease.endpointId),
+                UpdateExpression: "SET expiresAtMs = :expiresAtMs",
+                ConditionExpression: "leaseKey = :leaseKey",
+                ExpressionAttributeValues: { ":expiresAtMs": expiresAtMs, ":leaseKey": leaseKey },
+              },
             },
-          },
-        ],
-      }));
+          ],
+        }),
+      );
       return lease;
     } catch (error) {
       if (error instanceof Error && error.name === "TransactionCanceledException") return undefined;
@@ -621,61 +797,70 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async getDeviceLease(leaseKey: string): Promise<DeviceLease | undefined> {
-    const result = await this.#client.send(new GetCommand({
-      TableName: this.tableName,
-      Key: deviceLeaseKey(leaseKey),
-      ConsistentRead: true,
-    }));
+    const result = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: deviceLeaseKey(leaseKey),
+        ConsistentRead: true,
+      }),
+    );
     return (result.Item as DeviceLeaseItem | undefined)?.lease;
   }
 
   async releaseDeviceLease(leaseKey: string): Promise<void> {
     const existing = await this.getDeviceLease(leaseKey);
     if (existing === undefined) return;
-    await this.#client.send(new TransactWriteCommand({
-      TransactItems: [
-        {
-          Delete: {
-            TableName: this.tableName,
-            Key: deviceLeaseKey(leaseKey),
-            ConditionExpression: "leaseKey = :leaseKey",
-            ExpressionAttributeValues: { ":leaseKey": leaseKey },
-          },
-        },
-        {
-          Delete: {
-            TableName: this.tableName,
-            Key: deviceLockKey(existing.endpointId),
-            ConditionExpression: "leaseKey = :leaseKey",
-            ExpressionAttributeValues: { ":leaseKey": leaseKey },
-          },
-        },
-      ],
-    })).catch((error: unknown) => {
-      if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
-    });
+    await this.#client
+      .send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Delete: {
+                TableName: this.tableName,
+                Key: deviceLeaseKey(leaseKey),
+                ConditionExpression: "leaseKey = :leaseKey",
+                ExpressionAttributeValues: { ":leaseKey": leaseKey },
+              },
+            },
+            {
+              Delete: {
+                TableName: this.tableName,
+                Key: deviceLockKey(existing.endpointId),
+                ConditionExpression: "leaseKey = :leaseKey",
+                ExpressionAttributeValues: { ":leaseKey": leaseKey },
+              },
+            },
+          ],
+        }),
+      )
+      .catch((error: unknown) => {
+        if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
+      });
   }
 
   async setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
-    const update = lastError === undefined
-      ? "SET #status = :status, #route.#status = :status, #route.updatedAt = :now REMOVE #route.lastError"
-      : "SET #status = :status, #route.#status = :status, #route.updatedAt = :now, #route.lastError = :lastError";
+    const update =
+      lastError === undefined
+        ? "SET #status = :status, #route.#status = :status, #route.updatedAt = :now REMOVE #route.lastError"
+        : "SET #status = :status, #route.#status = :status, #route.updatedAt = :now, #route.lastError = :lastError";
     try {
-      const result = await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: routeKey(id),
-        UpdateExpression: update,
-        ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-        ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-        ExpressionAttributeValues: {
-          ":status": status,
-          ":now": now,
-          ":revoked": "revoked",
-          ...(lastError === undefined ? {} : { ":lastError": lastError }),
-        },
-        ReturnValues: "ALL_NEW",
-      }));
+      const result = await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: routeKey(id),
+          UpdateExpression: update,
+          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
+          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
+          ExpressionAttributeValues: {
+            ":status": status,
+            ":now": now,
+            ":revoked": "revoked",
+            ...(lastError === undefined ? {} : { ":lastError": lastError }),
+          },
+          ReturnValues: "ALL_NEW",
+        }),
+      );
       return (result.Attributes as unknown as RouteItem).route;
     } catch (error) {
       conditionalNotFound(error);
@@ -685,20 +870,23 @@ export class DynamoRouteStore implements RouteStore {
   async claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined> {
     const now = new Date().toISOString();
     try {
-      const result = await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: routeKey(id),
-        UpdateExpression: "SET #status = :rotating, #route.#status = :rotating, #route.updatedAt = :now REMOVE #route.lastError",
-        ConditionExpression: "attribute_exists(pk) AND #status = :ready AND (attribute_not_exists(#route.lastRotationAt) OR #route.lastRotationAt <= :dueBefore)",
-        ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-        ExpressionAttributeValues: {
-          ":rotating": "rotating",
-          ":ready": "ready",
-          ":now": now,
-          ":dueBefore": dueBefore,
-        },
-        ReturnValues: "ALL_NEW",
-      }));
+      const result = await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: routeKey(id),
+          UpdateExpression: "SET #status = :rotating, #route.#status = :rotating, #route.updatedAt = :now REMOVE #route.lastError",
+          ConditionExpression:
+            "attribute_exists(pk) AND #status = :ready AND (attribute_not_exists(#route.lastRotationAt) OR #route.lastRotationAt <= :dueBefore)",
+          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
+          ExpressionAttributeValues: {
+            ":rotating": "rotating",
+            ":ready": "ready",
+            ":now": now,
+            ":dueBefore": dueBefore,
+          },
+          ReturnValues: "ALL_NEW",
+        }),
+      );
       return (result.Attributes as unknown as RouteItem).route;
     } catch (error) {
       if (error instanceof Error && error.name === "ConditionalCheckFailedException") return undefined;
@@ -709,15 +897,18 @@ export class DynamoRouteStore implements RouteStore {
   async completeRotation(id: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
     try {
-      const result = await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: routeKey(id),
-        UpdateExpression: "SET #status = :ready, #route.#status = :ready, #route.lastRotationAt = :now, #route.updatedAt = :now REMOVE #route.lastError",
-        ConditionExpression: "attribute_exists(pk) AND #status = :rotating",
-        ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-        ExpressionAttributeValues: { ":ready": "ready", ":rotating": "rotating", ":now": now },
-        ReturnValues: "ALL_NEW",
-      }));
+      const result = await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: routeKey(id),
+          UpdateExpression:
+            "SET #status = :ready, #route.#status = :ready, #route.lastRotationAt = :now, #route.updatedAt = :now REMOVE #route.lastError",
+          ConditionExpression: "attribute_exists(pk) AND #status = :rotating",
+          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
+          ExpressionAttributeValues: { ":ready": "ready", ":rotating": "rotating", ":now": now },
+          ReturnValues: "ALL_NEW",
+        }),
+      );
       return (result.Attributes as unknown as RouteItem).route;
     } catch (error) {
       conditionalNotFound(error);
@@ -727,15 +918,17 @@ export class DynamoRouteStore implements RouteStore {
   async incrementRotationEpoch(id: string): Promise<StoredRoute> {
     const now = new Date().toISOString();
     try {
-      const result = await this.#client.send(new UpdateCommand({
-        TableName: this.tableName,
-        Key: routeKey(id),
-        UpdateExpression: "SET #route.rotationEpoch = #route.rotationEpoch + :one, #route.updatedAt = :now",
-        ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-        ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-        ExpressionAttributeValues: { ":one": 1, ":now": now, ":revoked": "revoked" },
-        ReturnValues: "ALL_NEW",
-      }));
+      const result = await this.#client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: routeKey(id),
+          UpdateExpression: "SET #route.rotationEpoch = #route.rotationEpoch + :one, #route.updatedAt = :now",
+          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
+          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
+          ExpressionAttributeValues: { ":one": 1, ":now": now, ":revoked": "revoked" },
+          ReturnValues: "ALL_NEW",
+        }),
+      );
       return (result.Attributes as unknown as RouteItem).route;
     } catch (error) {
       conditionalNotFound(error);
@@ -746,14 +939,16 @@ export class DynamoRouteStore implements RouteStore {
     let count = 0;
     let exclusiveStartKey: Record<string, unknown> | undefined;
     do {
-      const result = await this.#client.send(new QueryCommand({
-        TableName: this.tableName,
-        IndexName: ASSIGNMENT_INDEX,
-        KeyConditionExpression: "gsi1pk = :endpoint",
-        ExpressionAttributeValues: { ":endpoint": `ENDPOINT#${endpointId}` },
-        Select: "COUNT",
-        ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
-      }));
+      const result = await this.#client.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          IndexName: ASSIGNMENT_INDEX,
+          KeyConditionExpression: "gsi1pk = :endpoint",
+          ExpressionAttributeValues: { ":endpoint": `ENDPOINT#${endpointId}` },
+          Select: "COUNT",
+          ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
+        }),
+      );
       count += result.Count ?? 0;
       exclusiveStartKey = result.LastEvaluatedKey;
     } while (exclusiveStartKey !== undefined);
@@ -794,34 +989,40 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined> {
-    const result = await this.#client.send(new QueryCommand({
-      TableName: this.tableName,
-      KeyConditionExpression: "pk = :pk",
-      ExpressionAttributeValues: { ":pk": "CAPABILITY_HEALTH#GLOBAL" },
-      ScanIndexForward: false,
-      Limit: 1,
-    }));
+    const result = await this.#client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: { ":pk": "CAPABILITY_HEALTH#GLOBAL" },
+        ScanIndexForward: false,
+        Limit: 1,
+      }),
+    );
     const item = result.Items?.[0] as CapabilityHealthItem | undefined;
     return item?.snapshot;
   }
 
   async capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]> {
-    const result = await this.#client.send(new QueryCommand({
-      TableName: this.tableName,
-      KeyConditionExpression: "pk = :pk",
-      ExpressionAttributeValues: { ":pk": "CAPABILITY_HEALTH#GLOBAL" },
-      ScanIndexForward: false,
-      Limit: limit,
-    }));
+    const result = await this.#client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: { ":pk": "CAPABILITY_HEALTH#GLOBAL" },
+        ScanIndexForward: false,
+        Limit: limit,
+      }),
+    );
     return (result.Items ?? []).map((item) => (item as CapabilityHealthItem).snapshot);
   }
 
   async getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined> {
-    const result = await this.#client.send(new GetCommand({
-      TableName: this.tableName,
-      Key: { pk: "HEALTH_ALERT_STATE#GLOBAL", sk: capability },
-      ConsistentRead: true,
-    }));
+    const result = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk: "HEALTH_ALERT_STATE#GLOBAL", sk: capability },
+        ConsistentRead: true,
+      }),
+    );
     return (result.Item as HealthAlertStateItem | undefined)?.state;
   }
 
@@ -847,19 +1048,23 @@ export class DynamoRouteStore implements RouteStore {
     let created = true;
     let persistedEvent = event;
     try {
-      await this.#client.send(new PutCommand({
-        TableName: this.tableName,
-        Item: item,
-        ConditionExpression: "attribute_not_exists(pk)",
-      }));
+      await this.#client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: item,
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
     } catch (error) {
       if (error instanceof Error && error.name === "ConditionalCheckFailedException") {
         created = false;
-        const existing = await this.#client.send(new GetCommand({
-          TableName: this.tableName,
-          Key: { pk: item.pk, sk: item.sk },
-          ConsistentRead: true,
-        }));
+        const existing = await this.#client.send(
+          new GetCommand({
+            TableName: this.tableName,
+            Key: { pk: item.pk, sk: item.sk },
+            ConsistentRead: true,
+          }),
+        );
         const existingItem = existing.Item as HealthAlertEventItem | undefined;
         if (existingItem === undefined) throw new Error("Health alert deduplication state is missing");
         persistedEvent = existingItem.event;
@@ -875,17 +1080,19 @@ export class DynamoRouteStore implements RouteStore {
         event: persistedEvent,
       };
       try {
-        await this.#client.send(new PutCommand({
-          TableName: this.tableName,
-          Item: {
-            pk: `HEALTH_ALERT_DELIVERY#${delivery.alertId}`,
-            sk: delivery.destinationId,
-            entity: "health_alert_delivery_pending",
-            createdAt: delivery.nextAttemptAt,
-            delivery,
-          } satisfies HealthAlertDeliveryItem,
-          ConditionExpression: "attribute_not_exists(pk)",
-        }));
+        await this.#client.send(
+          new PutCommand({
+            TableName: this.tableName,
+            Item: {
+              pk: `HEALTH_ALERT_DELIVERY#${delivery.alertId}`,
+              sk: delivery.destinationId,
+              entity: "health_alert_delivery_pending",
+              createdAt: delivery.nextAttemptAt,
+              delivery,
+            } satisfies HealthAlertDeliveryItem,
+            ConditionExpression: "attribute_not_exists(pk)",
+          }),
+        );
       } catch (error) {
         if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
       }
@@ -894,18 +1101,20 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]> {
-    const result = await this.#client.send(new QueryCommand({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity AND #createdAt <= :dueBefore",
-      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
-      ExpressionAttributeValues: {
-        ":entity": "health_alert_delivery_pending",
-        ":dueBefore": dueBefore,
-      },
-      ScanIndexForward: true,
-      Limit: limit,
-    }));
+    const result = await this.#client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        IndexName: ENTITY_INDEX,
+        KeyConditionExpression: "#entity = :entity AND #createdAt <= :dueBefore",
+        ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
+        ExpressionAttributeValues: {
+          ":entity": "health_alert_delivery_pending",
+          ":dueBefore": dueBefore,
+        },
+        ScanIndexForward: true,
+        Limit: limit,
+      }),
+    );
     return (result.Items ?? []).map((entry) => (entry as HealthAlertDeliveryItem).delivery);
   }
 
@@ -921,16 +1130,115 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async healthAlertHistory(limit: number): Promise<HealthAlertEvent[]> {
-    const result = await this.#client.send(new QueryCommand({
+    const result = await this.#client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        IndexName: ENTITY_INDEX,
+        KeyConditionExpression: "#entity = :entity",
+        ExpressionAttributeNames: { "#entity": "entity" },
+        ExpressionAttributeValues: { ":entity": "health_alert_event" },
+        ScanIndexForward: false,
+        Limit: limit,
+      }),
+    );
+    return (result.Items ?? []).map((entry) => (entry as HealthAlertEventItem).event);
+  }
+
+  async recordUsage(record: UsageRecord): Promise<boolean> {
+    try {
+      await this.#client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: `USAGE#${record.id}`,
+            sk: "RECORD",
+            entity: "usage_record",
+            createdAt: record.completedAt,
+            record,
+          } satisfies UsageRecordItem,
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+      throw error;
+    }
+  }
+
+  async listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
+    const items = await this.#queryAll({
       TableName: this.tableName,
       IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
-      ExpressionAttributeNames: { "#entity": "entity" },
-      ExpressionAttributeValues: { ":entity": "health_alert_event" },
-      ScanIndexForward: false,
-      Limit: limit,
-    }));
-    return (result.Items ?? []).map((entry) => (entry as HealthAlertEventItem).event);
+      KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
+      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
+      ExpressionAttributeValues: { ":entity": "usage_record", ":from": from, ":to": to },
+      ScanIndexForward: true,
+    });
+    return items
+      .map((item) => (item as unknown as UsageRecordItem).record)
+      .filter((record) => record.completedAt >= from && record.completedAt < to);
+  }
+
+  async saveUsageRollup(rollup: UsageRollup): Promise<void> {
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          pk: `USAGE_ROLLUP#${rollup.interval}`,
+          sk: rollup.id,
+          entity: "usage_rollup",
+          createdAt: rollup.periodStartedAt,
+          rollup,
+        } satisfies UsageRollupItem,
+      }),
+    );
+  }
+
+  async listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      KeyConditionExpression: "pk = :pk AND sk BETWEEN :from AND :to",
+      ExpressionAttributeValues: { ":pk": `USAGE_ROLLUP#${interval}`, ":from": from, ":to": `${to}~` },
+      ScanIndexForward: true,
+    });
+    return items.map((item) => (item as unknown as UsageRollupItem).rollup);
+  }
+
+  async saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
+    try {
+      await this.#client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: `USAGE_RECONCILIATION#${reconciliation.id}`,
+            sk: "RECORD",
+            entity: "usage_reconciliation",
+            createdAt: reconciliation.periodStartedAt,
+            reconciliation,
+          } satisfies UsageReconciliationItem,
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+      throw error;
+    }
+  }
+
+  async listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
+      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
+      ExpressionAttributeValues: { ":entity": "usage_reconciliation", ":from": from, ":to": to },
+      ScanIndexForward: true,
+    });
+    return items
+      .map((item) => (item as unknown as UsageReconciliationItem).reconciliation)
+      .filter((record) => record.periodStartedAt >= from && record.periodStartedAt < to);
   }
 
   async close(): Promise<void> {

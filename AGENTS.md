@@ -11,3 +11,4 @@
 - Keep provider capabilities separate from routing preferences and intended use cases; do not encode a preferred use case as a technical incompatibility without evidence.
 - During pre-v0 development, represent only the current design; do not preserve compatibility or migrations for earlier document or code revisions, and reset disposable data instead.
 - When a task requires resolving discrepancies, implement and verify discovered discrepancies before reporting the audit complete.
+- When a recurring audit changes repository files, finish that cycle by committing and pushing the changes, then verify CI passes on the pushed commit before reporting completion.

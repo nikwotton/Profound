@@ -1,12 +1,6 @@
 import { ProviderUnavailableError, UpstreamError } from "../errors.js";
 import type { MobileProviderAdapter, ResolveOptions } from "./provider.js";
-import type {
-  MobileEndpoint,
-  ProviderHealth,
-  StoredRoute,
-  Targeting,
-  UpstreamEndpoint,
-} from "../types.js";
+import type { MobileEndpoint, ProviderHealth, StoredRoute, Targeting, UpstreamEndpoint } from "../types.js";
 
 export interface ProxidizeConfig {
   apiBaseUrl: string;
@@ -43,7 +37,10 @@ interface ProxiesResponse {
 }
 
 function normalized(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
 
 export class ProxidizeAdapter implements MobileProviderAdapter {
@@ -136,9 +133,15 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
     );
     const endpoints = (response.data ?? []).map((record): MobileEndpoint => {
       if (
-        record.id === undefined || record.username === undefined || record.password === undefined ||
-        record.host === undefined || record.port === undefined || record.country === undefined ||
-        record.region === undefined || record.carrier === undefined || record.public_key === undefined
+        record.id === undefined ||
+        record.username === undefined ||
+        record.password === undefined ||
+        record.host === undefined ||
+        record.port === undefined ||
+        record.country === undefined ||
+        record.region === undefined ||
+        record.carrier === undefined ||
+        record.public_key === undefined
       ) {
         throw new UpstreamError("Proxidize returned an incomplete proxy record");
       }
@@ -164,14 +167,10 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
 
   async resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint> {
     const endpoints = await this.listEndpoints(true, options.signal);
-    const assigned = route.endpointId === undefined
-      ? undefined
-      : endpoints.find((candidate) => candidate.id === route.endpointId);
-    const endpoint = assigned ?? endpoints.find((candidate) =>
-      candidate.healthy &&
-      !options.excludedEndpointIds?.has(candidate.id) &&
-      this.matches(candidate, route),
-    );
+    const assigned = route.endpointId === undefined ? undefined : endpoints.find((candidate) => candidate.id === route.endpointId);
+    const endpoint =
+      assigned ??
+      endpoints.find((candidate) => candidate.healthy && !options.excludedEndpointIds?.has(candidate.id) && this.matches(candidate, route));
     if (endpoint === undefined || !endpoint.healthy) {
       throw new ProviderUnavailableError("No healthy Proxidize device matches the route policy");
     }

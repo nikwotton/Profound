@@ -85,11 +85,15 @@ function combinedTrafficStatus(
 function isPassiveSignal(value: unknown): value is PassiveHealthSignal {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
-  return (candidate.provider === "bright_data" || candidate.provider === "proxidize") &&
-    (candidate.capability === "all_traffic" || candidate.capability === "authenticated_traffic" ||
+  return (
+    (candidate.provider === "bright_data" || candidate.provider === "proxidize") &&
+    (candidate.capability === "all_traffic" ||
+      candidate.capability === "authenticated_traffic" ||
       candidate.capability === "unauthenticated_traffic") &&
     (candidate.outcome === "success" || candidate.outcome === "failure") &&
-    typeof candidate.observedAt === "string" && Number.isFinite(Date.parse(candidate.observedAt));
+    typeof candidate.observedAt === "string" &&
+    Number.isFinite(Date.parse(candidate.observedAt))
+  );
 }
 
 function otlpScalar(value: unknown): string | number | boolean | undefined {
@@ -123,7 +127,9 @@ export function passiveSignalsFromOtlpJson(value: unknown): PassiveHealthSignal[
     const record = resourceLog as Record<string, unknown>;
     const scopeLogs = Array.isArray(record.scopeLogs)
       ? record.scopeLogs
-      : Array.isArray(record.instrumentationLibraryLogs) ? record.instrumentationLibraryLogs : [];
+      : Array.isArray(record.instrumentationLibraryLogs)
+        ? record.instrumentationLibraryLogs
+        : [];
     for (const scopeLog of scopeLogs) {
       if (scopeLog === null || typeof scopeLog !== "object" || Array.isArray(scopeLog)) continue;
       const logRecords = (scopeLog as Record<string, unknown>).logRecords;
@@ -148,9 +154,7 @@ export function passiveSignalsFromOtlpJson(value: unknown): PassiveHealthSignal[
           capability: attributes.get("proxy.capability"),
           outcome: attributes.get("proxy.outcome"),
           observedAt: attributes.get("proxy.observed_at") ?? otlpTimestamp(log.timeUnixNano),
-          ...(typeof attributes.get("proxy.country") === "string"
-            ? { country: attributes.get("proxy.country") }
-            : {}),
+          ...(typeof attributes.get("proxy.country") === "string" ? { country: attributes.get("proxy.country") } : {}),
           ...(typeof attributes.get("proxy.city") === "string" ? { city: attributes.get("proxy.city") } : {}),
         };
         if (!isPassiveSignal(signal)) throw new Error("invalid_passive_signal");
@@ -183,12 +187,12 @@ export class CapabilityHealthAggregator {
     const now = this.options.now?.() ?? Date.now();
     const providerHealth = await Promise.all(this.providers.map((provider) => provider.health()));
     await Promise.all(providerHealth.map((health) => this.store.saveHealth(health)));
-    const recentPassive = [...this.#passiveSignals.values()].filter((signal) =>
-      now - Date.parse(signal.observedAt) <= this.options.passiveValidationMaxAgeMs,
+    const recentPassive = [...this.#passiveSignals.values()].filter(
+      (signal) => now - Date.parse(signal.observedAt) <= this.options.passiveValidationMaxAgeMs,
     );
     const conflict = recentPassive.some((signal) => {
       const provider = providerHealth.find((health) => health.provider === signal.provider);
-      return provider !== undefined && ((provider.state === "unhealthy") === (signal.outcome === "success"));
+      return provider !== undefined && (provider.state === "unhealthy") === (signal.outcome === "success");
     });
     if ((options.forceSynthetic === true || conflict) && this.options.syntheticValidator !== undefined) {
       this.#lastSynthetic = await this.options.syntheticValidator.validate(options.scope ?? {});
@@ -209,8 +213,11 @@ export class CapabilityHealthAggregator {
     });
     if (this.options.alerting !== undefined) {
       const staleCapabilities = snapshot.capabilities
-        .filter((capability) => capability.endToEndValidatedAt === undefined ||
-          generatedAt - Date.parse(capability.endToEndValidatedAt) > this.options.passiveValidationMaxAgeMs)
+        .filter(
+          (capability) =>
+            capability.endToEndValidatedAt === undefined ||
+            generatedAt - Date.parse(capability.endToEndValidatedAt) > this.options.passiveValidationMaxAgeMs,
+        )
         .map((capability) => capability.capability);
       try {
         await this.options.alerting.evaluate(snapshot, { conflicting: conflict, staleCapabilities });
@@ -240,16 +247,15 @@ export class CapabilityHealthAggregator {
           providerClass: provider.descriptor.providerClass,
           health: healthByProvider.get(provider.descriptor.id),
         }))
-        .filter((provider): provider is { providerClass: ProviderClass; health: ProviderHealth } =>
-          provider.health !== undefined,
-        );
+        .filter((provider): provider is { providerClass: ProviderClass; health: ProviderHealth } => provider.health !== undefined);
     const authenticatedProviders = providersFor("authenticatedTraffic");
     const unauthenticatedProviders = providersFor("unauthenticatedTraffic");
     const authenticatedStatus = preferredClassStatus(authenticatedProviders, "device_backed");
     const unauthenticatedStatus = preferredClassStatus(unauthenticatedProviders, "residential");
     const validationAt = (capability: Exclude<CapabilityName, "health_verification">): string | undefined =>
       latestTimestamp([
-        ...passive.filter((signal) => signal.capability === capability || signal.capability === "all_traffic")
+        ...passive
+          .filter((signal) => signal.capability === capability || signal.capability === "all_traffic")
           .map((signal) => signal.observedAt),
         synthetic?.outcome === "success" ? synthetic.checkedAt : undefined,
         previous?.capabilities.find((entry) => entry.capability === capability)?.endToEndValidatedAt,
@@ -260,8 +266,8 @@ export class CapabilityHealthAggregator {
       providers: ProviderHealth[],
     ): CapabilityHealth => {
       let status = statusFromProviders;
-      const failedPassive = passive.some((signal) =>
-        (signal.capability === name || signal.capability === "all_traffic") && signal.outcome === "failure",
+      const failedPassive = passive.some(
+        (signal) => (signal.capability === name || signal.capability === "all_traffic") && signal.outcome === "failure",
       );
       if (status === "operational" && (failedPassive || synthetic?.outcome === "proxy_failure")) status = "degraded";
       const providerStatusAt = latestTimestamp(providers.map((health) => health.checkedAt));
@@ -274,22 +280,26 @@ export class CapabilityHealthAggregator {
       };
     };
     const previousCanary = previous?.capabilities.find((entry) => entry.capability === "health_verification");
-    const canaryStatus: CapabilityHealth = synthetic === undefined && previousCanary !== undefined
-      ? { ...previousCanary }
-      : {
-        capability: "health_verification",
-        status: synthetic === undefined
-          ? "degraded"
-          : synthetic.outcome === "inconclusive"
-            ? "unavailable"
-            : synthetic.outcome === "success" && synthetic.geographyVerification !== "match"
-              ? "degraded"
-              : "operational",
-        ...(synthetic === undefined ? { message: "No synthetic validation has run" } : {
-        endToEndValidatedAt: synthetic.checkedAt,
-        ...(synthetic.message === undefined ? {} : { message: synthetic.message }),
-        }),
-      };
+    const canaryStatus: CapabilityHealth =
+      synthetic === undefined && previousCanary !== undefined
+        ? { ...previousCanary }
+        : {
+            capability: "health_verification",
+            status:
+              synthetic === undefined
+                ? "degraded"
+                : synthetic.outcome === "inconclusive"
+                  ? "unavailable"
+                  : synthetic.outcome === "success" && synthetic.geographyVerification !== "match"
+                    ? "degraded"
+                    : "operational",
+            ...(synthetic === undefined
+              ? { message: "No synthetic validation has run" }
+              : {
+                  endToEndValidatedAt: synthetic.checkedAt,
+                  ...(synthetic.message === undefined ? {} : { message: synthetic.message }),
+                }),
+          };
     const authenticatedCapability = capability(
       "authenticated_traffic",
       authenticatedStatus,
@@ -305,10 +315,9 @@ export class CapabilityHealthAggregator {
       combinedTrafficStatus(authenticatedCapability.status, unauthenticatedCapability.status),
       providerHealth,
     );
-    const geographies = new Map<string, GeographyHealth>(previous?.geographies.map((geography) => [
-      `${geography.country}:${geography.city ?? "*"}`,
-      geography,
-    ]) ?? []);
+    const geographies = new Map<string, GeographyHealth>(
+      previous?.geographies.map((geography) => [`${geography.country}:${geography.city ?? "*"}`, geography]) ?? [],
+    );
     for (const signal of passive) {
       if (signal.country === undefined) continue;
       const key = `${signal.country}:${signal.city ?? "*"}`;
@@ -325,9 +334,7 @@ export class CapabilityHealthAggregator {
       geographies.set(key, {
         country: synthetic.expectedCountry,
         ...(synthetic.expectedCity === undefined ? {} : { city: synthetic.expectedCity }),
-        status: synthetic.outcome === "success" && synthetic.geographyVerification === "match"
-          ? "operational"
-          : "degraded",
+        status: synthetic.outcome === "success" && synthetic.geographyVerification === "match" ? "operational" : "degraded",
         validatedAt: synthetic.checkedAt,
         source: "synthetic",
       });
@@ -335,12 +342,7 @@ export class CapabilityHealthAggregator {
     return {
       id: `${new Date(now).toISOString()}-${randomBytes(4).toString("hex")}`,
       generatedAt: new Date(now).toISOString(),
-      capabilities: [
-        allTrafficCapability,
-        authenticatedCapability,
-        unauthenticatedCapability,
-        canaryStatus,
-      ],
+      capabilities: [allTrafficCapability, authenticatedCapability, unauthenticatedCapability, canaryStatus],
       providers: providerHealth,
       geographies: [...geographies.values()],
     };
@@ -415,7 +417,7 @@ export class HealthAggregatorServer {
     const server = this.#server;
     this.#server = undefined;
     if (server === undefined) return;
-    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    await new Promise<void>((resolve, reject) => server.close((error) => (error === undefined ? resolve() : reject(error))));
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -447,7 +449,7 @@ export class HealthAggregatorServer {
         return;
       }
       if (request.method === "POST" && path === "/v1/validate") {
-        const body = await readJson(request, this.options.maximumBodyBytes ?? 16_384) as SyntheticValidationScope;
+        const body = (await readJson(request, this.options.maximumBodyBytes ?? 16_384)) as SyntheticValidationScope;
         json(response, 200, { snapshot: await this.aggregator.refresh({ forceSynthetic: true, scope: body }) });
         return;
       }

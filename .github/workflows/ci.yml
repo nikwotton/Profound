@@ -2,8 +2,19 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   workflow_dispatch:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
@@ -22,9 +33,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Install SST providers and generated types
         run: pnpm sst install
-      - run: pnpm check
-      - run: pnpm test
-      - run: pnpm openapi:check
+      - run: pnpm --dir tools/lint install --frozen-lockfile
+      - name: Prettier
+        run: pnpm format:check
+      - name: Type-aware ESLint (TypeScript 6 toolchain)
+        run: pnpm lint
+      - name: TypeScript 7 authoritative compiler
+        run: pnpm check
+      - name: Vitest and Effect tests
+        run: pnpm test:unit
+      - name: fast-check properties
+        run: pnpm test:property
+      - name: Offline integration and contract tests
+        run: pnpm test
+      - name: Generated OpenAPI is current
+        run: pnpm openapi:check
       - name: Check control-plane compatibility with pull request base
         if: github.event_name == 'pull_request'
         shell: bash
@@ -36,6 +59,13 @@ jobs:
           else
             echo "No base OpenAPI artifact; compatibility comparison is not applicable."
           fi
+      - name: Migration declaration and sensitive-path policy
+        if: github.event_name == 'pull_request'
+        run: pnpm pr:policy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Build deployable
+        run: docker build --tag profound-proxy-router:${{ github.sha }} .
       - uses: actions/upload-artifact@v4
         with:
           name: profound-control-api-openapi
