@@ -285,6 +285,8 @@ pnpm sst:dev --stage alice-dev
 
 Application modes with a dev command run locally; SST prints their addresses. This does not deploy the production-shaped Fargate topology. Stop with Ctrl-C and remove persistent stage resources:
 
+SST's VPC tunnel reserves local port `1080`, so `sst dev` runs and advertises the local SOCKS5 listener on `127.0.0.1:1081`. The standalone `pnpm dev` command and deployed ECS service continue to use port `1080`.
+
 ```sh
 pnpm aws:remove --stage alice-dev
 ```

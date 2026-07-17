@@ -20,6 +20,8 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     const devControlApiToken = "change-me";
     const devHealthAggregatorToken = "local-health-secret";
     const devCanarySigningSecret = "local-canary-secret";
+    // `sst dev` reserves 127.0.0.1:1080 for its VPC tunnel.
+    const socks5Port = $dev ? 1081 : 1080;
     const providerMode = stage.providerMode;
     const geoIpDatabaseSource = process.env.GEOIP_DATABASE_SOURCE?.trim() || ".sst/geoip/GeoLite2-City.mmdb";
     const geoIpMetadataSource = `${geoIpDatabaseSource}.metadata.json`;
@@ -639,7 +641,7 @@ service:
             FORWARD_PROXY_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             FORWARD_PROXY_PORT: "8080",
             SOCKS5_PROXY_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
-            SOCKS5_PROXY_PORT: "1080",
+            SOCKS5_PROXY_PORT: String(socks5Port),
             CONTROL_API_DISABLED: "true",
             ADVERTISED_PROXY_HOST: proxyDomain ?? "internal-proxy.invalid",
             ADVERTISED_HTTP_PROXY_PROTOCOL: tlsEnabled ? "https" : "http",
@@ -764,7 +766,7 @@ service:
             PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
             FORWARD_PROXY_PORT: "8080",
-            SOCKS5_PROXY_PORT: "1080",
+            SOCKS5_PROXY_PORT: String(socks5Port),
             CONTROL_API_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             CONTROL_API_PORT: "8081",
             CONTROL_API_USER_ID: process.env.CONTROL_API_USER_ID ?? `sst:${$app.stage}`,
@@ -1332,7 +1334,7 @@ service:
               retentionDays: telemetryRetentionDays,
             },
             httpProxy: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
-            socks5Proxy: $interpolate`socks5h://${host}:1080`,
+            socks5Proxy: $interpolate`socks5h://${host}:${socks5Port}`,
             controlApi: controlPlane.url,
             publicCanary: canaryApi.url,
             statusApplication: status.url,
@@ -1434,7 +1436,7 @@ service:
       proxyHost: host,
       loadBalancerHost: $dev ? "not-deployed-in-sst-dev" : proxyLoadBalancer.dnsName,
       httpProxy: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
-      socks5Proxy: $interpolate`socks5h://${host}:1080`,
+      socks5Proxy: $interpolate`socks5h://${host}:${socks5Port}`,
       controlApi: controlPlane.url,
       apiDocs: $interpolate`${controlPlane.url}/docs`,
       providerMode,

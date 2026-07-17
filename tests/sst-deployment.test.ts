@@ -19,6 +19,9 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /new sst\.aws\.Service\("ProxyRouter"/);
   assert.match(aws, /new sst\.aws\.Service\("ProxyRouter"[\s\S]*?dev: \{ url: "http:\/\/127\.0\.0\.1:8080" \}/);
   assert.match(aws, /const host = \$dev \? "127\.0\.0\.1"/);
+  assert.match(aws, /const socks5Port = \$dev \? 1081 : 1080/);
+  assert.match(aws, /SOCKS5_PROXY_PORT: String\(socks5Port\)/);
+  assert.match(aws, /socks5h:\/\/\$\{host\}:\$\{socks5Port\}/);
   assert.match(aws, /new sst\.aws\.Service\("ControlPlane"/);
   assert.match(aws, /new sst\.aws\.Service\("HealthAggregator"/);
   assert.match(aws, /new sst\.aws\.Service\("InternalDashboard"/);

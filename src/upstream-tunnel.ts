@@ -196,7 +196,10 @@ export async function openUpstreamTunnel(
 ): Promise<OpenedUpstreamTunnel> {
   const socket = connect(upstream.port, upstream.host);
   const abort = (): void => {
-    socket.destroy(abortReason(options.signal) as Error);
+    // The awaited operation reports the signal's authoritative reason below.
+    // Destroying with that error can emit it after `once()` has detached its
+    // temporary error listener, turning a handled timeout into an uncaught one.
+    socket.destroy();
   };
   options.signal.addEventListener("abort", abort, { once: true });
   const timeout = setTimeout(() => {
