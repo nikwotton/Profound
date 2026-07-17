@@ -12,3 +12,5 @@
 - During pre-v0 development, represent only the current design; do not preserve compatibility or migrations for earlier document or code revisions, and reset disposable data instead.
 - When a task requires resolving discrepancies, implement and verify discovered discrepancies before reporting the audit complete.
 - When a recurring audit changes repository files, finish that cycle by committing and pushing the changes, then verify CI passes on the pushed commit before reporting completion.
+- Keep caller-facing black-box E2E tests independent of deployment-stage and infrastructure metadata; test provider-specific infrastructure through a separate acceptance suite.
+- Give top-level test commands safe defaults when possible; do not require undocumented environment setup for their basic supported path.

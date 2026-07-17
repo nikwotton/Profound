@@ -227,7 +227,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
 
   matches(endpoint: MobileEndpoint, route: StoredRoute | { targeting: StoredRoute["targeting"] }): boolean {
     const target = route.targeting;
-    if (endpoint.country !== target.country) return false;
+    if (target.country !== undefined && endpoint.country !== target.country) return false;
     if (target.region !== undefined && normalized(endpoint.region) !== normalized(target.region)) return false;
     if (target.city !== undefined && (endpoint.city === undefined || normalized(endpoint.city) !== normalized(target.city))) {
       return false;

@@ -457,7 +457,7 @@ The ECS bake window keeps the old tasks available for six hours. Routine route/g
 
 ### Clients receive HTTP 407 or SOCKS5 authentication failure
 
-1. Confirm the username is the access-grant ID, not the route ID.
+1. Confirm the username is the opaque credential username, not a profile, grant, customer, or provider identifier.
 2. Check credential `expiresAt`, `revokeAt`, and grant/route status through the control plane.
 3. Confirm URL encoding was preserved when a proxy URL was split into username/password fields.
 4. Rotate routinely if in the renewal window; emergency-rotate if disclosure is possible.
@@ -465,11 +465,11 @@ The ECS bake window keeps the old tasks available for six hours. Routine route/g
 
 ### Provider unavailable or route creation fails
 
-1. Read the normalized error and `/v1/providers/health`.
-2. Compare route protocol, country/city, carrier, rotation, session, and target-port requirements with `/v1/providers`.
+1. Read the provider-neutral error and use the internal status/dashboard diagnostics for provider health and capacity.
+2. Compare the profile's geography, carrier, target-authenticated intent, and retry intent with internal capability evidence.
 3. For authenticated routes, confirm an exact-city-capable provider is available.
 4. Check device capacity and leases for Proxidize.
-5. Remove a debugging `forceProvider` only when policy permits fallback; never bypass incompatibility.
+5. Keep provider selection and provider diagnostics out of public requests and responses; use only the internal dashboard and telemetry to explain eligibility.
 
 ### Health is stale but not unavailable
 

@@ -18,6 +18,8 @@ const profile: RouteProfile = {
   session: { mode: "sticky", id: "logical-session", requireGeographicContinuity: true },
   customerId: "customer",
   userId: "user",
+  isTargetAuthenticated: true,
+  allowConnectionRetry: false,
   isAuthenticated: true,
   shouldRetry: false,
   retryPolicy: { maxAttempts: 1 },
@@ -99,31 +101,35 @@ test("route profiles contain no credential verifier and access grants rotate and
     const first = await store.createAccessGrant("grant-one", route.id, "user-one", "credential-one", "first-token");
     const second = await store.createAccessGrant("grant-two", route.id, "user-two", "credential-two", "second-token");
     await store.setAccessGrantEndpoint(first.id, "device-1");
-    assert.equal((await store.authenticateAccessGrant(first.id, "first-token"))?.principalId, "user-one");
-    assert.equal((await store.authenticateAccessGrant(second.id, "second-token"))?.principalId, "user-two");
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.principalId, "user-one");
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.principalId, "user-two");
 
     const rotated = await store.rotateAccessGrantCredential(first.id, "credential-three", "rotated-token");
     assert.equal(
-      (await store.authenticateAccessGrant(first.id, "first-token"))?.id,
+      (await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.id,
       first.id,
       "ordinary rotation overlaps old and new credentials",
     );
-    assert.equal((await store.authenticateAccessGrant(first.id, "rotated-token"))?.endpointId, "device-1");
-    assert.equal((await store.authenticateAccessGrant(second.id, "second-token"))?.id, second.id);
-    assert.equal(rotated.credentials[0]?.status, "overlap");
-    assert.equal(Date.parse(rotated.credentials[0]!.revokeAt!) - Date.parse(rotated.updatedAt), 72 * 60 * 60_000);
-    assert.equal(Date.parse(rotated.credentials[1]!.expiresAt) - Date.parse(rotated.credentials[1]!.createdAt), 30 * 24 * 60 * 60_000);
-    assert.equal(Date.parse(rotated.credentials[1]!.expiresAt) - Date.parse(rotated.credentials[1]!.renewalDueAt), 7 * 24 * 60 * 60_000);
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-three", "rotated-token"))?.endpointId, "device-1");
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.id, second.id);
+    const [overlappingCredential, activeCredential] = rotated.credentials;
+    assert.ok(overlappingCredential);
+    assert.ok(activeCredential);
+    assert.equal(overlappingCredential.status, "overlap");
+    assert.ok(overlappingCredential.revokeAt);
+    assert.equal(Date.parse(overlappingCredential.revokeAt) - Date.parse(rotated.updatedAt), 72 * 60 * 60_000);
+    assert.equal(Date.parse(activeCredential.expiresAt) - Date.parse(activeCredential.createdAt), 30 * 24 * 60 * 60_000);
+    assert.equal(Date.parse(activeCredential.expiresAt) - Date.parse(activeCredential.renewalDueAt), 7 * 24 * 60 * 60_000);
 
     await store.rotateAccessGrantCredential(first.id, "credential-four", "emergency-token", true);
-    assert.equal(await store.authenticateAccessGrant(first.id, "first-token"), undefined);
-    assert.equal(await store.authenticateAccessGrant(first.id, "rotated-token"), undefined);
-    assert.equal((await store.authenticateAccessGrant(first.id, "emergency-token"))?.id, first.id);
+    assert.equal(await store.authenticateAccessGrant("pxy_credential-one", "first-token"), undefined);
+    assert.equal(await store.authenticateAccessGrant("pxy_credential-three", "rotated-token"), undefined);
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-four", "emergency-token"))?.id, first.id);
 
     await store.revokeAccessGrant(first.id);
     await store.revokeAccessGrant(first.id);
-    assert.equal(await store.authenticateAccessGrant(first.id, "emergency-token"), undefined);
-    assert.equal((await store.authenticateAccessGrant(second.id, "second-token"))?.id, second.id);
+    assert.equal(await store.authenticateAccessGrant("pxy_credential-four", "emergency-token"), undefined);
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.id, second.id);
   } finally {
     await store.close();
   }

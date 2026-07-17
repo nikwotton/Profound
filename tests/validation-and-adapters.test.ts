@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { OpenApi } from "@effect/platform";
 import { loadConfig } from "../src/config.js";
 import { ControlApi } from "../src/control-contract.js";
+import { assertSafeProviderResolution } from "../src/destination-resolution.js";
 import { parseHostPort } from "../src/net-utils.js";
 import { BrightDataAdapter, buildBrightDataUsername } from "../src/providers/bright-data.js";
 import { createTargetValidator, isPublicAddress } from "../src/target-security.js";
@@ -18,6 +19,10 @@ function route(overrides: Partial<StoredRoute> = {}): StoredRoute {
     rotation: { mode: "per_request" },
     session: { mode: "none", requireGeographicContinuity: false },
     customerId: "customer",
+    geography: { countryCode: "US", regionCode: "NY", city: "New York" },
+    carrier: "T-Mobile",
+    isTargetAuthenticated: false,
+    allowConnectionRetry: false,
     userId: "user",
     isAuthenticated: false,
     shouldRetry: false,
@@ -37,8 +42,8 @@ function validate(value: Record<string, unknown>) {
   return validateRouteProfile(
     {
       customerId: "customer",
-      isAuthenticated: false,
-      shouldRetry: false,
+      isTargetAuthenticated: false,
+      allowConnectionRetry: false,
       ...value,
     },
     "user",
@@ -164,10 +169,9 @@ test("DynamoDB persistence configuration requires an explicit table", () => {
   );
 });
 
-test("route validation supplies behavior defaults and normalizes countries", () => {
+test("profile validation accepts only stable requirements and derives routing behavior", () => {
   const residential = validate({
-    name: "public",
-    targeting: { country: "us" },
+    geography: { countryCode: "us" },
   });
   assert.deepEqual(residential.rotation, { mode: "per_request" });
   assert.deepEqual(residential.allowedProtocols, ["http", "https", "socks5"]);
@@ -175,118 +179,35 @@ test("route validation supplies behavior defaults and normalizes countries", () 
   assert.equal(residential.targeting.country, "US");
 
   const mobile = validate({
-    name: "session",
-    isAuthenticated: true,
-    targeting: { country: "US", region: "NY", city: "New York" },
+    isTargetAuthenticated: true,
+    geography: { countryCode: "US", regionCode: "NY", city: "New York" },
   });
   assert.deepEqual(mobile.rotation, { mode: "manual" });
   assert.deepEqual(mobile.session, { mode: "sticky", requireGeographicContinuity: true });
 
-  const authenticatedBrightData = validate({
-    name: "authenticated-bright-data",
-    targeting: { country: "US", city: "New York" },
-    isAuthenticated: true,
-    forceProvider: "bright_data",
-    rotation: { mode: "per_request" },
-  });
-  assert.equal(authenticatedBrightData.forceProvider, "bright_data");
-  assert.equal(authenticatedBrightData.isAuthenticated, true);
-  assert.deepEqual(authenticatedBrightData.rotation, { mode: "per_request" });
-  assert.deepEqual(authenticatedBrightData.session, { mode: "none", requireGeographicContinuity: false });
+  assert.equal(mobile.isTargetAuthenticated, true);
+  assert.equal(mobile.allowConnectionRetry, false);
 });
 
-test("route validation rejects incompatible mobile and ZIP policies", () => {
+test("profile validation rejects missing authenticated geography and every non-canonical field", () => {
   assert.throws(
-    () =>
-      validate({
-        name: "obsolete-kind",
-        kind: "mobile",
-        targeting: { country: "US", city: "New York" },
-      }),
-    /kind is not part of the route policy/,
+    () => validate({ kind: "mobile", geography: { countryCode: "US", city: "New York" } }),
+    /profile.kind is not part of the profile contract/,
   );
   assert.throws(
     () =>
       validate({
-        name: "authenticated-without-city",
-        targeting: { country: "US", region: "NY" },
-        isAuthenticated: true,
+        geography: { countryCode: "US", regionCode: "NY" },
+        isTargetAuthenticated: true,
       }),
-    /targeting.city is required/,
+    /geography.countryCode and geography.city are required/,
   );
+  for (const field of ["name", "allowedProtocols", "targeting", "rotation", "session", "retryPolicy", "forceProvider"]) {
+    assert.throws(() => validate({ [field]: {} }), new RegExp(`profile\\.${field} is not part of the profile contract`));
+  }
   assert.throws(
-    () =>
-      validate({
-        name: "no-protocols",
-        targeting: { country: "US" },
-        allowedProtocols: [],
-      }),
-    /non-empty array/,
-  );
-  assert.throws(
-    () =>
-      validate({
-        name: "bad-mobile",
-        isAuthenticated: true,
-        targeting: { country: "US" },
-        rotation: { mode: "per_request" },
-      }),
-    /do not support per_request/,
-  );
-  assert.throws(
-    () =>
-      validate({
-        name: "bad-forced-proxidize",
-        targeting: { country: "US" },
-        forceProvider: "proxidize",
-        rotation: { mode: "per_request" },
-      }),
-    /do not support per_request/,
-  );
-  assert.throws(
-    () =>
-      validate({
-        name: "bad-zip",
-        targeting: { country: "GB", postalCode: "SW1A" },
-      }),
-    /requires country US/,
-  );
-  assert.throws(
-    () =>
-      validate({
-        name: "short-interval",
-        targeting: { country: "US" },
-        rotation: { mode: "interval", intervalSeconds: 59 },
-      }),
-    /at least 60/,
-  );
-  assert.throws(
-    () =>
-      validate({
-        name: "too-many-attempts",
-        targeting: { country: "US" },
-        retryPolicy: { maxAttempts: 7 },
-      }),
-    /from 1 to 6/,
-  );
-  assert.throws(
-    () =>
-      validate({
-        name: "retry-backoff",
-        targeting: { country: "US" },
-        retryPolicy: { backoffMs: 100 },
-      }),
-    /do not back off/,
-  );
-  assert.throws(
-    () =>
-      validate({
-        name: "contradictory-session",
-        targeting: { country: "US" },
-        rotation: { mode: "per_request" },
-        session: { mode: "sticky", id: "session-1" },
-      }),
-    /incompatible with per_request/,
+    () => validate({ geography: { countryCode: "US", postalCode: "10001" } }),
+    /geography.postalCode is not part of the profile contract/,
   );
 });
 
@@ -377,6 +298,13 @@ test("literal target validation blocks explicit private, metadata, and reserved 
   assert.deepEqual(await unavailable?.localResolution, { status: "unavailable", addresses: [] });
 });
 
+test("verified provider-side private resolution is rejected while unavailable evidence remains best effort", () => {
+  assert.doesNotThrow(() => assertSafeProviderResolution(undefined));
+  assert.doesNotThrow(() => assertSafeProviderResolution({}));
+  assert.doesNotThrow(() => assertSafeProviderResolution({ resolvedDestinationAddresses: ["8.8.8.8"] }));
+  assert.throws(() => assertSafeProviderResolution({ resolvedDestinationAddresses: ["8.8.8.8", "169.254.169.254"] }), /non-public address/);
+});
+
 test("CONNECT authority parsing rejects embedded credentials, paths, and queries", () => {
   assert.deepEqual(parseHostPort("example.com:443", 443), { host: "example.com", port: 443 });
   assert.deepEqual(parseHostPort("[2606:4700:4700::1111]:443", 443), {
@@ -392,24 +320,23 @@ test("Effect generates a complete secured OpenAPI contract from the control API"
   const paths = specification.paths;
   assert.ok(paths["/health/live"]?.get);
   assert.ok(paths["/health/ready"]?.get);
-  assert.ok(paths["/v1/routes"]?.get);
-  assert.ok(paths["/v1/routes"]?.post);
-  assert.ok(paths["/v1/routes/{id}"]?.get);
-  assert.ok(paths["/v1/routes/{id}"]?.delete);
-  assert.ok(paths["/v1/routes/{id}/rotate"]?.post);
-  assert.ok(paths["/v1/routes/{id}/access-grants"]?.post);
-  assert.ok(paths["/v1/routes/{id}/access-grants"]?.get);
-  assert.ok(paths["/v1/access-grants/{grantId}/credentials/rotate"]?.post);
-  assert.ok(paths["/v1/access-grants/{grantId}/credentials/emergency-rotate"]?.post);
-  assert.ok(paths["/v1/access-grants/{grantId}"]?.delete);
-  assert.ok(paths["/v1/access-grants/{grantId}/release"]?.post);
-  assert.ok(paths["/v1/access-grants/{grantId}/emergency-revoke"]?.post);
-  assert.ok(paths["/v1/routes/{id}/emergency-revoke"]?.post);
-  assert.ok(paths["/v1/providers/health"]?.get);
-  assert.ok(paths["/v1/providers"]?.get);
+  assert.ok(paths["/v1/profiles"]?.get);
+  assert.ok(paths["/v1/profiles"]?.post);
+  assert.ok(paths["/v1/profiles/{id}"]?.get);
+  assert.ok(paths["/v1/profiles/{id}"]?.put);
+  assert.ok(paths["/v1/profiles/{id}"]?.delete);
+  assert.ok(paths["/v1/profiles/{id}/grants"]?.post);
+  assert.ok(paths["/v1/profiles/{id}/grants"]?.get);
+  assert.ok(paths["/v1/grants/{grantId}"]?.get);
+  assert.ok(paths["/v1/grants/{grantId}"]?.delete);
+  assert.ok(paths["/v1/grants/{grantId}/credentials/rotate"]?.post);
+  assert.ok(paths["/v1/grants/{grantId}/credentials/{credentialId}"]?.get);
+  assert.ok(paths["/v1/grants/{grantId}/credentials/{credentialId}"]?.delete);
+  assert.equal(paths["/v1/providers"], undefined);
+  assert.equal(paths["/v1/providers/health"], undefined);
   assert.equal(specification.info.title, "Profound Proxy Router Control API");
-  assert.equal(specification.info.version, "0.5.0");
+  assert.equal(specification.info.version, "0.6.0");
   assert.match(JSON.stringify(specification.components.securitySchemes), /bearer/i);
   assert.equal(paths["/health/live"]?.get?.security?.length, 0);
-  assert.ok((paths["/v1/routes"]?.post?.security?.length ?? 0) > 0);
+  assert.ok((paths["/v1/profiles"]?.post?.security?.length ?? 0) > 0);
 });

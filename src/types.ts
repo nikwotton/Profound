@@ -12,7 +12,7 @@ export interface ProxyTarget {
 }
 
 export interface Targeting {
-  country: string;
+  country?: string;
   region?: string;
   city?: string;
   postalCode?: string;
@@ -30,34 +30,34 @@ export type SessionPolicy =
   { mode: "none"; requireGeographicContinuity: false } | { mode: "sticky"; id?: string; requireGeographicContinuity: boolean };
 
 export interface RouteProfileInput {
-  name: string;
-  allowedProtocols?: DataPlaneProtocol[];
-  targeting: Targeting;
-  rotation?: RotationPolicy;
-  session?: {
-    mode: "none" | "sticky";
-    id?: string;
-    requireGeographicContinuity?: boolean;
-  };
   customerId: string;
-  isAuthenticated: boolean;
-  shouldRetry: boolean;
-  retryPolicy?: Partial<RetryPolicy>;
-  forceProvider?: ProviderId;
+  geography?: {
+    countryCode?: string;
+    regionCode?: string;
+    city?: string;
+  };
+  carrier?: string;
+  isTargetAuthenticated: boolean;
+  allowConnectionRetry: boolean;
 }
 
 export interface RouteProfile {
+  /** Internal display label; not part of the public profile contract. */
   name: string;
+  customerId: string;
+  geography?: RouteProfileInput["geography"];
+  carrier?: string;
+  isTargetAuthenticated: boolean;
+  allowConnectionRetry: boolean;
+  userId: string;
+  /** Internal policy derived from the provider-neutral profile. */
   allowedProtocols: DataPlaneProtocol[];
   targeting: Targeting;
   rotation: RotationPolicy;
   session: SessionPolicy;
-  customerId: string;
-  userId: string;
   isAuthenticated: boolean;
   shouldRetry: boolean;
   retryPolicy: RetryPolicy;
-  forceProvider?: ProviderId;
 }
 
 export type RouteStatus = "ready" | "rotating" | "failed" | "revoked";
@@ -94,7 +94,8 @@ export interface StoredAccessGrantCredential {
 }
 
 export interface PublicAccessGrantCredential {
-  id: string;
+  credentialId: string;
+  username: string;
   status: PublicAccessGrantCredentialStatus;
   createdAt: string;
   renewalDueAt: string;
@@ -118,9 +119,8 @@ export interface StoredAccessGrant {
 }
 
 export interface PublicAccessGrant {
-  id: string;
-  routeId: string;
-  principalId: string;
+  grantId: string;
+  profileId: string;
   status: AccessGrantStatus;
   credentials: PublicAccessGrantCredential[];
   createdAt: string;
@@ -132,11 +132,9 @@ export interface AuthenticatedRoute extends StoredRoute {
   accessGrantId: string;
 }
 
-export interface PublicRoute extends RouteProfile {
-  id: string;
-  provider: ProviderId;
+export interface PublicRoute extends RouteProfileInput {
+  profileId: string;
   status: RouteStatus;
-  lastError?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -279,7 +277,7 @@ export interface UsageRecord {
   failover: boolean;
   bytesSent: number;
   bytesReceived: number;
-  country: string;
+  country?: string;
   city?: string;
   endpointId?: string;
   deviceLeaseKey?: string;

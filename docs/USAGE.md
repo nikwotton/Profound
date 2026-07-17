@@ -1,306 +1,188 @@
 # Consumer guide
 
-This guide is for applications, users, and service owners that create proxy routes or send traffic through Profound Proxy Router v0. Platform deployment, monitoring, and incident procedures are in the [operations guide](OPERATIONS.md).
+This guide covers Profound Proxy Router v0's provider-neutral control plane and its standard HTTP/HTTPS and SOCKS5 data plane. Deployment, monitoring, and incident procedures are in the [operations guide](OPERATIONS.md).
 
 ## Concepts
 
-- A **route profile** is reusable policy: allowed protocols, geography, rotation, session, retry behavior, and attribution. It contains no caller or provider secret.
-- An **access grant** gives one authenticated principal permission to use one route. Each grant has its own credentials and, for device-backed routing, its own exclusive device lease.
-- The **control plane** creates and manages routes and grants over JSON/HTTP.
-- The **data plane** accepts standard HTTP proxy and SOCKS5 traffic. It does not accept a Profound-specific request envelope.
-- The **target** or **recipient** is the original destination server.
+- A **route profile** stores stable workload requirements. It contains no protocol choice, session or rotation policy, provider selection, caller secret, or provider secret.
+- An **access grant** is the session and affinity boundary for one independently revocable workload.
+- A **credential** authenticates one access grant. Its opaque username is stable for that credential; its password is shown only when issued or rotated.
+- The **data plane** accepts native proxy traffic. Clients keep the original destination URL, method, path, query, headers, body, redirects, and TLS behavior.
 
-The control bearer token and the access-grant credential are different secrets:
+The control bearer token and proxy credential are separate:
 
-- `Authorization: Bearer ...` authenticates a trusted principal to the control plane.
-- `Proxy-Authorization: Basic ...` or SOCKS5 username/password authenticates an access grant to the data plane.
-- An `Authorization` header inside a plain HTTP request or an HTTPS tunnel still belongs to the target site and is forwarded unchanged.
+- `Authorization: Bearer ...` authenticates a trusted control-plane caller.
+- `Proxy-Authorization: Basic ...` or SOCKS5 username/password authenticates a data-plane credential.
+- A target-site `Authorization` header remains target traffic and is forwarded unchanged.
 
 ## Endpoints
 
-Obtain these values from the platform operator:
+Obtain deployed values from the platform operator. Local mock-mode defaults are:
 
-| Value                | Local default              | Purpose                                   |
-| -------------------- | -------------------------- | ----------------------------------------- |
-| Control API base URL | `http://127.0.0.1:8081`    | Route and grant management                |
-| Control bearer token | `change-me`                | Local loopback mock mode only             |
-| HTTP/HTTPS proxy     | `http://127.0.0.1:8080`    | Plain HTTP forwarding and HTTPS `CONNECT` |
-| SOCKS5 proxy         | `socks5h://127.0.0.1:1080` | TCP `CONNECT` with provider-side DNS      |
+| Interface           | Address                    |
+| ------------------- | -------------------------- |
+| Control API         | `http://127.0.0.1:8081`    |
+| HTTP/HTTPS proxy    | `http://127.0.0.1:8080`    |
+| SOCKS5 proxy        | `socks5h://127.0.0.1:1080` |
+| Local control token | `change-me`                |
 
-Deployed endpoints are internal. The forward proxy normally uses TLS from the client to Profound and therefore starts with `https://`. SOCKS5 is unencrypted and must remain on the trusted private network.
+The gateway protocol is selected by the endpoint and proxy handshake. It is deliberately absent from route profiles.
 
-## Quick start
+## Create a profile and credential
 
-### 1. Create a route
-
-This route uses a fresh residential candidate for each logical request and allows all three client protocols:
+Create a provider-neutral route profile:
 
 ```sh
-curl -sS http://127.0.0.1:8081/v1/routes \
+curl -sS http://127.0.0.1:8081/v1/profiles \
   -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "public-us",
-    "allowedProtocols": ["http", "https", "socks5"],
-    "targeting": {
-      "country": "US",
-      "postalCode": "10001"
-    },
     "customerId": "customer-a",
-    "isAuthenticated": false,
-    "shouldRetry": true
+    "geography": {
+      "countryCode": "US",
+      "regionCode": "NY",
+      "city": "New York"
+    },
+    "carrier": "T-Mobile",
+    "isTargetAuthenticated": true,
+    "allowConnectionRetry": false
   }'
 ```
 
-The `201` response contains:
+The `201` response contains only the new identifier:
 
-- `route`: the persisted, secret-free route profile;
-- `accessGrant`: the initial grant owned by the authenticated control principal;
-- `credential`: redacted lifecycle metadata, not the token;
-- `proxyUsername`: the access-grant ID;
-- `proxyUrls.http` and `proxyUrls.socks5`: complete URLs containing the secret token.
+```json
+{ "profileId": "PROFILE_ID" }
+```
 
-The token is returned only inside the proxy URLs at grant issuance or credential rotation. Store one URL immediately in a secret manager. It cannot be retrieved later.
-
-### 2. Send HTTPS through the HTTP proxy
+Issue an access grant and its initial credential:
 
 ```sh
-curl --proxy 'http://ACCESS_GRANT_ID:ACCESS_GRANT_TOKEN@127.0.0.1:8080' \
+curl -sS -X POST http://127.0.0.1:8081/v1/profiles/PROFILE_ID/grants \
+  -H 'Authorization: Bearer change-me'
+```
+
+The `201` response contains redacted `grant` metadata, credential-free `endpoints`, and a `credential` with `credentialId`, opaque `username`, and one-time `password`. Store the password immediately in a secret manager. It cannot be retrieved later. Do not construct a username from a profile or grant ID.
+
+## Send proxy traffic
+
+HTTPS through the HTTP proxy:
+
+```sh
+curl --proxy 'http://127.0.0.1:8080' \
+  --proxy-user 'OPAQUE_USERNAME:ONE_TIME_PASSWORD' \
   https://example.com/
 ```
 
-The client sends `CONNECT example.com:443` to Profound. Profound asks the selected upstream proxy to establish the connection and then relays bytes. The TLS session is between the client and `example.com`; Profound and the upstream proxy can observe connection metadata but cannot read or alter the encrypted path, headers, query, body, status, or redirect without a separately trusted interception certificate. V0 performs no TLS interception.
+The client sends `CONNECT example.com:443` to Profound. The selected provider creates the recipient-side connection, so the recipient sees the provider exit IP. TLS remains end-to-end between client and recipient; v0 does not install a trusted interception certificate or inspect encrypted application traffic.
 
-The recipient sees the selected provider exit IP, because the provider creates the recipient-side TCP connection. It does not see the caller's source IP at the network layer.
-
-### 3. Send plain HTTP through the HTTP proxy
+Plain HTTP through the HTTP proxy:
 
 ```sh
-curl --proxy 'http://ACCESS_GRANT_ID:ACCESS_GRANT_TOKEN@127.0.0.1:8080' \
+curl --proxy 'http://127.0.0.1:8080' \
+  --proxy-user 'OPAQUE_USERNAME:ONE_TIME_PASSWORD' \
   http://example.com/
 ```
 
-For plain HTTP, the client sends an absolute-form request target such as `GET http://example.com/ HTTP/1.1`. Profound can forward the method, destination URL, headers, query, and streaming body. It removes proxy-only authentication before forwarding. The recipient receives a normal origin-form request from the selected provider exit.
+The client sends an absolute-form request target. Profound removes proxy-only authentication and preserves target method, path, query, headers, body, statuses, and redirects.
 
-Target statuses, including redirects, `429`, and `5xx`, are returned unchanged. The caller decides whether to follow a redirect; a followed redirect is a new proxy operation.
-
-### 4. Send traffic through SOCKS5
+SOCKS5 with provider-side DNS:
 
 ```sh
 curl --socks5-hostname '127.0.0.1:1080' \
-  --proxy-user 'ACCESS_GRANT_ID:ACCESS_GRANT_TOKEN' \
+  --proxy-user 'OPAQUE_USERNAME:ONE_TIME_PASSWORD' \
   https://example.com/
 ```
 
-Use remote-DNS mode (`socks5h://` or curl's `--socks5-hostname`) so the destination domain is preserved for the provider. SOCKS5 traffic is an opaque TCP tunnel. V0 supports username/password authentication and TCP `CONNECT`; it rejects unauthenticated negotiation, `BIND`, and `UDP ASSOCIATE`.
+V0 supports authenticated SOCKS5 TCP `CONNECT`; it rejects unauthenticated negotiation, `BIND`, and `UDP ASSOCIATE`.
 
-## Route profile reference
+## Route profile contract
 
-The committed [OpenAPI contract](../openapi/profound-control-api.v0.5.0.json) is authoritative for JSON shapes. The following table explains the behavioral contract.
+The committed [OpenAPI contract](../openapi/profound-control-api.v0.6.0.json) is authoritative.
 
-| Field                     | Required    | V0 behavior                                                                                                                                                  |
-| ------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                    | Yes         | Non-empty operator-readable name.                                                                                                                            |
-| `allowedProtocols`        | No          | Non-empty subset of `http`, `https`, `socks5`; defaults to all three.                                                                                        |
-| `targeting.country`       | Yes         | Two-letter ISO country code, normalized to uppercase.                                                                                                        |
-| `targeting.region`        | No          | Provider-specific state or region.                                                                                                                           |
-| `targeting.city`          | Conditional | Required when `isAuthenticated` is true.                                                                                                                     |
-| `targeting.postalCode`    | No          | Bright Data ZIP routing requires `US` and exactly five digits.                                                                                               |
-| `targeting.asn`           | No          | Positive integer; unsupported by Proxidize routes.                                                                                                           |
-| `targeting.carrier`       | No          | Provider-specific carrier name.                                                                                                                              |
-| `rotation`                | No          | Defaults to `per_request` for unauthenticated routes and `manual` for authenticated routes.                                                                  |
-| `session`                 | No          | Defaults to `none` for per-request rotation and sticky geographic continuity otherwise.                                                                      |
-| `customerId`              | Yes         | Non-empty attribution value. V0 does not independently authorize this free-form value.                                                                       |
-| `isAuthenticated`         | Yes         | Caller-declared workload policy used for provider preference and exact-city requirements. It does not make either provider technically ineligible by itself. |
-| `shouldRetry`             | Yes         | Enables eligible pre-commit establishment retries.                                                                                                           |
-| `retryPolicy.maxAttempts` | No          | Integer from 1 to 6; deployment default is 4.                                                                                                                |
-| `forceProvider`           | No          | `bright_data` or `proxidize`; prevents cross-provider fallback and is intended for controlled rollout/debugging.                                             |
+| Field                   | Required    | Behavior                                                                                                              |
+| ----------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| `customerId`            | Yes         | Non-empty attribution value.                                                                                          |
+| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required for authenticated targets.                            |
+| `geography.regionCode`  | No          | State or region constraint.                                                                                           |
+| `geography.city`        | Conditional | Required with country when `isTargetAuthenticated` is true.                                                           |
+| `carrier`               | No          | Carrier constraint.                                                                                                   |
+| `isTargetAuthenticated` | Yes         | Declares whether the target session is authenticated; controls provider-class preference and continuity requirements. |
+| `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                             |
 
-The control principal becomes the profile's `userId` and initial grant owner. Callers cannot choose `principalId` or `userId` in a request body.
+Unknown fields are rejected. In particular, profiles do not accept `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
 
-Profiles have no update endpoint in v0. Create a new route when policy, targeting, or attribution must change, migrate grants, and revoke the old route.
+Authenticated targets require exact country and city continuity. They prefer compatible device-backed providers, then compatible residential providers. Unauthenticated targets prefer compatible residential providers. Provider identifiers, overrides, pricing, and health are internal and never appear in ordinary profile, grant, credential, or error responses.
 
-### Targeting constraints
+Replace the stable requirements with `PUT /v1/profiles/{id}`. New connections use the replacement; established requests and tunnels continue under the policy with which they opened.
 
-- Authenticated routes require an exact city. Every attempted candidate must guarantee or verify that city before the connection is exposed.
-- Proxidize routes currently require country `US` and reject postal-code and ASN targeting.
-- Mock Proxidize inventory guarantees its configured city. Live Proxidize defaults to exact-city `unsupported` until the operator has established a vendor guarantee.
-- Bright Data supports country, region, city, US ZIP, ASN, and carrier targeting through generated upstream credentials.
-- A forced provider that cannot satisfy the requested capabilities fails closed.
+## Access grants and credentials
 
-### Rotation policies
+Access grants are the session and affinity boundary. Different mobile grants do not share a device lease. Credential rotation does not change the grant or its affinity.
 
-Per request:
+| Operation                                | Endpoint                                                 |
+| ---------------------------------------- | -------------------------------------------------------- |
+| Create/list profiles                     | `POST /v1/profiles`, `GET /v1/profiles`                  |
+| Inspect/replace/remove profile           | `GET`, `PUT`, `DELETE /v1/profiles/{id}`                 |
+| Create/list grants                       | `POST`, `GET /v1/profiles/{id}/grants`                   |
+| Inspect/revoke grant                     | `GET`, `DELETE /v1/grants/{grantId}`                     |
+| Rotate credential                        | `POST /v1/grants/{grantId}/credentials/rotate`           |
+| Replace suspected-compromised credential | `POST /v1/grants/{grantId}/credentials/emergency-rotate` |
+| Inspect credential metadata              | `GET /v1/grants/{grantId}/credentials/{credentialId}`    |
+| Revoke one credential                    | `DELETE /v1/grants/{grantId}/credentials/{credentialId}` |
 
-```json
-{ "rotation": { "mode": "per_request" } }
-```
+Credentials have a fixed 30-day lifetime. `renewalDueAt` is seven days before expiry. Routine rotation leaves prior usable credentials in bounded overlap for at most 72 hours or until original expiry. Emergency rotation invalidates prior credentials immediately. Profile or grant removal blocks new use while established traffic is allowed to finish.
 
-Profound selects a new service-controlled candidate session for every logical operation. Proxidize does not support this policy.
+Profile, grant, and credential list/read responses never include passwords, verifiers, provider credentials, device identifiers, or proxy URLs with embedded credentials.
 
-Interval:
+## Routing and retry behavior
 
-```json
-{ "rotation": { "mode": "interval", "intervalSeconds": 900 } }
-```
+Provider selection and provider-specific rotation are internal implementation policy. Consumers declare stable requirements, not mechanisms.
 
-The minimum is 60 seconds. Bright Data keeps the generated provider session stable within the interval. For device-backed routes, Profound initiates rotation while retaining route constraints and exclusive lease ownership.
+- Unauthenticated operations use fresh residential candidates.
+- Authenticated operations use stable grant-level affinity and exact-city continuity.
+- Bright Data remains eligible for authenticated targets when it satisfies all constraints; Proxidize remains subject to inventory and capacity.
+- `allowConnectionRetry` only permits retries before target request or tunnel bytes are committed.
+- Target HTTP responses, provider-authentication failures, and failures after commit are not hidden by failover.
+- No request ever falls back to the router's direct Internet connection.
 
-Manual:
+## Errors
 
-```json
-{ "rotation": { "mode": "manual" } }
-```
-
-The candidate remains stable until `POST /v1/routes/{id}/rotate`, a qualifying failure, lease expiry/release, or provider-initiated change observable under the provider contract. Route rotation returns `202`; poll `GET /v1/routes/{id}` until `status` is `ready` or `failed`.
-
-### Session policies
-
-No sticky state:
-
-```json
-{ "session": { "mode": "none" } }
-```
-
-Sticky state:
+Control-plane errors are provider-neutral and contain:
 
 ```json
 {
-  "session": {
-    "mode": "sticky",
-    "id": "caller-session-42",
-    "requireGeographicContinuity": true
-  }
+  "code": "normalized_code",
+  "message": "sanitized explanation",
+  "retryable": false,
+  "requestId": "correlation-id"
 }
 ```
 
-Sticky sessions are incompatible with per-request rotation. For device-backed routes, the lease is exclusive to the access grant plus the optional session ID. Different grants never share a device lease, and credential rotation does not change the lease. Activity renews the lease; it expires after a service-wide 15 minutes with no active connection or recent activity, or it can be released explicitly.
+The Effect error discriminator `_tag` may also appear in the JSON representation. `401` means the control credential is missing or invalid; `404` intentionally covers absent, revoked, or non-owned resources; `503` means the required service capability is unavailable. Data-plane authentication failures return HTTP `407` or SOCKS5 authentication failure.
 
-Route affinity is independent of target-site authentication and cookies. Profound does not inspect cookies or infer authentication from request headers or bodies.
+## Destination and transport safety
 
-### Example: persistent authenticated collection
+- Explicit loopback, private, link-local, multicast, reserved, metadata, and special-use IP literals are rejected.
+- Domains remain intact for provider-side DNS. Local DNS is diagnostic only and cannot reroute the request.
+- Verified provider-side private resolution is rejected. Where an opaque provider supplies no resolution evidence, safety is best effort and the missing evidence is recorded internally.
+- Target URL credentials and credentials in `CONNECT` authorities are rejected.
+- Target ports default to `80` and `443`; operators may deliberately allow more public TCP ports.
+- Request and response bodies stream with backpressure.
 
-```sh
-curl -sS http://127.0.0.1:8081/v1/routes \
-  -H 'Authorization: Bearer change-me' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "authenticated-new-york",
-    "targeting": {
-      "country": "US",
-      "region": "NY",
-      "city": "New York",
-      "carrier": "T-Mobile"
-    },
-    "rotation": { "mode": "manual" },
-    "session": {
-      "mode": "sticky",
-      "id": "caller-session-42",
-      "requireGeographicContinuity": true
-    },
-    "customerId": "customer-a",
-    "isAuthenticated": true,
-    "shouldRetry": false
-  }'
-```
+## Privacy and logging
 
-## Routing and retries
+Operational telemetry may include timestamps, request and correlation IDs, profile/grant/customer identifiers, protocol, target hostname and port, target method and status for plain HTTP, provider class and provider identifier in internal telemetry only, normalized outcome, duration, byte counts, retry count, and sanitized assignment evidence.
 
-- Unauthenticated routes prefer compatible residential providers, then compatible device-backed providers. With the v0 adapters, Bright Data is preferred before Proxidize.
-- Authenticated routes prefer compatible device-backed providers, then compatible residential providers. This is a routing preference, not a blanket provider restriction.
-- Within a provider class, the current provider is tried first and remaining providers use cost rank.
-- An operation tries at most two peers/devices per provider and considers at most three compatible providers.
-- The default four attempts therefore cover at most two candidates in each of the two v0 providers.
-- `forceProvider` permits alternate candidates within that provider but prohibits cross-provider fallback.
-- Each candidate establishment attempt has at most 10 seconds; the complete establishment sequence has at most 30 seconds.
-- Profound performs no in-request backoff.
-
-Plain HTTP is retryable only before application request bytes have reached an upstream. Provider authentication errors and target HTTP responses are not hidden by failover. HTTPS and SOCKS5 may retry only before the upstream tunnel is established. Once response or tunnel bytes have been delivered, any failure is surfaced to the caller.
-
-Exact device or IP continuity is not a failover guarantee. An authenticated attempt may move only to a candidate that preserves the exact city and every other route constraint.
-
-## Access-grant lifecycle
-
-Every proxy username is an access-grant ID, not a route ID. Every request resolves the current grant and route records, so revocation and expiry take effect without embedding policy or vendor credentials in the token.
-
-| Operation                      | Endpoint                                                        | Effect                                                                                |
-| ------------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Create route and initial grant | `POST /v1/routes`                                               | Returns one-time proxy URLs.                                                          |
-| List routes                    | `GET /v1/routes`                                                | Returns secret-free profiles available to trusted control-plane callers.              |
-| Get route                      | `GET /v1/routes/{id}`                                           | Returns current route status.                                                         |
-| Create another grant           | `POST /v1/routes/{id}/access-grants`                            | Returns a separate one-time credential for the caller.                                |
-| List caller's grants           | `GET /v1/routes/{id}/access-grants`                             | Returns redacted metadata only.                                                       |
-| Rotate credential              | `POST /v1/access-grants/{grantId}/credentials/rotate`           | Issues a replacement; old credential overlaps for at most 72 hours.                   |
-| Emergency rotate               | `POST /v1/access-grants/{grantId}/credentials/emergency-rotate` | Invalidates all prior credentials immediately and returns a replacement.              |
-| Revoke grant                   | `DELETE /v1/access-grants/{grantId}`                            | Blocks new use; established traffic is allowed to finish.                             |
-| Emergency revoke grant         | `POST /v1/access-grants/{grantId}/emergency-revoke`             | Blocks new use and terminates only this grant's established traffic.                  |
-| Release device lease           | `POST /v1/access-grants/{grantId}/release`                      | Terminates lease-bound connections and frees the device.                              |
-| Rotate route exit              | `POST /v1/routes/{id}/rotate`                                   | Starts provider-supported rotation and returns `202`.                                 |
-| Revoke route                   | `DELETE /v1/routes/{id}`                                        | Blocks all grants for new traffic; established traffic is allowed to finish.          |
-| Emergency revoke route         | `POST /v1/routes/{id}/emergency-revoke`                         | Blocks the route and terminates all established traffic for it.                       |
-| Provider capabilities          | `GET /v1/providers`                                             | Returns protocols, geography, sessions, rotation, DNS, pricing, and usage dimensions. |
-| Provider health                | `GET /v1/providers/health`                                      | Returns normalized provider health.                                                   |
-
-Credentials have a fixed 30-day lifetime and no idle extension. Metadata sets `renewalDueAt` seven days before expiry. Rotate during that window. A routine rotation keeps the access-grant ID and device lease; prior usable credentials become `overlap` and are revoked after at most 72 hours or their original expiry, whichever comes first.
-
-Treat returned proxy URLs as bearer secrets:
-
-- store them in a secret manager, never source control or ordinary configuration;
-- do not place them in logs, metrics, traces, tickets, or screenshots;
-- use one grant per principal or independently revocable workload;
-- use emergency rotation for suspected disclosure;
-- do not deliberately share a grant if per-principal attribution matters.
-
-V0 attributes use to the grant owner but cannot prevent that owner from sharing a credential. Identity-bound data-plane authentication such as mTLS is deferred.
-
-## Control-plane responses and errors
-
-The control API uses JSON and bearer authentication. Its live contract and Swagger UI are available at `/openapi.json` and `/docs`.
-
-| Status | Meaning                                                                                               |
-| ------ | ----------------------------------------------------------------------------------------------------- |
-| `200`  | Read or completed lifecycle operation.                                                                |
-| `201`  | Route or grant created; capture the returned proxy URL.                                               |
-| `202`  | Rotation accepted; poll route status.                                                                 |
-| `400`  | Malformed or incompatible policy. The JSON body contains a normalized code/message.                   |
-| `401`  | Missing or invalid control bearer token.                                                              |
-| `404`  | Route/grant absent, revoked, or not owned by the principal. Ownership is intentionally not disclosed. |
-| `503`  | Required provider/service capability is unavailable.                                                  |
-| `500`  | Internal control-plane failure with sanitized output.                                                 |
-
-Data-plane authentication failures return HTTP `407 Proxy Authentication Required` or the SOCKS5 username/password failure response. Upstream establishment failures are normalized to gateway/provider errors without provider credentials or raw vendor responses. Callers should distinguish target HTTP statuses from proxy establishment failures and should apply their own end-to-end retry budget.
-
-## Destination and transport rules
-
-- Only public-Internet destinations are allowed.
-- Explicit loopback, private, link-local, multicast, reserved, cloud-metadata, and special-use IP literals are rejected.
-- Domain names are preserved for provider-side DNS. Local DNS is best-effort telemetry and cannot reroute or reject the operation.
-- Target ports default to `80` and `443`; operators can deliberately allow additional public TCP ports.
-- Credentials embedded in a target URL or `CONNECT` authority are rejected.
-- Request and response bodies stream with backpressure; there are no application-level full-body size limits.
-- The configured stream idle timeout applies after establishment. Client, load-balancer, and target timeouts can be shorter.
-- Profound never connects directly to a target when every provider attempt fails.
-
-## Privacy and observability
-
-The service accounts for per-direction bytes and records route, grant owner, customer, provider, outcome, and normalized candidate evidence. It intentionally excludes request/response bodies, raw headers, query strings, cookies, target authorization values, control tokens, access-grant tokens, and provider credentials from logs and traces.
-
-Plain HTTP operational records may include target method, hostname, and status. Tunnel records include only protocol, target host/port, establishment outcome, duration, and bytes; the encrypted application metadata remains opaque.
-
-## Versioning and compatibility
-
-The v0 control API contract version is `0.5.0`. Generate clients from [the committed OpenAPI artifact](../openapi/profound-control-api.v0.5.0.json), not examples in this guide. CI rejects incompatible removals and newly required control-plane inputs against the pull-request base contract.
-
-HTTP proxy and SOCKS5 behavior follows their native protocols. There is no generated SDK requirement for the data plane.
+Logs and traces must not contain request/response bodies, full URLs or query strings, raw headers, cookies, target authorization, control bearer tokens, proxy passwords, credential verifiers, provider credentials, or raw vendor responses. Tunnel telemetry contains connection metadata only because application traffic remains encrypted. Provider, health, cost, and capacity diagnostics are restricted to internal telemetry and the internal dashboard.
 
 ## Consumer checklist
 
-- Obtain the internal control and proxy endpoints from the operator.
-- Use a dedicated control identity and access grant per workload.
-- Store the one-time returned proxy URL immediately.
-- Select remote/provider DNS for SOCKS5.
-- Set application timeouts longer than the expected 30-second maximum establishment sequence when retries are enabled.
-- Rotate credentials during the renewal window and test emergency rotation/revocation.
-- Handle redirects and target retries in the client.
-- Never assume the exact IP or device survives failover; rely only on declared route constraints.
-- Confirm the collection is authorized and compliant.
+- Use a dedicated access grant per independently revocable workload.
+- Store the one-time credential password immediately and separately from ordinary configuration.
+- Configure both the endpoint and opaque credential; do not embed routing policy in either.
+- Use remote/provider DNS for SOCKS5.
+- Rotate credentials during the renewal window and revoke suspected credentials immediately.
+- Handle target redirects and end-to-end retries in the application.
+- Rely on declared geography and carrier constraints, not an exact provider, device, or exit IP.
+- Confirm collection is authorized and compliant.

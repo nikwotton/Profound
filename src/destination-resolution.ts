@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import type { Span } from "@opentelemetry/api";
+import { AppError } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { isPublicAddress, type LocalResolutionObservation, type TargetValidation } from "./target-security.js";
 
@@ -15,6 +16,13 @@ export function resolvedAddressesFromHeader(value: string | string[] | undefined
     .filter((entry) => isIP(entry) !== 0);
   const normalized = [...new Set(values)].sort();
   return normalized.length === 0 ? undefined : normalized;
+}
+
+export function assertSafeProviderResolution(metadata: ProviderResolutionMetadata | undefined): void {
+  const unsafe = (metadata?.resolvedDestinationAddresses ?? []).filter((address) => !isPublicAddress(address));
+  if (unsafe.length > 0) {
+    throw new AppError("Provider resolved the target to a non-public address", "provider_target_forbidden", 403);
+  }
 }
 
 function sameAddresses(left: readonly string[], right: readonly string[]): boolean {

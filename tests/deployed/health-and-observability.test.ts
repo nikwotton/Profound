@@ -102,7 +102,7 @@ deployedTest("deployed signed public canary works directly and through the norma
     isAuthenticated: false,
     shouldRetry: false,
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
   const challengeUrl = new URL("/v1/challenge", environment.metadata.publicCanary).toString();
 
   const direct = signCanaryChallenge(secret, {
@@ -189,7 +189,7 @@ deployedTest("deployed passive traffic reaches the health aggregator through the
     isAuthenticated: false,
     shouldRetry: false,
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
 
   const beforeResponse = await fetchInternal(environment.metadata.healthAggregator, "/v1/status", token);
   const before = ((await beforeResponse.json()) as { snapshot: HealthSnapshot }).snapshot;
@@ -231,7 +231,7 @@ deployedTest("deployed OTLP logs, metrics, traces, and canary security logs arri
     isAuthenticated: false,
     shouldRetry: false,
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
   const routeToken = decodeURIComponent(new URL(route.proxyUrls.http).password);
   const response = await requestViaHttpProxy(
     route.proxyUrls.http,
@@ -252,7 +252,7 @@ deployedTest("deployed OTLP logs, metrics, traces, and canary security logs arri
     "proxy OTLP logs in Axiom",
     async () => {
       const logs = await axiomDatasetText(environment.metadata.telemetry.datasets.logs, startedAt);
-      return logs.includes(route.route.id) && logs.includes(customer) ? logs : undefined;
+      return logs.includes(route.profile.id) && logs.includes(customer) ? logs : undefined;
     },
     { timeoutMs: 180_000, intervalMs: 5_000 },
   );
@@ -295,7 +295,7 @@ deployedTest("deployed OTLP logs, metrics, traces, and canary security logs arri
     "OTLP spans in Axiom",
     async () => {
       const text = await axiomDatasetText(environment.metadata.telemetry.datasets.traces, startedAt);
-      return text.includes(route.route.id) ? text : undefined;
+      return text.includes(route.profile.id) ? text : undefined;
     },
     { timeoutMs: 180_000, intervalMs: 5_000 },
   );

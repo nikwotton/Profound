@@ -104,7 +104,7 @@ function groupValue(record: UsageRecord, groupBy: UsageGroupBy | undefined): str
   if (groupBy === "customer") return record.customerId;
   if (groupBy === "user") return record.userId;
   if (groupBy === "route") return record.routeId;
-  if (groupBy === "country") return record.country;
+  if (groupBy === "country") return record.country ?? "Unknown";
   if (groupBy === "city") return record.city ?? "Unknown";
   return record.outcome;
 }

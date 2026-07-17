@@ -1,6 +1,6 @@
 import { HttpApiBuilder, HttpApiSwagger, HttpServer } from "@effect/platform";
 import { Redacted, Effect, Layer } from "effect";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   AdminAuthorization,
@@ -32,6 +32,8 @@ export interface ControlApiOptions {
 
 type RouteReadError = RouteNotFound | InternalError;
 type RouteCreateError = BadRequest | ServiceUnavailable | InternalError;
+type RouteUpdateError = RouteCreateError | RouteNotFound;
+type AccessGrantCreateError = RouteReadError | ServiceUnavailable;
 
 function secureEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
@@ -47,20 +49,36 @@ function authenticatedUser(token: string, identities: ReadonlyMap<string, string
 }
 
 function createError(error: unknown): RouteCreateError {
-  if (error instanceof ValidationError) return new BadRequest({ code: error.code, message: error.message });
-  if (error instanceof ProviderUnavailableError) {
-    return new ServiceUnavailable({ code: error.code, message: error.message });
+  if (error instanceof ValidationError) {
+    return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
   }
-  return new InternalError({ code: "internal_error", message: "Internal server error" });
+  if (error instanceof ProviderUnavailableError) {
+    return new ServiceUnavailable({ code: error.code, message: error.message, retryable: true, requestId: randomUUID() });
+  }
+  return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
 }
 
 function readError(error: unknown): RouteReadError {
-  if (error instanceof NotFoundError) return new RouteNotFound({ code: error.code, message: error.message });
-  return new InternalError({ code: "internal_error", message: "Internal server error" });
+  if (error instanceof NotFoundError) {
+    return new RouteNotFound({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+  }
+  return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
 }
 
-function internalError(_error: unknown): InternalError {
-  return new InternalError({ code: "internal_error", message: "Internal server error" });
+function updateError(error: unknown): RouteUpdateError {
+  return error instanceof NotFoundError ? readError(error) : createError(error);
+}
+
+function accessGrantCreateError(error: unknown): AccessGrantCreateError {
+  if (error instanceof NotFoundError) return readError(error);
+  if (error instanceof ProviderUnavailableError) {
+    return new ServiceUnavailable({ code: error.code, message: error.message, retryable: true, requestId: randomUUID() });
+  }
+  return internalError();
+}
+
+function internalError(): InternalError {
+  return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
 }
 
 function makeHandler(routes: RouteService, options: ControlApiOptions) {
@@ -68,7 +86,14 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
     bearer: (token) => {
       const userId = authenticatedUser(Redacted.value(token), options.controlIdentities);
       return userId === undefined
-        ? Effect.fail(new Unauthorized({ code: "unauthorized", message: "Administrator bearer token required" }))
+        ? Effect.fail(
+            new Unauthorized({
+              code: "unauthorized",
+              message: "Administrator bearer token required",
+              retryable: false,
+              requestId: randomUUID(),
+            }),
+          )
         : Effect.succeed({ userId });
     },
   });
@@ -79,59 +104,78 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
       .handle("ready", () =>
         Effect.tryPromise({
           try: () => routes.ready(),
-          catch: () => new ServiceUnavailable({ code: "not_ready", message: "Provider readiness check failed" }),
+          catch: () =>
+            new ServiceUnavailable({
+              code: "not_ready",
+              message: "Service readiness check failed",
+              retryable: true,
+              requestId: randomUUID(),
+            }),
         }).pipe(
           Effect.flatMap((ready) =>
             ready
               ? Effect.succeed({ status: "ready" as const })
-              : Effect.fail(new ServiceUnavailable({ code: "not_ready", message: "One or more providers are unavailable" })),
+              : Effect.fail(
+                  new ServiceUnavailable({
+                    code: "not_ready",
+                    message: "The proxy service is not ready",
+                    retryable: true,
+                    requestId: randomUUID(),
+                  }),
+                ),
           ),
           Effect.withSpan("control.health.ready"),
         ),
       ),
   );
 
-  const RoutesLive = HttpApiBuilder.group(ControlApi, "routes", (handlers) =>
+  const ProfilesLive = HttpApiBuilder.group(ControlApi, "profiles", (handlers) =>
     handlers
-      .handle("createRoute", ({ payload }) =>
+      .handle("createProfile", ({ payload }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
           Effect.tryPromise({
-            try: () => routes.create(payload, identity.userId),
+            try: async () => ({ profileId: (await routes.create(payload, identity.userId)).profileId }),
             catch: createError,
           }),
-        ).pipe(Effect.withSpan("control.routes.create")),
+        ).pipe(Effect.withSpan("control.profiles.create")),
       )
-      .handle("listRoutes", () =>
-        Effect.tryPromise({
-          try: async () => ({ data: await routes.list() }),
-          catch: internalError,
-        }).pipe(Effect.withSpan("control.routes.list")),
-      )
-      .handle("getRoute", ({ path }) =>
-        Effect.tryPromise({
-          try: async () => ({ route: await routes.get(path.id) }),
-          catch: readError,
-        }).pipe(Effect.withSpan("control.routes.get", { attributes: { "proxy.route.id": path.id } })),
-      )
-      .handle("deleteRoute", ({ path }) =>
-        Effect.tryPromise({
-          try: () => routes.delete(path.id),
-          catch: readError,
-        }).pipe(Effect.withSpan("control.routes.delete", { attributes: { "proxy.route.id": path.id } })),
-      )
-      .handle("rotateRoute", ({ path }) =>
+      .handle("listProfiles", () =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
           Effect.tryPromise({
-            try: async () => ({ route: await routes.rotate(path.id, identity.userId) }),
+            try: async () => ({ data: await routes.list(identity.userId) }),
+            catch: internalError,
+          }),
+        ).pipe(Effect.withSpan("control.profiles.list")),
+      )
+      .handle("getProfile", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          Effect.tryPromise({
+            try: async () => ({ profile: await routes.get(path.id, identity.userId) }),
             catch: readError,
           }),
-        ).pipe(Effect.withSpan("control.routes.rotate", { attributes: { "proxy.route.id": path.id } })),
+        ).pipe(Effect.withSpan("control.profiles.get", { attributes: { "proxy.route.id": path.id } })),
+      )
+      .handle("updateProfile", ({ path, payload }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          Effect.tryPromise({
+            try: async () => ({ profile: await routes.update(path.id, payload, identity.userId) }),
+            catch: updateError,
+          }),
+        ).pipe(Effect.withSpan("control.profiles.update", { attributes: { "proxy.route.id": path.id } })),
+      )
+      .handle("deleteProfile", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          Effect.tryPromise({
+            try: () => routes.delete(path.id, identity.userId),
+            catch: readError,
+          }),
+        ).pipe(Effect.withSpan("control.profiles.delete", { attributes: { "proxy.route.id": path.id } })),
       )
       .handle("createAccessGrant", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
           Effect.tryPromise({
             try: () => routes.createAccessGrant(path.id, identity.userId),
-            catch: readError,
+            catch: accessGrantCreateError,
           }),
         ).pipe(Effect.withSpan("control.access_grants.create", { attributes: { "proxy.route.id": path.id } })),
       )
@@ -142,6 +186,14 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
             catch: readError,
           }),
         ).pipe(Effect.withSpan("control.access_grants.list", { attributes: { "proxy.route.id": path.id } })),
+      )
+      .handle("getAccessGrant", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          Effect.tryPromise({
+            try: async () => ({ grant: await routes.getAccessGrant(path.grantId, identity.userId) }),
+            catch: readError,
+          }),
+        ).pipe(Effect.withSpan("control.access_grants.get", { attributes: { "proxy.access_grant.id": path.grantId } })),
       )
       .handle("rotateAccessGrantCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
@@ -161,6 +213,32 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
           Effect.withSpan("control.access_grants.emergency_rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } }),
         ),
       )
+      .handle("getAccessGrantCredential", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          Effect.tryPromise({
+            try: async () => ({
+              credential: await routes.getAccessGrantCredential(path.grantId, path.credentialId, identity.userId),
+            }),
+            catch: readError,
+          }),
+        ).pipe(
+          Effect.withSpan("control.access_grants.get_credential", {
+            attributes: { "proxy.access_grant.id": path.grantId },
+          }),
+        ),
+      )
+      .handle("revokeAccessGrantCredential", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          Effect.tryPromise({
+            try: () => routes.revokeAccessGrantCredential(path.grantId, path.credentialId, identity.userId),
+            catch: readError,
+          }),
+        ).pipe(
+          Effect.withSpan("control.access_grants.revoke_credential", {
+            attributes: { "proxy.access_grant.id": path.grantId },
+          }),
+        ),
+      )
       .handle("revokeAccessGrant", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
           Effect.tryPromise({
@@ -168,62 +246,10 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
             catch: readError,
           }),
         ).pipe(Effect.withSpan("control.access_grants.revoke", { attributes: { "proxy.access_grant.id": path.grantId } })),
-      )
-      .handle("releaseAccessGrantLease", ({ path }) =>
-        Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.releaseDeviceLease(path.grantId, identity.userId),
-            catch: readError,
-          }),
-        ).pipe(Effect.withSpan("control.access_grants.release_lease", { attributes: { "proxy.access_grant.id": path.grantId } })),
-      )
-      .handle("emergencyRevokeAccessGrant", ({ path }) =>
-        Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.revokeAccessGrant(path.grantId, identity.userId, true),
-            catch: readError,
-          }),
-        ).pipe(Effect.withSpan("control.access_grants.emergency_revoke", { attributes: { "proxy.access_grant.id": path.grantId } })),
-      )
-      .handle("emergencyRevokeRoute", ({ path }) =>
-        Effect.tryPromise({
-          try: () => routes.emergencyRevoke(path.id),
-          catch: readError,
-        }).pipe(Effect.withSpan("control.routes.emergency_revoke", { attributes: { "proxy.route.id": path.id } })),
       ),
   ).pipe(Layer.provide(AuthorizationLive));
 
-  const ProvidersLive = HttpApiBuilder.group(ControlApi, "providers", (handlers) =>
-    handlers
-      .handle("providerDescriptors", () =>
-        Effect.succeed({
-          data: routes.descriptors().map((descriptor) => {
-            const { clientProtocols, upstreamProtocols, geography, rotation, countries, targetPorts, ...capabilities } =
-              descriptor.capabilities;
-            return {
-              ...descriptor,
-              capabilities: {
-                ...capabilities,
-                clientProtocols: [...clientProtocols],
-                upstreamProtocols: [...upstreamProtocols],
-                geography: [...geography],
-                rotation: [...rotation],
-                targetPorts: targetPorts === "any_public" ? targetPorts : [...targetPorts],
-                ...(countries === undefined ? {} : { countries: [...countries] }),
-              },
-            };
-          }),
-        }).pipe(Effect.withSpan("control.providers.descriptors")),
-      )
-      .handle("providerHealth", () =>
-        Effect.tryPromise({
-          try: async () => ({ data: await routes.refreshHealth() }),
-          catch: internalError,
-        }).pipe(Effect.withSpan("control.providers.health")),
-      ),
-  ).pipe(Layer.provide(AuthorizationLive));
-
-  const ApiLive = HttpApiBuilder.api(ControlApi).pipe(Layer.provide([HealthLive, RoutesLive, ProvidersLive]));
+  const ApiLive = HttpApiBuilder.api(ControlApi).pipe(Layer.provide([HealthLive, ProfilesLive]));
   const DocumentationLive = Layer.mergeAll(
     HttpApiSwagger.layer({ path: "/docs" }),
     HttpApiBuilder.middlewareOpenApi({ path: "/openapi.json" }),
@@ -254,9 +280,9 @@ function requestHostname(hostHeader: string | undefined): string | undefined {
   }
 }
 
-function rewriteCreatedRouteHost(body: Buffer, hostname: string): Buffer {
+function rewriteIssuedCredentialHost(body: Buffer, hostname: string): Buffer {
   const payload = JSON.parse(body.toString("utf8")) as {
-    proxyUrls?: { http?: string; socks5?: string };
+    endpoints?: { http?: string; socks5?: string };
   };
   const rewrite = (value: string | undefined): string | undefined => {
     if (value === undefined) return undefined;
@@ -264,11 +290,11 @@ function rewriteCreatedRouteHost(body: Buffer, hostname: string): Buffer {
     url.hostname = hostname;
     return url.toString();
   };
-  if (payload.proxyUrls !== undefined) {
-    const http = rewrite(payload.proxyUrls.http);
-    const socks5 = rewrite(payload.proxyUrls.socks5);
-    if (http !== undefined) payload.proxyUrls.http = http;
-    if (socks5 !== undefined) payload.proxyUrls.socks5 = socks5;
+  if (payload.endpoints !== undefined) {
+    const http = rewrite(payload.endpoints.http);
+    const socks5 = rewrite(payload.endpoints.socks5);
+    if (http !== undefined) payload.endpoints.http = http;
+    if (socks5 !== undefined) payload.endpoints.socks5 = socks5;
   }
   return Buffer.from(JSON.stringify(payload));
 }
@@ -330,20 +356,20 @@ export class ControlApiServer {
         ...(body === undefined ? {} : { body }),
       });
       const webResponse = await this.#handler(webRequest);
-      let responseBody: Buffer<ArrayBufferLike> = Buffer.from(await webResponse.arrayBuffer());
+      let responseBody: Buffer = Buffer.from(await webResponse.arrayBuffer());
       const responseHeaders = Object.fromEntries(webResponse.headers.entries());
       if (
         this.options.advertisedProxyHostFromRequest &&
         request.method === "POST" &&
-        (pathname === "/v1/routes" ||
-          pathname.endsWith("/access-grants") ||
+        (pathname === "/v1/profiles" ||
+          pathname.endsWith("/grants") ||
           pathname.endsWith("/credentials/rotate") ||
           pathname.endsWith("/credentials/emergency-rotate")) &&
         (webResponse.status === 200 || webResponse.status === 201)
       ) {
         const hostname = requestHostname(request.headers.host);
         if (hostname !== undefined) {
-          responseBody = rewriteCreatedRouteHost(responseBody, hostname);
+          responseBody = rewriteIssuedCredentialHost(responseBody, hostname);
           delete responseHeaders["content-length"];
         }
       }

@@ -103,17 +103,16 @@ export interface DeployedEnvironment {
 }
 
 export interface CreatedRouteResponse {
-  route: PublicRoute;
-  accessGrant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential;
+  profile: PublicRoute & { id: string };
+  accessGrant: PublicAccessGrant & { id: string; routeId: string };
+  credential: PublicAccessGrantCredential & { id: string };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
 }
 
 export interface PublicAccessGrant {
-  id: string;
-  routeId: string;
-  principalId: string;
+  grantId: string;
+  profileId: string;
   status: "ready" | "revoked";
   credentials: PublicAccessGrantCredential[];
   createdAt: string;
@@ -121,7 +120,8 @@ export interface PublicAccessGrant {
 }
 
 export interface PublicAccessGrantCredential {
-  id: string;
+  credentialId: string;
+  username: string;
   status: "active" | "overlap" | "revoked" | "expired";
   createdAt: string;
   renewalDueAt: string;
@@ -132,26 +132,52 @@ export interface PublicAccessGrantCredential {
 }
 
 export interface IssuedAccessGrantResponse {
-  accessGrant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential;
-  proxyUsername: string;
-  proxyUrls: { http: string; socks5: string };
+  grant: PublicAccessGrant;
+  credential: PublicAccessGrantCredential & { password: string };
+  endpoints: { http: string; socks5: string };
 }
 
 export interface PublicRoute {
-  id: string;
-  name: string;
-  provider: "bright_data" | "proxidize";
+  profileId: string;
   status: "ready" | "rotating" | "failed" | "revoked";
-  userId: string;
   customerId: string;
-  allowedProtocols: Array<"http" | "https" | "socks5">;
-  isAuthenticated: boolean;
-  shouldRetry: boolean;
-  targeting: Record<string, unknown>;
-  rotation: { mode: string; intervalSeconds?: number };
-  session: { mode: string; id?: string; requireGeographicContinuity: boolean };
-  retryPolicy: { maxAttempts: number };
+  geography?: { countryCode?: string; regionCode?: string; city?: string };
+  carrier?: string;
+  isTargetAuthenticated: boolean;
+  allowConnectionRetry: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+type LegacyTestProfileInput = Partial<RouteProfileInput> & {
+  name?: string;
+  targeting?: { country?: string; region?: string; city?: string; carrier?: string; postalCode?: string; asn?: number };
+  rotation?: { mode: string; intervalSeconds?: number };
+  session?: unknown;
+  allowedProtocols?: unknown;
+  retryPolicy?: unknown;
+  isAuthenticated?: boolean;
+  shouldRetry?: boolean;
+};
+
+function canonicalTestProfile(input: LegacyTestProfileInput): RouteProfileInput {
+  const { targeting, isAuthenticated, shouldRetry, ...profile } = input;
+  const carrier = profile.carrier ?? targeting?.carrier;
+  const geography =
+    targeting === undefined
+      ? profile.geography
+      : {
+          ...(targeting.country === undefined ? {} : { countryCode: targeting.country }),
+          ...(targeting.region === undefined ? {} : { regionCode: targeting.region }),
+          ...(targeting.city === undefined ? {} : { city: targeting.city }),
+        };
+  return {
+    customerId: profile.customerId ?? `deployed-test-${Date.now()}`,
+    ...(geography === undefined ? {} : { geography }),
+    ...(carrier === undefined ? {} : { carrier }),
+    isTargetAuthenticated: profile.isTargetAuthenticated ?? isAuthenticated ?? false,
+    allowConnectionRetry: profile.allowConnectionRetry ?? shouldRetry ?? false,
+  };
 }
 
 export interface ProxyResponse {
@@ -257,35 +283,39 @@ export async function controlRequest(path: string, init: RequestInit = {}, token
   });
 }
 
-export async function createRoute(
-  profile: Omit<RouteProfileInput, "customerId" | "isAuthenticated" | "shouldRetry"> &
-    Partial<Pick<RouteProfileInput, "customerId" | "isAuthenticated" | "shouldRetry">>,
-): Promise<CreatedRouteResponse> {
-  const response = await controlRequest("/v1/routes", {
+export async function createRoute(profile: LegacyTestProfileInput): Promise<CreatedRouteResponse> {
+  const response = await controlRequest("/v1/profiles", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      customerId: `deployed-test-${Date.now()}`,
-      isAuthenticated: false,
-      shouldRetry: false,
-      ...profile,
-    }),
+    body: JSON.stringify(canonicalTestProfile(profile)),
   });
   if (response.status !== 201) throw new Error(`Route creation failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as CreatedRouteResponse;
+  const { profileId } = (await response.json()) as { profileId: string };
+  const [profileResponse, grantResponse] = await Promise.all([
+    controlRequest(`/v1/profiles/${profileId}`),
+    controlRequest(`/v1/profiles/${profileId}/grants`, { method: "POST" }),
+  ]);
+  if (!profileResponse.ok || grantResponse.status !== 201) throw new Error("Profile setup failed");
+  const publicProfile = ((await profileResponse.json()) as { profile: PublicRoute }).profile;
+  const issued = (await grantResponse.json()) as IssuedAccessGrantResponse;
+  return {
+    profile: { ...publicProfile, id: profileId },
+    accessGrant: {
+      ...issued.grant,
+      id: issued.grant.grantId,
+      routeId: issued.grant.profileId,
+    },
+    credential: { ...issued.credential, id: issued.credential.credentialId },
+    proxyUsername: issued.credential.username,
+    proxyUrls: {
+      http: proxyWithCredentials(issued.endpoints.http, issued.credential.username, issued.credential.password),
+      socks5: proxyWithCredentials(issued.endpoints.socks5, issued.credential.username, issued.credential.password),
+    },
+  };
 }
 
 export async function revokeRoute(id: string): Promise<void> {
-  const grants = await controlRequest(`/v1/routes/${encodeURIComponent(id)}/access-grants`).catch(() => undefined);
-  if (grants?.ok) {
-    const payload = (await grants.json()) as { data?: PublicAccessGrant[] };
-    await Promise.all(
-      (payload.data ?? []).map((grant) =>
-        controlRequest(`/v1/access-grants/${encodeURIComponent(grant.id)}/release`, { method: "POST" }).catch(() => undefined),
-      ),
-    );
-  }
-  const response = await controlRequest(`/v1/routes/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const response = await controlRequest(`/v1/profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (response.status !== 204 && response.status !== 200) {
     throw new Error(`Route revocation failed: ${response.status} ${await response.text()}`);
   }
@@ -582,10 +612,10 @@ export async function waitForRouteStatus(id: string, expected: string): Promise<
   return await waitFor(
     `route ${id} to become ${expected}`,
     async () => {
-      const response = await controlRequest(`/v1/routes/${encodeURIComponent(id)}`);
+      const response = await controlRequest(`/v1/profiles/${encodeURIComponent(id)}`);
       if (!response.ok) return undefined;
-      const body = (await response.json()) as { route: PublicRoute };
-      return body.route.status === expected ? body.route : undefined;
+      const body = (await response.json()) as { profile: PublicRoute };
+      return body.profile.status === expected ? body.profile : undefined;
     },
     { timeoutMs: 30_000, intervalMs: 250 },
   );

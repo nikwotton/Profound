@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHzS0Fg7V5rLhZMZRHkGXwk92af1s8LcaaZWCJ2o5lMH86MzdV_Lesl3xhswzeolZ58c-LZXftFrSZYV1byv6X0bV1xfpimm5VMYbXs";
+  "ALtnJHx04oYTLZd70PIxESYrlwdoKvNMTAyrUvTPb1gP6dp-UMIfKzOjPMsoDyde16hG8ygO8FdOhLtgyfrvkX0ljyfV0OdHbNqaUXuCVCA";
 
 export interface SpecCoverage {
   id: string;
@@ -17,7 +17,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     section: 1,
     requirement: "Provider-neutral service credentials and adapter-hidden vendor details",
     deployed: [
-      "deployed control plane exposes liveness, readiness, OpenAPI, providers, and health",
+      "deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI",
       "deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles",
     ],
     offline: [],
@@ -51,7 +51,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     section: 2,
     requirement: "SOCKS5 BIND and UDP are rejected",
     deployed: ["deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic"],
-    offline: ["SOCKS5 rejects unsupported commands and route-level protocol exclusions"],
+    offline: ["SOCKS5 rejects unsupported commands"],
   },
   {
     id: "3.component-separation",
@@ -84,18 +84,22 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "4.route-fields",
     section: 4,
-    requirement: "Protocol, customer, geography, carrier, session, authenticated, retry, and force-provider fields are represented",
+    requirement:
+      "Profile input contains only customer, optional geography/carrier, target-authenticated intent, and connection-retry intent",
     deployed: [
       "deployed route management rejects untrusted and malformed requests",
-      "deployed control plane exposes liveness, readiness, OpenAPI, providers, and health",
+      "deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI",
     ],
-    offline: ["route validation supplies behavior defaults and normalizes countries"],
+    offline: [
+      "profile validation accepts only stable requirements and derives routing behavior",
+      "profile validation rejects missing authenticated geography and every non-canonical field",
+    ],
   },
   {
     id: "4.control-contract",
     section: 4,
     requirement: "Effect HttpApi schemas generate and publish a versioned, language-neutral OpenAPI control-plane contract",
-    deployed: ["deployed control plane exposes liveness, readiness, OpenAPI, providers, and health"],
+    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: ["versioned OpenAPI artifact stays synchronized with Effect schemas and excludes data-plane protocols"],
   },
   {
@@ -133,18 +137,11 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: ["authenticated CONNECT failover preserves the route's exact city"],
   },
   {
-    id: "4.force-provider",
+    id: "4.profile-updates",
     section: 4,
-    requirement: "forceProvider is optional and prevents cross-provider fallback",
-    deployed: ["deployed Bright Data routes support fresh, interval, manual, and authenticated exact-city policies"],
-    offline: ["authenticated routes prefer Proxidize and may explicitly use Bright Data"],
-  },
-  {
-    id: "4.immutable-targeting",
-    section: 4,
-    requirement: "Route targeting changes require a new route",
+    requirement: "Profile updates replace routing requirements for new connections while established traffic continues",
     deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
-    offline: [],
+    offline: ["profile updates apply to new connections without replacing access-grant credentials or exposing providers"],
   },
   {
     id: "4.credential-lifecycle",
@@ -156,7 +153,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
       "route profiles contain no credential verifier and access grants rotate and revoke independently",
       "mobile device leases are isolated by access grant and survive credential rotation",
       "routine revocation preserves active work and emergency revocation raises the kill switch",
-      "routine access-grant revocation preserves an established tunnel while emergency revocation terminates it",
+      "credential metadata is inspectable and each credential can be revoked independently",
     ],
   },
   {
@@ -164,19 +161,19 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     section: 5,
     requirement: "Provider capabilities, not intended use alone, determine authenticated and unauthenticated eligibility",
     deployed: [
-      "deployed Bright Data routes support fresh, interval, manual, and authenticated exact-city policies",
+      "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
       "deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city",
     ],
-    offline: ["authenticated routes prefer Proxidize and may explicitly use Bright Data"],
+    offline: ["authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider"],
   },
   {
     id: "5.availability-and-capacity",
     section: 5,
     requirement: "A provider and candidate are eligible only when operational, available, and compatible with every route constraint",
-    deployed: ["deployed control plane exposes liveness, readiness, OpenAPI, providers, and health"],
+    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: [
       "an unhealthy assigned mobile device fails over within the route's exact city",
-      "route validation rejects incompatible mobile and ZIP policies",
+      "profile validation rejects missing authenticated geography and every non-canonical field",
     ],
   },
   {
@@ -185,11 +182,11 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     requirement:
       "Authenticated routes order all device-backed providers before residential providers and unauthenticated routes use the reverse order",
     deployed: [
-      "deployed Bright Data routes support fresh, interval, manual, and authenticated exact-city policies",
+      "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
       "deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city",
     ],
     offline: [
-      "authenticated routes prefer Proxidize and may explicitly use Bright Data",
+      "authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider",
       "capability health follows preferred provider classes without penalizing a healthy preferred class",
     ],
   },
@@ -198,24 +195,24 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     section: 5,
     requirement: "Try same-provider candidates before up to three providers with bounded candidate counts",
     deployed: [],
-    offline: ["CONNECT exhausts two peers in the selected provider before cross-provider failover"],
+    offline: ["unauthenticated CONNECT exhausts residential peers without an incompatible device fallback"],
   },
   {
     id: "5.exact-city-levels",
     section: 5,
     requirement: "Exact-city support is guaranteed, verifiable, or unsupported with a two-candidate verification budget",
-    deployed: ["deployed control plane exposes liveness, readiness, OpenAPI, providers, and health"],
-    offline: ["route validation rejects incompatible mobile and ZIP policies"],
+    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
+    offline: ["profile validation rejects missing authenticated geography and every non-canonical field"],
   },
   {
     id: "5.rotation-control",
     section: 5,
-    requirement: "Provider-managed rotation is disabled and service rotation is explicit or scheduled",
+    requirement: "Provider-specific rotation remains internal and grant affinity is stable for authenticated targets",
     deployed: [
-      "deployed Bright Data routes support fresh, interval, manual, and authenticated exact-city policies",
+      "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
       "deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city",
     ],
-    offline: ["scheduled mobile rotation retains the assigned device and region"],
+    offline: ["mobile grants preserve affinity and distribute devices"],
   },
   {
     id: "5.commit-boundary",
@@ -254,7 +251,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "6.bright-data",
     section: 6,
     requirement: "Bright Data implements targeting, sessions, rotation, usage dimensions, and opaque assignment evidence",
-    deployed: ["deployed Bright Data routes support fresh, interval, manual, and authenticated exact-city policies"],
+    deployed: ["deployed Bright Data routes support fresh exits and authenticated exact-city policies"],
     offline: ["Bright Data credentials encode targeting and pin each per-request candidate to a unique constant session"],
   },
   {
@@ -262,13 +259,13 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     section: 6,
     requirement: "Proxidize implements inventory, credentials, location, device capacity, health, and rotation",
     deployed: ["deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city"],
-    offline: ["mobile routes preserve affinity, rotate in-region, and distribute new routes"],
+    offline: ["mobile grants preserve affinity and distribute devices"],
   },
   {
     id: "6.provider-metadata",
     section: 6,
     requirement: "Capabilities, health, pricing, usage, and assignment evidence use APIs or versioned configuration",
-    deployed: ["deployed control plane exposes liveness, readiness, OpenAPI, providers, and health"],
+    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: ["Bright Data health uses the authenticated residential network-status API when configured"],
   },
   {
@@ -354,9 +351,12 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "7.destination-resolution",
     section: 7,
     requirement:
-      "Traces and logs capture provider and local destination resolution, divergence, verification availability, and unsafe-result warnings",
+      "Traces and logs capture provider and local destination resolution, divergence, verification availability, warnings, and verified unsafe-result rejection",
     deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
-    offline: ["provider-side DNS remains authoritative while local and provider observations are diagnostic"],
+    offline: [
+      "provider-side DNS remains authoritative while local and provider observations are diagnostic",
+      "verified provider-side private resolution is rejected while unavailable evidence remains best effort",
+    ],
   },
   {
     id: "7.axiom-backend",
@@ -410,15 +410,18 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "7.public-only",
     section: 7,
     requirement:
-      "Explicit private, special-purpose, metadata, and disallowed-port targets are rejected without making local DNS authoritative",
-    deployed: ["deployed gateways enforce route protocols, public destinations, ports, and credential-free targets"],
-    offline: ["literal target validation blocks explicit private, metadata, and reserved addresses without using local DNS for routing"],
+      "Public-only enforcement is best effort: explicit unsafe literals and ports are rejected, verified unsafe provider resolutions are rejected, and opaque provider DNS proceeds as though safe",
+    deployed: ["deployed gateways enforce public destinations, ports, and credential-free targets"],
+    offline: [
+      "literal target validation blocks explicit private, metadata, and reserved addresses without using local DNS for routing",
+      "verified provider-side private resolution is rejected while unavailable evidence remains best effort",
+    ],
   },
   {
     id: "7.provider-dns",
     section: 7,
     requirement:
-      "Every upstream connection preserves domain targets for provider-side resolution while local DNS is non-blocking observation only",
+      "Every upstream connection preserves domain targets for provider-side resolution while local DNS remains non-blocking and unavailable provider evidence does not block v0",
     deployed: [
       "deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body",
       "deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic",
@@ -441,7 +444,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     requirement: "Redirects remain caller-owned and every follow-up request is independently validated",
     deployed: [
       "deployed target statuses and redirects remain caller-owned and are never replayed",
-      "deployed gateways enforce route protocols, public destinations, ports, and credential-free targets",
+      "deployed gateways enforce public destinations, ports, and credential-free targets",
     ],
     offline: [],
   },
@@ -491,7 +494,8 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "8.canary-control",
     section: 8,
-    requirement: "Signed canary returns observed egress and direct control distinguishes proxy-path failures",
+    requirement:
+      "Signed canary returns observed egress, timestamp, and challenge correlation while direct control distinguishes proxy-path failures",
     deployed: ["deployed signed public canary works directly and through the normal proxy path without replay"],
     offline: ["signed synthetic probe uses the normal proxy path and a direct control on proxy failure"],
   },
@@ -648,7 +652,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "10.adapter-extensibility",
     section: 10,
     requirement: "New adapters declare normalized protocol, geography, session, DNS, usage, pricing, and health capabilities",
-    deployed: ["deployed control plane exposes liveness, readiness, OpenAPI, providers, and health"],
+    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: ["Effect generates a complete secured OpenAPI contract from the control API"],
   },
   {

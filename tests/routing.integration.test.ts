@@ -10,13 +10,13 @@ import {
   createRoute,
   exchangeViaHttpConnect,
   exchangeViaSocks5,
+  materializeIssuedAccessGrant,
   requestViaProxy,
   socks5AuthenticationStatus,
   startEchoTarget,
   startHttpTarget,
   startTestApp,
-  waitForRouteStatus,
-  type CreatedRouteResponse,
+  type IssuedAccessGrantApiResponse,
 } from "./helpers.js";
 
 async function readHttpHead(socket: Socket): Promise<string> {
@@ -28,7 +28,7 @@ async function readHttpHead(socket: Socket): Promise<string> {
   return buffer.toString("latin1");
 }
 
-test("residential routes rotate per request and preserve timed sessions", async (t) => {
+test("unauthenticated profiles use fresh residential exits per request", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -37,25 +37,13 @@ test("residential routes rotate per request and preserve timed sessions", async 
 
   const rotating = await createRoute(testApp.application, {
     name: "rotating",
-    targeting: { country: "US", postalCode: "10001", asn: 12_345 },
-    rotation: { mode: "per_request" },
+    targeting: { country: "US" },
   });
   const first = await requestViaProxy(rotating.proxyUrls.http, target.url);
   const second = await requestViaProxy(rotating.proxyUrls.http, target.url);
   assert.equal(first.status, 200);
   assert.equal(JSON.parse(first.body).body, "target-response");
   assert.notEqual(first.headers["x-mock-exit-ip"], second.headers["x-mock-exit-ip"]);
-  assert.equal(first.headers["x-mock-postal-code"], "10001");
-  assert.equal(first.headers["x-mock-asn"], "12345");
-
-  const timed = await createRoute(testApp.application, {
-    name: "timed",
-    targeting: { country: "US", region: "NY" },
-    rotation: { mode: "interval", intervalSeconds: 60 },
-  });
-  const timedFirst = await requestViaProxy(timed.proxyUrls.http, target.url);
-  const timedSecond = await requestViaProxy(timed.proxyUrls.http, target.url);
-  assert.equal(timedFirst.headers["x-mock-exit-ip"], timedSecond.headers["x-mock-exit-ip"]);
 });
 
 test("plain HTTP preserves method, path, headers, and streamed body", async (t) => {
@@ -200,7 +188,7 @@ test("plain HTTP provider statuses are returned without failover", async (t) => 
   assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
 });
 
-test("authenticated routes prefer Proxidize and may explicitly use Bright Data", async (t) => {
+test("authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -221,22 +209,25 @@ test("authenticated routes prefer Proxidize and may explicitly use Bright Data",
   assert.equal(failedOver.status, 502);
   testApp.application.simulators?.proxidize.setFailure(null);
 
-  const forced = await createRoute(testApp.application, {
+  const eligible = await createRoute(testApp.application, {
     name: "authenticated-bright-data",
-    targeting: { country: "US", region: "NY", city: "New York" },
+    targeting: { country: "GB", city: "London" },
     isAuthenticated: true,
     shouldRetry: false,
-    forceProvider: "bright_data",
     rotation: { mode: "per_request" },
   });
-  const explicitFirst = await requestViaProxy(forced.proxyUrls.http, target.url);
-  const explicitSecond = await requestViaProxy(forced.proxyUrls.http, target.url);
-  assert.equal(explicitFirst.status, 200);
-  assert.equal(explicitFirst.headers["x-mock-endpoint-id"], "bright-data-superproxy");
-  assert.notEqual(explicitFirst.headers["x-mock-exit-ip"], explicitSecond.headers["x-mock-exit-ip"]);
+  const eligibleFirst = await requestViaProxy(eligible.proxyUrls.http, target.url);
+  const eligibleSecond = await requestViaProxy(eligible.proxyUrls.http, target.url);
+  assert.equal(eligibleFirst.status, 200);
+  assert.equal(eligibleFirst.headers["x-mock-endpoint-id"], "bright-data-superproxy");
+  assert.equal(
+    eligibleFirst.headers["x-mock-exit-ip"],
+    eligibleSecond.headers["x-mock-exit-ip"],
+    "authenticated Bright Data traffic uses a stable internal session",
+  );
 });
 
-test("CONNECT exhausts two peers in the selected provider before cross-provider failover", async (t) => {
+test("unauthenticated CONNECT exhausts residential peers without an incompatible device fallback", async (t) => {
   const echo = await startEchoTarget();
   const lines: string[] = [];
   const logger = {
@@ -258,14 +249,14 @@ test("CONNECT exhausts two peers in the selected provider before cross-provider 
   });
   testApp.application.simulators?.brightData.setFailure("unavailable");
   const exchange = await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "hierarchical-payload");
-  assert.deepEqual(exchange, { status: 200, body: "hierarchical-payload" });
-  assert.equal(testApp.application.simulators?.proxidize.lastIdentity()?.id, "px-us-ca-1");
+  assert.deepEqual(exchange, { status: 502, body: "" });
+  assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
   const attempts = lines
     .map((line) => JSON.parse(line) as { message: string; context?: { provider?: string } })
     .filter((entry) => entry.message === "Proxy tunnel establishment failed" || entry.message === "Proxy tunnel opened")
     .map((entry) => entry.context?.provider)
     .filter((provider): provider is string => provider !== undefined);
-  assert.deepEqual(attempts, ["bright_data", "bright_data", "proxidize"]);
+  assert.deepEqual(attempts, ["bright_data", "bright_data"]);
 });
 
 test("authenticated CONNECT failover preserves the route's exact city", async (t) => {
@@ -314,7 +305,7 @@ test("candidate establishment enforces per-attempt and overall deadlines without
   assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
 });
 
-test("mobile routes preserve affinity, rotate in-region, and distribute new routes", async (t) => {
+test("mobile grants preserve affinity and distribute devices", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -339,14 +330,40 @@ test("mobile routes preserve affinity, rotate in-region, and distribute new rout
   const stable = await requestViaProxy(firstRoute.proxyUrls.http, target.url);
   assert.equal(before.headers["x-mock-exit-ip"], stable.headers["x-mock-exit-ip"]);
   assert.equal(before.headers["x-mock-region"], "NY");
+});
 
-  const rotateResponse = await controlRequest(testApp.application, `/v1/routes/${firstRoute.route.id}/rotate`, { method: "POST" });
-  assert.equal(rotateResponse.status, 202);
-  await waitForRouteStatus(testApp.application, firstRoute.route.id, "ready");
-  const after = await requestViaProxy(firstRoute.proxyUrls.http, target.url);
-  assert.notEqual(before.headers["x-mock-exit-ip"], after.headers["x-mock-exit-ip"]);
-  assert.equal(after.headers["x-mock-region"], "NY");
-  assert.equal(after.headers["x-mock-endpoint-id"], before.headers["x-mock-endpoint-id"]);
+test("profile updates apply to new connections without replacing access-grant credentials or exposing providers", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const created = await createRoute(testApp.application, {
+    name: "updatable-profile",
+    targeting: { country: "US" },
+    rotation: { mode: "per_request" },
+    isAuthenticated: false,
+    shouldRetry: true,
+  });
+  assert.equal((await requestViaProxy(created.proxyUrls.http, target.url)).headers["x-mock-country"], "US");
+
+  const update = await controlRequest(testApp.application, `/v1/profiles/${created.profile.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      customerId: "test-customer",
+      geography: { countryCode: "GB" },
+      isTargetAuthenticated: false,
+      allowConnectionRetry: true,
+    }),
+  });
+  assert.equal(update.status, 200);
+  const updateText = await update.text();
+  assert.doesNotMatch(updateText, /bright_data|proxidize|forceProvider|"provider"/i);
+  const updated = JSON.parse(updateText) as { profile: { profileId: string; geography: { countryCode: string } } };
+  assert.equal(updated.profile.profileId, created.profile.id);
+  assert.equal(updated.profile.geography.countryCode, "GB");
+  assert.equal((await requestViaProxy(created.proxyUrls.http, target.url)).headers["x-mock-country"], "GB");
 });
 
 test("mobile device leases are isolated by access grant and survive credential rotation", async (t) => {
@@ -367,34 +384,32 @@ test("mobile device leases are isolated by access grant and survive credential r
     rotation: { mode: "manual" },
     session: { mode: "sticky", id: "shared-session", requireGeographicContinuity: true },
   });
-  const issueGrant = async (bearerToken = "test-admin-token") => {
+  const issueGrant = async () => {
     const response = await controlRequest(
       testApp.application,
-      `/v1/routes/${first.route.id}/access-grants`,
+      `/v1/profiles/${first.profile.id}/grants`,
       {
         method: "POST",
       },
       true,
-      bearerToken,
     );
     assert.equal(response.status, 201);
-    return (await response.json()) as CreatedRouteResponse;
+    return materializeIssuedAccessGrant((await response.json()) as IssuedAccessGrantApiResponse);
   };
-  const second = await issueGrant("second-token");
-  const third = await issueGrant();
+  const second = await issueGrant();
   const issuedSecrets = [decodeURIComponent(new URL(first.proxyUrls.http).password)];
-  assert.equal(first.accessGrant.principalId, "user-one");
-  assert.equal(second.accessGrant.principalId, "user-two");
+  assert.notEqual(first.proxyUsername, first.accessGrant.id, "proxy usernames remain opaque credential identifiers");
   const firstResponse = await requestViaProxy(first.proxyUrls.http, target.url);
   const secondResponse = await requestViaProxy(second.proxyUrls.http, target.url);
   assert.notEqual(firstResponse.headers["x-mock-endpoint-id"], secondResponse.headers["x-mock-endpoint-id"]);
-  assert.equal((await requestViaProxy(third.proxyUrls.http, target.url)).status, 503);
+  const exhausted = await controlRequest(testApp.application, `/v1/profiles/${first.profile.id}/grants`, { method: "POST" });
+  assert.equal(exhausted.status, 503);
 
-  const rotateCredential = await controlRequest(testApp.application, `/v1/access-grants/${first.accessGrant.id}/credentials/rotate`, {
+  const rotateCredential = await controlRequest(testApp.application, `/v1/grants/${first.accessGrant.id}/credentials/rotate`, {
     method: "POST",
   });
   assert.equal(rotateCredential.status, 200);
-  const rotated = (await rotateCredential.json()) as CreatedRouteResponse;
+  const rotated = materializeIssuedAccessGrant((await rotateCredential.json()) as IssuedAccessGrantApiResponse);
   issuedSecrets.push(decodeURIComponent(new URL(rotated.proxyUrls.http).password));
   assert.equal(rotated.accessGrant.id, first.accessGrant.id);
   assert.equal((await requestViaProxy(first.proxyUrls.http, target.url)).status, 200);
@@ -405,13 +420,11 @@ test("mobile device leases are isolated by access grant and survive credential r
   const rotatedResponse = await requestViaProxy(rotated.proxyUrls.http, target.url);
   assert.equal(rotatedResponse.headers["x-mock-endpoint-id"], firstResponse.headers["x-mock-endpoint-id"]);
 
-  const compromiseRotation = await controlRequest(
-    testApp.application,
-    `/v1/access-grants/${first.accessGrant.id}/credentials/emergency-rotate`,
-    { method: "POST" },
-  );
+  const compromiseRotation = await controlRequest(testApp.application, `/v1/grants/${first.accessGrant.id}/credentials/emergency-rotate`, {
+    method: "POST",
+  });
   assert.equal(compromiseRotation.status, 200);
-  const emergency = (await compromiseRotation.json()) as CreatedRouteResponse;
+  const emergency = materializeIssuedAccessGrant((await compromiseRotation.json()) as IssuedAccessGrantApiResponse);
   issuedSecrets.push(decodeURIComponent(new URL(emergency.proxyUrls.http).password));
   assert.equal((await requestViaProxy(first.proxyUrls.http, target.url)).status, 407);
   assert.equal((await requestViaProxy(rotated.proxyUrls.http, target.url)).status, 407);
@@ -420,38 +433,34 @@ test("mobile device leases are isolated by access grant and survive credential r
     firstResponse.headers["x-mock-endpoint-id"],
   );
 
-  const list = await controlRequest(testApp.application, `/v1/routes/${first.route.id}/access-grants`);
+  const list = await controlRequest(testApp.application, `/v1/profiles/${first.profile.id}/grants`);
   assert.equal(list.status, 200);
   const listed = (await list.json()) as { data: Array<Record<string, unknown>> };
-  assert.equal(listed.data.length, 2);
+  assert.equal(listed.data.length, 3);
+  assert.equal(listed.data.filter((grant) => grant.status === "revoked").length, 1);
   const listedText = JSON.stringify(listed);
   assert.doesNotMatch(listedText, /proxyUrl|proxyPassword|tokenHash|tokenSalt/i);
   assert.match(listedText, /lastUsedAt|renewalDueAt|expiresAt/);
   for (const secret of issuedSecrets) assert.equal(listedText.includes(secret), false);
-  const routeDetail = await controlRequest(testApp.application, `/v1/routes/${first.route.id}`);
-  const routeList = await controlRequest(testApp.application, "/v1/routes");
+  const routeDetail = await controlRequest(testApp.application, `/v1/profiles/${first.profile.id}`);
+  const routeList = await controlRequest(testApp.application, "/v1/profiles");
   const redactedRouteResponses = `${await routeDetail.text()}${await routeList.text()}`;
   for (const secret of issuedSecrets) assert.equal(redactedRouteResponses.includes(secret), false);
-  const secondList = await controlRequest(testApp.application, `/v1/routes/${first.route.id}/access-grants`, {}, true, "second-token");
-  assert.equal(((await secondList.json()) as { data: unknown[] }).data.length, 1);
+  const secondList = await controlRequest(testApp.application, `/v1/profiles/${first.profile.id}/grants`, {}, true, "second-token");
+  assert.equal(secondList.status, 404);
   const crossPrincipalRotation = await controlRequest(
     testApp.application,
-    `/v1/access-grants/${first.accessGrant.id}/credentials/rotate`,
+    `/v1/grants/${first.accessGrant.id}/credentials/rotate`,
     { method: "POST" },
     true,
     "second-token",
   );
   assert.equal(crossPrincipalRotation.status, 404);
 
-  const release = await controlRequest(
-    testApp.application,
-    `/v1/access-grants/${second.accessGrant.id}/release`,
-    { method: "POST" },
-    true,
-    "second-token",
-  );
+  const release = await controlRequest(testApp.application, `/v1/grants/${second.accessGrant.id}`, { method: "DELETE" });
   assert.equal(release.status, 204);
-  const replacementResponse = await requestViaProxy(third.proxyUrls.http, target.url);
+  const replacement = await issueGrant();
+  const replacementResponse = await requestViaProxy(replacement.proxyUrls.http, target.url);
   assert.equal(replacementResponse.headers["x-mock-endpoint-id"], secondResponse.headers["x-mock-endpoint-id"]);
 });
 
@@ -474,30 +483,8 @@ test("an unhealthy assigned mobile device fails over within the route's exact ci
   assert.equal(response.status, 200);
   assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-2");
   assert.equal(response.headers["x-mock-city"], "New York");
-  const publicRoute = await controlRequest(testApp.application, `/v1/routes/${route.route.id}`);
+  const publicRoute = await controlRequest(testApp.application, `/v1/profiles/${route.profile.id}`);
   assert.doesNotMatch(await publicRoute.text(), /px-us-ny-1|endpointId/);
-});
-
-test("scheduled mobile rotation retains the assigned device and region", async (t) => {
-  const target = await startHttpTarget();
-  let now = Date.now();
-  const testApp = await startTestApp([target.port], undefined, undefined, {}, { now: () => now });
-  t.after(async () => {
-    await Promise.all([target.stop(), testApp.stop()]);
-  });
-  const route = await createRoute(testApp.application, {
-    name: "scheduled-mobile",
-    isAuthenticated: true,
-    targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
-    rotation: { mode: "interval", intervalSeconds: 60 },
-  });
-  const before = await requestViaProxy(route.proxyUrls.http, target.url);
-  assert.equal(testApp.application.simulators?.proxidize.devices()[0]?.rotationIntervalSeconds, undefined);
-  now += 61_000;
-  const after = await requestViaProxy(route.proxyUrls.http, target.url);
-  assert.notEqual(before.headers["x-mock-exit-ip"], after.headers["x-mock-exit-ip"]);
-  assert.equal(before.headers["x-mock-endpoint-id"], after.headers["x-mock-endpoint-id"]);
-  assert.equal(after.headers["x-mock-region"], "NY");
 });
 
 test("HTTPS CONNECT tunnels bytes through the selected provider", async (t) => {
@@ -561,22 +548,12 @@ test("SOCKS5 TCP CONNECT uses the same access-grant credentials and preserves do
   assert.equal(exchange.body, "socks5-payload");
 });
 
-test("SOCKS5 rejects unsupported commands and route-level protocol exclusions", async (t) => {
+test("SOCKS5 rejects unsupported commands", async (t) => {
   const echo = await startEchoTarget();
   const testApp = await startTestApp([echo.port]);
   t.after(async () => {
     await Promise.all([echo.stop(), testApp.stop()]);
   });
-  const route = await createRoute(testApp.application, {
-    name: "http-only",
-    allowedProtocols: ["http", "https"],
-    targeting: { country: "US" },
-    isAuthenticated: false,
-    shouldRetry: false,
-  });
-  const disallowed = await exchangeViaSocks5(route.proxyUrls.socks5, "localhost", echo.port, "");
-  assert.equal(disallowed.replyCode, 0x02);
-
   const fullRoute = await createRoute(testApp.application, {
     name: "socks-command",
     targeting: { country: "US" },
@@ -597,7 +574,7 @@ test("route revocation invalidates proxy credentials", async (t) => {
     name: "temporary",
     targeting: { country: "US" },
   });
-  const deletion = await controlRequest(testApp.application, `/v1/routes/${route.route.id}`, { method: "DELETE" });
+  const deletion = await controlRequest(testApp.application, `/v1/profiles/${route.profile.id}`, { method: "DELETE" });
   assert.equal(deletion.status, 204);
   const response = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(response.status, 407);
@@ -605,7 +582,7 @@ test("route revocation invalidates proxy credentials", async (t) => {
   assert.equal(await socks5AuthenticationStatus(route.proxyUrls.socks5), 0x01);
 });
 
-test("routine access-grant revocation preserves an established tunnel while emergency revocation terminates it", async (t) => {
+test("access-grant revocation preserves an established tunnel and rejects new connections", async (t) => {
   const echo = await startEchoTarget();
   const testApp = await startTestApp([echo.port]);
   t.after(async () => {
@@ -625,19 +602,14 @@ test("routine access-grant revocation preserves an established tunnel while emer
   );
   assert.match(await readHttpHead(socket), /^HTTP\/1\.1 200/m);
 
-  const routine = await controlRequest(testApp.application, `/v1/access-grants/${route.accessGrant.id}`, { method: "DELETE" });
+  const routine = await controlRequest(testApp.application, `/v1/grants/${route.accessGrant.id}`, { method: "DELETE" });
   assert.equal(routine.status, 204);
   socket.write("still-active");
   const [echoed] = (await once(socket, "data")) as [Buffer];
   assert.equal(echoed.toString("utf8"), "still-active");
   assert.equal((await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "")).status, 407);
 
-  const closed = once(socket, "close");
-  const emergency = await controlRequest(testApp.application, `/v1/access-grants/${route.accessGrant.id}/emergency-revoke`, {
-    method: "POST",
-  });
-  assert.equal(emergency.status, 204);
-  await closed;
+  socket.destroy();
 });
 
 test("control API rejects unauthorized and malformed route requests", async (t) => {
@@ -646,34 +618,72 @@ test("control API rejects unauthorized and malformed route requests", async (t) 
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
-  const unauthorized = await controlRequest(testApp.application, "/v1/routes", {}, false);
+  const unauthorized = await controlRequest(testApp.application, "/v1/profiles", {}, false);
   assert.equal(unauthorized.status, 401);
-  const invalid = await controlRequest(testApp.application, "/v1/routes", {
+  const invalid = await controlRequest(testApp.application, "/v1/profiles", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name: "bad", isAuthenticated: true, targeting: { country: "MX" } }),
+    body: JSON.stringify({
+      customerId: "bad",
+      geography: { countryCode: "MX" },
+      isTargetAuthenticated: false,
+      allowConnectionRetry: false,
+      rotation: { mode: "manual" },
+    }),
   });
   assert.equal(invalid.status, 400);
+  const invalidBody = (await invalid.json()) as Record<string, unknown>;
+  assert.equal(typeof invalidBody.code, "string");
+  assert.equal(typeof invalidBody.message, "string");
+  assert.equal(typeof invalidBody.retryable, "boolean");
+  assert.equal(typeof invalidBody.requestId, "string");
+  assert.doesNotMatch(JSON.stringify(invalidBody), /bright|proxidize|provider|candidate/i);
 
   const openApi = await controlRequest(testApp.application, "/openapi.json", {}, false);
   assert.equal(openApi.status, 200);
   const specification = (await openApi.json()) as { info: { title: string }; paths: Record<string, unknown> };
   assert.equal(specification.info.title, "Profound Proxy Router Control API");
-  assert.ok(specification.paths["/v1/routes"]);
-  assert.ok(specification.paths["/v1/providers"]);
+  assert.ok(specification.paths["/v1/profiles"]);
+  assert.ok(specification.paths["/v1/profiles/{id}/grants"]);
+  assert.ok(specification.paths["/v1/grants/{grantId}/credentials/{credentialId}"]);
+  assert.equal(specification.paths["/v1/providers"], undefined);
+  assert.equal(specification.paths["/v1/providers/health"], undefined);
 
   const providers = await controlRequest(testApp.application, "/v1/providers");
-  assert.equal(providers.status, 200);
-  const providerBody = await providers.text();
-  assert.match(
-    providerBody,
-    /providerClass|device_backed|residential|dnsResolution|exactCity|assignmentControl|versioned_config|bytes_sent|clientProtocols|upstreamProtocols|socks5/,
-  );
-  assert.doesNotMatch(providerBody, /mock-bright-password|mock-mobile-password/);
+  assert.equal(providers.status, 404);
 
   const documentation = await controlRequest(testApp.application, "/docs", {}, false);
   assert.equal(documentation.status, 200);
   assert.match(await documentation.text(), /swagger-ui/);
+});
+
+test("credential metadata is inspectable and each credential can be revoked independently", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(testApp.application, {
+    customerId: "credential-inspection",
+    geography: { countryCode: "US" },
+    isTargetAuthenticated: false,
+    allowConnectionRetry: false,
+  });
+  const credentialId = route.credential.id;
+  const metadata = await controlRequest(testApp.application, `/v1/grants/${route.accessGrant.id}/credentials/${credentialId}`);
+  assert.equal(metadata.status, 200);
+  const metadataText = await metadata.text();
+  assert.match(metadataText, new RegExp(credentialId));
+  assert.doesNotMatch(metadataText, /password|tokenHash|tokenSalt/i);
+
+  const revoke = await controlRequest(testApp.application, `/v1/grants/${route.accessGrant.id}/credentials/${credentialId}`, {
+    method: "DELETE",
+  });
+  assert.equal(revoke.status, 204);
+  assert.equal((await requestViaProxy(route.proxyUrls.http, target.url)).status, 407);
+  const grant = await controlRequest(testApp.application, `/v1/grants/${route.accessGrant.id}`);
+  assert.equal(grant.status, 200);
+  assert.match(await grant.text(), /"status":"revoked"/);
 });
 
 test("control API can advertise the load balancer hostname from the request", async (t) => {
@@ -682,46 +692,51 @@ test("control API can advertise the load balancer hostname from the request", as
     ADVERTISED_HTTP_PROXY_PROTOCOL: "https",
   });
   t.after(() => testApp.stop());
-  const body = JSON.stringify({
-    name: "load-balanced",
-    targeting: { country: "US" },
+  const profileBody = JSON.stringify({
     customerId: "customer-a",
-    isAuthenticated: false,
-    shouldRetry: false,
+    geography: { countryCode: "US" },
+    isTargetAuthenticated: false,
+    allowConnectionRetry: false,
   });
-  const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-    const request = httpRequest(
-      {
-        host: "127.0.0.1",
-        port: testApp.application.controlAddress.port,
-        path: "/v1/routes",
-        method: "POST",
-        headers: {
-          authorization: "Bearer test-admin-token",
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body),
-          host: "router.example:8081",
+  const requestWithAdvertisedHost = (path: string, body = "") =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const request = httpRequest(
+        {
+          host: "127.0.0.1",
+          port: testApp.application.controlAddress.port,
+          path,
+          method: "POST",
+          headers: {
+            authorization: "Bearer test-admin-token",
+            "content-type": "application/json",
+            "content-length": Buffer.byteLength(body),
+            host: "router.example:8081",
+          },
         },
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-        response.on("end", () =>
-          resolve({
-            status: response.statusCode ?? 0,
-            body: Buffer.concat(chunks).toString("utf8"),
-          }),
-        );
-      },
-    );
-    request.on("error", reject);
-    request.end(body);
-  });
-  assert.equal(result.status, 201);
-  const route = JSON.parse(result.body) as { proxyUrls: { http: string; socks5: string } };
-  assert.equal("proxyUrl" in route, false);
-  assert.equal(new URL(route.proxyUrls.http).hostname, "router.example");
-  assert.equal(new URL(route.proxyUrls.http).protocol, "https:");
-  assert.equal(new URL(route.proxyUrls.http).hostname, "router.example");
-  assert.equal(new URL(route.proxyUrls.socks5).hostname, "router.example");
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          response.on("end", () =>
+            resolve({
+              status: response.statusCode ?? 0,
+              body: Buffer.concat(chunks).toString("utf8"),
+            }),
+          );
+        },
+      );
+      request.on("error", reject);
+      request.end(body);
+    });
+  const created = await requestWithAdvertisedHost("/v1/profiles", profileBody);
+  assert.equal(created.status, 201);
+  const { profileId } = JSON.parse(created.body) as { profileId: string };
+  const issuedResponse = await requestWithAdvertisedHost(`/v1/profiles/${profileId}/grants`);
+  assert.equal(issuedResponse.status, 201);
+  const issued = JSON.parse(issuedResponse.body) as { endpoints: { http: string; socks5: string }; credential: { password: string } };
+  assert.equal(new URL(issued.endpoints.http).hostname, "router.example");
+  assert.equal(new URL(issued.endpoints.http).protocol, "https:");
+  assert.equal(new URL(issued.endpoints.socks5).hostname, "router.example");
+  assert.equal(new URL(issued.endpoints.http).username, "");
+  assert.equal(new URL(issued.endpoints.http).password, "");
+  assert.ok(issued.credential.password.length >= 32);
 });

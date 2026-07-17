@@ -1,6 +1,6 @@
 {
   "name": "profound-proxy-router",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Provider-neutral HTTP, HTTPS, and SOCKS5 proxy router",
   "type": "module",

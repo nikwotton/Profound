@@ -22,7 +22,7 @@ Provider credentials and endpoints never leave the service. Target traffic never
 | Platform operators and on-call engineers   | [Operations guide](docs/OPERATIONS.md)                                     |
 | Contributors and maintainers               | [Development guide](docs/DEVELOPMENT.md)                                   |
 | Repository administrators                  | [Repository and release settings](docs/repository-and-release-settings.md) |
-| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.5.0.json)           |
+| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.6.0.json)           |
 | Complete environment reference             | [.env.example](.env.example)                                               |
 
 The OpenAPI contract covers management operations. Forwarding remains native HTTP proxy and SOCKS5 protocol traffic, so consumers do not wrap requests in a Profound-specific envelope.
@@ -62,29 +62,36 @@ pnpm dev
 
 Loopback-only mock mode supplies the development control token `change-me` and trusted principal `local-dev`.
 
-Create a route and its first access grant:
+Create a reusable provider-neutral profile:
 
 ```sh
-curl -sS http://127.0.0.1:8081/v1/routes \
+curl -sS http://127.0.0.1:8081/v1/profiles \
   -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "public-us",
-    "targeting": { "country": "US", "postalCode": "10001" },
     "customerId": "customer-a",
-    "isAuthenticated": false,
-    "shouldRetry": true
+    "geography": { "countryCode": "US" },
+    "isTargetAuthenticated": false,
+    "allowConnectionRetry": true
   }'
 ```
 
-Save `proxyUrls.http` or `proxyUrls.socks5` from the response: each contains a one-time access-grant secret. Use the HTTP URL with an existing proxy-aware client:
+The response is `{ "profileId": "..." }`. Issue an independently revocable access grant for that profile:
 
 ```sh
-curl --proxy 'http://ACCESS_GRANT_ID:ACCESS_GRANT_TOKEN@127.0.0.1:8080' \
+curl -sS -X POST http://127.0.0.1:8081/v1/profiles/PROFILE_ID/grants \
+  -H 'Authorization: Bearer change-me'
+```
+
+Save the returned `credential.username` and one-time `credential.password`; the password cannot be retrieved later. `endpoints` contains credential-free gateway addresses. Use them with an existing proxy-aware client:
+
+```sh
+curl --proxy 'http://127.0.0.1:8080' \
+  --proxy-user 'OPAQUE_CREDENTIAL_USERNAME:ONE_TIME_PASSWORD' \
   https://example.com/
 ```
 
-See [docs/USAGE.md](docs/USAGE.md) before integrating. It documents credential handling, all route fields, protocol behavior, rotation, retries, errors, and lifecycle operations.
+See [docs/USAGE.md](docs/USAGE.md) before integrating. It documents credential handling, all profile fields, protocol behavior, rotation, retries, errors, and lifecycle operations.
 
 ## Verify
 

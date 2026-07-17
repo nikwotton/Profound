@@ -47,6 +47,10 @@ export function createStoredCredential(id: string, token: string, createdAt: str
   };
 }
 
+export function credentialUsername(credentialId: string): string {
+  return `pxy_${credentialId}`;
+}
+
 function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number): boolean {
   return (
     credential.status !== "revoked" &&
@@ -134,7 +138,17 @@ function leaseFromRow(row: DeviceLeaseRow): DeviceLease {
 function routeFromRow(row: RouteRow): StoredRoute {
   type StoredPolicy = Pick<
     StoredRoute,
-    "allowedProtocols" | "session" | "customerId" | "userId" | "isAuthenticated" | "shouldRetry" | "retryPolicy" | "forceProvider"
+    | "allowedProtocols"
+    | "session"
+    | "customerId"
+    | "geography"
+    | "carrier"
+    | "isTargetAuthenticated"
+    | "allowConnectionRetry"
+    | "userId"
+    | "isAuthenticated"
+    | "shouldRetry"
+    | "retryPolicy"
   >;
   const policy = JSON.parse(row.policy_json) as StoredPolicy;
   return {
@@ -158,12 +172,12 @@ function routeFromRow(row: RouteRow): StoredRoute {
 export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant {
   const nowMs = Date.now();
   return {
-    id: grant.id,
-    routeId: grant.routeId,
-    principalId: grant.principalId,
+    grantId: grant.id,
+    profileId: grant.routeId,
     status: grant.status,
     credentials: grant.credentials.map((credential) => ({
-      id: credential.id,
+      credentialId: credential.id,
+      username: credentialUsername(credential.id),
       status:
         grant.status === "revoked" ||
         credential.status === "revoked" ||
@@ -186,21 +200,13 @@ export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant
 
 export function toPublicRoute(route: StoredRoute): PublicRoute {
   return {
-    id: route.id,
-    name: route.name,
-    allowedProtocols: route.allowedProtocols,
-    targeting: route.targeting,
-    rotation: route.rotation,
-    session: route.session,
+    profileId: route.id,
     customerId: route.customerId,
-    userId: route.userId,
-    isAuthenticated: route.isAuthenticated,
-    shouldRetry: route.shouldRetry,
-    retryPolicy: route.retryPolicy,
-    ...(route.forceProvider === undefined ? {} : { forceProvider: route.forceProvider }),
-    provider: route.provider,
+    ...(route.geography === undefined ? {} : { geography: route.geography }),
+    ...(route.carrier === undefined ? {} : { carrier: route.carrier }),
+    isTargetAuthenticated: route.isTargetAuthenticated,
+    allowConnectionRetry: route.allowConnectionRetry,
     status: route.status,
-    ...(route.lastError === undefined ? {} : { lastError: route.lastError }),
     createdAt: route.createdAt,
     updatedAt: route.updatedAt,
   };
@@ -208,6 +214,7 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
 
 export interface RouteStore {
   create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute>;
+  update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute>;
   get(id: string, includeRevoked?: boolean): Promise<StoredRoute>;
   list(): Promise<StoredRoute[]>;
   createAccessGrant(id: string, routeId: string, principalId: string, credentialId: string, token: string): Promise<StoredAccessGrant>;
@@ -215,6 +222,7 @@ export interface RouteStore {
   listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]>;
   authenticateAccessGrant(id: string, token: string): Promise<StoredAccessGrant | undefined>;
   rotateAccessGrantCredential(id: string, credentialId: string, token: string, suspectedCompromise?: boolean): Promise<StoredAccessGrant>;
+  revokeAccessGrantCredential(id: string, credentialId: string): Promise<void>;
   revokeAccessGrant(id: string, terminateActive?: boolean): Promise<void>;
   setAccessGrantEndpoint(id: string, endpointId?: string): Promise<StoredAccessGrant>;
   revoke(id: string, terminateActive?: boolean): Promise<void>;
@@ -402,24 +410,63 @@ export class SqliteRouteStore implements RouteStore {
       )
       .run(
         id,
-        profile.name,
+        profile.customerId,
         JSON.stringify(profile.targeting),
         JSON.stringify(profile.rotation),
         JSON.stringify({
           allowedProtocols: profile.allowedProtocols,
           session: profile.session,
           customerId: profile.customerId,
+          ...(profile.geography === undefined ? {} : { geography: profile.geography }),
+          ...(profile.carrier === undefined ? {} : { carrier: profile.carrier }),
+          isTargetAuthenticated: profile.isTargetAuthenticated,
+          allowConnectionRetry: profile.allowConnectionRetry,
           userId: profile.userId,
           isAuthenticated: profile.isAuthenticated,
           shouldRetry: profile.shouldRetry,
           retryPolicy: profile.retryPolicy,
-          ...(profile.forceProvider === undefined ? {} : { forceProvider: profile.forceProvider }),
         }),
         provider,
         endpointId ?? null,
         now,
         now,
         now,
+      );
+    return this.get(id);
+  }
+
+  async update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute> {
+    await this.get(id);
+    const now = new Date().toISOString();
+    this.#database
+      .prepare(
+        `
+      UPDATE routes
+      SET name = ?, targeting_json = ?, rotation_json = ?, policy_json = ?, provider = ?,
+          endpoint_id = NULL, status = 'ready', last_error = NULL, updated_at = ?
+      WHERE id = ? AND status != 'revoked'
+    `,
+      )
+      .run(
+        profile.customerId,
+        JSON.stringify(profile.targeting),
+        JSON.stringify(profile.rotation),
+        JSON.stringify({
+          allowedProtocols: profile.allowedProtocols,
+          session: profile.session,
+          customerId: profile.customerId,
+          ...(profile.geography === undefined ? {} : { geography: profile.geography }),
+          ...(profile.carrier === undefined ? {} : { carrier: profile.carrier }),
+          isTargetAuthenticated: profile.isTargetAuthenticated,
+          allowConnectionRetry: profile.allowConnectionRetry,
+          userId: profile.userId,
+          isAuthenticated: profile.isAuthenticated,
+          shouldRetry: profile.shouldRetry,
+          retryPolicy: profile.retryPolicy,
+        }),
+        provider,
+        now,
+        id,
       );
     return this.get(id);
   }
@@ -479,10 +526,13 @@ export class SqliteRouteStore implements RouteStore {
     return rows.map(accessGrantFromRow);
   }
 
-  async authenticateAccessGrant(id: string, token: string): Promise<StoredAccessGrant | undefined> {
-    let grant: StoredAccessGrant;
+  async authenticateAccessGrant(username: string, token: string): Promise<StoredAccessGrant | undefined> {
+    const rows = this.#database.prepare("SELECT * FROM access_grants WHERE status != 'revoked'").all() as unknown as AccessGrantRow[];
+    const grant = rows
+      .map(accessGrantFromRow)
+      .find((candidate) => candidate.credentials.some((credential) => credentialUsername(credential.id) === username));
+    if (grant === undefined) return undefined;
     try {
-      grant = await this.getAccessGrant(id);
       await this.get(grant.routeId);
     } catch {
       return undefined;
@@ -490,6 +540,7 @@ export class SqliteRouteStore implements RouteStore {
     const now = new Date().toISOString();
     const nowMs = Date.parse(now);
     const credential = grant.credentials.find((candidateCredential) => {
+      if (credentialUsername(candidateCredential.id) !== username) return false;
       if (!credentialUsable(candidateCredential, nowMs)) return false;
       const candidate = scryptSync(token, candidateCredential.tokenSalt, 32);
       const expected = Buffer.from(candidateCredential.tokenHash, "hex");
@@ -503,7 +554,7 @@ export class SqliteRouteStore implements RouteStore {
       UPDATE access_grants SET credentials_json = ?, updated_at = ? WHERE id = ? AND status != 'revoked'
     `,
       )
-      .run(JSON.stringify(grant.credentials), now, id);
+      .run(JSON.stringify(grant.credentials), now, grant.id);
     return { ...grant, credentials: grant.credentials, updatedAt: now };
   }
 
@@ -537,6 +588,19 @@ export class SqliteRouteStore implements RouteStore {
       .run(JSON.stringify(credentials), now, id);
     if (result.changes === 0) throw new NotFoundError();
     return this.getAccessGrant(id);
+  }
+
+  async revokeAccessGrantCredential(id: string, credentialId: string): Promise<void> {
+    const grant = await this.getAccessGrant(id, true);
+    const credential = grant.credentials.find((candidate) => candidate.id === credentialId);
+    if (credential === undefined) throw new NotFoundError();
+    if (credential.status === "revoked") return;
+    const now = new Date().toISOString();
+    credential.status = "revoked";
+    credential.revokeAt = now;
+    this.#database
+      .prepare("UPDATE access_grants SET credentials_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(grant.credentials), now, id);
   }
 
   async revokeAccessGrant(id: string, terminateActive = false): Promise<void> {

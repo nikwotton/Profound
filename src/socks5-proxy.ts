@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer, type Socket } from "node:net";
 import { Transform } from "node:stream";
 import { assignmentAttributes, assignmentLogContext } from "./assignment-evidence.js";
-import { recordDestinationResolution } from "./destination-resolution.js";
+import { assertSafeProviderResolution, recordDestinationResolution } from "./destination-resolution.js";
 import { beginAttemptBudget, operationDeadline } from "./establishment-budget.js";
 import {
   AppError,
@@ -268,6 +268,12 @@ export class Socks5ProxyServer {
               targetPort,
             },
           });
+          try {
+            assertSafeProviderResolution(opened.providerMetadata);
+          } catch (error) {
+            opened.socket.destroy();
+            throw error;
+          }
           if (opened.providerMetadata.opaqueIpId !== undefined) {
             upstream.assignment.opaqueIpId = opened.providerMetadata.opaqueIpId;
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "identity_observed", upstream.assignment);
@@ -342,7 +348,7 @@ export class Socks5ProxyServer {
                 ? undefined
                 : {
                     isAuthenticated: route.isAuthenticated,
-                    country: route.targeting.country,
+                    ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
                   },
             );
@@ -382,7 +388,7 @@ export class Socks5ProxyServer {
                 failover: activeUpstream.provider !== activeRoute.provider,
                 bytesSent,
                 bytesReceived,
-                country: activeRoute.targeting.country,
+                ...(activeRoute.targeting.country === undefined ? {} : { country: activeRoute.targeting.country }),
                 ...(activeRoute.targeting.city === undefined ? {} : { city: activeRoute.targeting.city }),
                 ...(activeUpstream.endpointId === undefined ? {} : { endpointId: activeUpstream.endpointId }),
                 ...(activeUpstream.deviceLeaseKey === undefined
@@ -440,7 +446,7 @@ export class Socks5ProxyServer {
             error,
             {
               isAuthenticated: route.isAuthenticated,
-              country: route.targeting.country,
+              ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
               ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
             },
           );
@@ -476,7 +482,7 @@ export class Socks5ProxyServer {
               failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
               bytesSent: 0,
               bytesReceived: 0,
-              country: route.targeting.country,
+              ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
               ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
               ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
               startedAt: new Date(attemptStartedAt).toISOString(),

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { Transform, type Duplex } from "node:stream";
 import { assignmentAttributes, assignmentLogContext } from "./assignment-evidence.js";
-import { recordDestinationResolution, resolvedAddressesFromHeader } from "./destination-resolution.js";
+import { assertSafeProviderResolution, recordDestinationResolution, resolvedAddressesFromHeader } from "./destination-resolution.js";
 import { abortReason, beginAttemptBudget, operationDeadline } from "./establishment-budget.js";
 import {
   AuthenticationError,
@@ -261,7 +261,7 @@ export class ForwardProxyServer {
               ? undefined
               : {
                   isAuthenticated: route.isAuthenticated,
-                  country: route.targeting.country,
+                  ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                   ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
                 },
           );
@@ -300,7 +300,7 @@ export class ForwardProxyServer {
                 failover: provider !== "unresolved" && provider !== route.provider,
                 bytesSent,
                 bytesReceived,
-                country: route.targeting.country,
+                ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                 ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
                 ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
                 ...(upstream?.deviceLeaseKey === undefined
@@ -366,16 +366,17 @@ export class ForwardProxyServer {
               budget.finish();
               const status = upstreamResponse.statusCode ?? 502;
               bytesReceived += Buffer.byteLength(`HTTP/1.1 ${status}\r\n`) + headerBytes(upstreamResponse.headers);
+              const providerMetadata = (() => {
+                const addresses = resolvedAddressesFromHeader(upstreamResponse.headers["x-mock-resolved-destination"]);
+                const resolverCountry = first(upstreamResponse.headers["x-mock-resolver-country"]);
+                return {
+                  ...(addresses === undefined ? {} : { resolvedDestinationAddresses: addresses }),
+                  ...(resolverCountry === undefined ? {} : { resolverCountry }),
+                };
+              })();
               recordDestinationResolution({
                 validation: targetValidation,
-                providerMetadata: (() => {
-                  const addresses = resolvedAddressesFromHeader(upstreamResponse.headers["x-mock-resolved-destination"]);
-                  const resolverCountry = first(upstreamResponse.headers["x-mock-resolver-country"]);
-                  return {
-                    ...(addresses === undefined ? {} : { resolvedDestinationAddresses: addresses }),
-                    ...(resolverCountry === undefined ? {} : { resolverCountry }),
-                  };
-                })(),
+                providerMetadata,
                 expectedCountry: route?.targeting.country,
                 logger: this.options.logger,
                 span: attemptSpan,
@@ -390,6 +391,15 @@ export class ForwardProxyServer {
                   targetPort: port,
                 },
               });
+              try {
+                assertSafeProviderResolution(providerMetadata);
+              } catch (error) {
+                upstreamResponse.resume();
+                finishAttempt("failure", error, status);
+                this.#sendError(response, error);
+                finishOperation("failure", error);
+                return;
+              }
               const opaqueIpId = first(upstreamResponse.headers["x-brd-ip"]) ?? first(upstreamResponse.headers["x-mock-exit-ip"]);
               if (opaqueIpId !== undefined && upstream !== undefined) {
                 upstream.assignment.opaqueIpId = opaqueIpId;
@@ -631,6 +641,12 @@ export class ForwardProxyServer {
               targetPort: target.port,
             },
           });
+          try {
+            assertSafeProviderResolution(opened.providerMetadata);
+          } catch (error) {
+            opened.socket.destroy();
+            throw error;
+          }
           if (opened.providerMetadata.opaqueIpId !== undefined) {
             upstream.assignment.opaqueIpId = opened.providerMetadata.opaqueIpId;
             this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "identity_observed", upstream.assignment);
@@ -703,7 +719,7 @@ export class ForwardProxyServer {
                 ? undefined
                 : {
                     isAuthenticated: route.isAuthenticated,
-                    country: route.targeting.country,
+                    ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
                   },
             );
@@ -742,7 +758,7 @@ export class ForwardProxyServer {
                 failover: activeUpstream.provider !== activeRoute.provider,
                 bytesSent,
                 bytesReceived,
-                country: activeRoute.targeting.country,
+                ...(activeRoute.targeting.country === undefined ? {} : { country: activeRoute.targeting.country }),
                 ...(activeRoute.targeting.city === undefined ? {} : { city: activeRoute.targeting.city }),
                 ...(activeUpstream.endpointId === undefined ? {} : { endpointId: activeUpstream.endpointId }),
                 ...(activeUpstream.deviceLeaseKey === undefined
@@ -814,7 +830,7 @@ export class ForwardProxyServer {
             error,
             {
               isAuthenticated: route.isAuthenticated,
-              country: route.targeting.country,
+              ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
               ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
             },
           );
@@ -850,7 +866,7 @@ export class ForwardProxyServer {
               failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
               bytesSent: 0,
               bytesReceived: 0,
-              country: route.targeting.country,
+              ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
               ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
               ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
               startedAt: new Date(attemptStartedAt).toISOString(),

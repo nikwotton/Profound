@@ -13,13 +13,10 @@
             },
             "type": "array"
           },
-          "id": {
+          "grantId": {
             "type": "string"
           },
-          "principalId": {
-            "type": "string"
-          },
-          "routeId": {
+          "profileId": {
             "type": "string"
           },
           "status": {
@@ -34,9 +31,8 @@
           }
         },
         "required": [
-          "id",
-          "routeId",
-          "principalId",
+          "grantId",
+          "profileId",
           "status",
           "credentials",
           "createdAt",
@@ -50,10 +46,10 @@
           "createdAt": {
             "type": "string"
           },
-          "expiresAt": {
+          "credentialId": {
             "type": "string"
           },
-          "id": {
+          "expiresAt": {
             "type": "string"
           },
           "lastUsedAt": {
@@ -76,10 +72,14 @@
               "expired"
             ],
             "type": "string"
+          },
+          "username": {
+            "type": "string"
           }
         },
         "required": [
-          "id",
+          "credentialId",
+          "username",
           "status",
           "createdAt",
           "renewalDueAt",
@@ -102,13 +102,37 @@
           },
           "message": {
             "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
           }
         },
         "required": [
           "code",
           "message",
+          "retryable",
+          "requestId",
           "_tag"
         ],
+        "type": "object"
+      },
+      "Geography": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "countryCode": {
+            "type": "string"
+          },
+          "regionCode": {
+            "type": "string"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "HttpApiDecodeError": {
@@ -152,11 +176,19 @@
           },
           "message": {
             "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
           }
         },
         "required": [
           "code",
           "message",
+          "retryable",
+          "requestId",
           "_tag"
         ],
         "type": "object"
@@ -201,13 +233,59 @@
       "IssuedAccessGrant": {
         "additionalProperties": false,
         "properties": {
-          "accessGrant": {
-            "$ref": "#/components/schemas/AccessGrant"
-          },
           "credential": {
-            "$ref": "#/components/schemas/AccessGrantCredential"
+            "additionalProperties": false,
+            "properties": {
+              "createdAt": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": "string"
+              },
+              "expiresAt": {
+                "type": "string"
+              },
+              "lastUsedAt": {
+                "type": "string"
+              },
+              "password": {
+                "type": "string"
+              },
+              "renewalDue": {
+                "type": "boolean"
+              },
+              "renewalDueAt": {
+                "type": "string"
+              },
+              "revokeAt": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "overlap",
+                  "revoked",
+                  "expired"
+                ],
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "credentialId",
+              "username",
+              "status",
+              "createdAt",
+              "renewalDueAt",
+              "renewalDue",
+              "expiresAt",
+              "password"
+            ],
+            "type": "object"
           },
-          "proxyUrls": {
+          "endpoints": {
             "additionalProperties": false,
             "properties": {
               "http": {
@@ -223,15 +301,14 @@
             ],
             "type": "object"
           },
-          "proxyUsername": {
-            "type": "string"
+          "grant": {
+            "$ref": "#/components/schemas/AccessGrant"
           }
         },
         "required": [
-          "accessGrant",
+          "grant",
           "credential",
-          "proxyUsername",
-          "proxyUrls"
+          "endpoints"
         ],
         "type": "object"
       },
@@ -265,209 +342,6 @@
           }
         ]
       },
-      "RotationPolicy": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "mode": {
-                "enum": [
-                  "per_request"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "mode"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "intervalSeconds": {
-                "type": "number"
-              },
-              "mode": {
-                "enum": [
-                  "interval"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "mode",
-              "intervalSeconds"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "mode": {
-                "enum": [
-                  "manual"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "mode"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "Route": {
-        "additionalProperties": false,
-        "properties": {
-          "allowedProtocols": {
-            "items": {
-              "enum": [
-                "http",
-                "https",
-                "socks5"
-              ],
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "createdAt": {
-            "type": "string"
-          },
-          "customerId": {
-            "type": "string"
-          },
-          "forceProvider": {
-            "enum": [
-              "bright_data",
-              "proxidize"
-            ],
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "isAuthenticated": {
-            "type": "boolean"
-          },
-          "lastError": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "provider": {
-            "enum": [
-              "bright_data",
-              "proxidize"
-            ],
-            "type": "string"
-          },
-          "retryPolicy": {
-            "additionalProperties": false,
-            "properties": {
-              "maxAttempts": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "maxAttempts"
-            ],
-            "type": "object"
-          },
-          "rotation": {
-            "$ref": "#/components/schemas/RotationPolicy"
-          },
-          "session": {
-            "anyOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "mode": {
-                    "enum": [
-                      "none"
-                    ],
-                    "type": "string"
-                  },
-                  "requireGeographicContinuity": {
-                    "enum": [
-                      false
-                    ],
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "mode",
-                  "requireGeographicContinuity"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "id": {
-                    "type": "string"
-                  },
-                  "mode": {
-                    "enum": [
-                      "sticky"
-                    ],
-                    "type": "string"
-                  },
-                  "requireGeographicContinuity": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "mode",
-                  "requireGeographicContinuity"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "shouldRetry": {
-            "type": "boolean"
-          },
-          "status": {
-            "enum": [
-              "ready",
-              "rotating",
-              "failed",
-              "revoked"
-            ],
-            "type": "string"
-          },
-          "targeting": {
-            "$ref": "#/components/schemas/Targeting"
-          },
-          "updatedAt": {
-            "type": "string"
-          },
-          "userId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "allowedProtocols",
-          "targeting",
-          "rotation",
-          "session",
-          "customerId",
-          "userId",
-          "isAuthenticated",
-          "shouldRetry",
-          "retryPolicy",
-          "provider",
-          "status",
-          "createdAt",
-          "updatedAt"
-        ],
-        "type": "object"
-      },
       "RouteNotFound": {
         "additionalProperties": false,
         "properties": {
@@ -482,93 +356,106 @@
           },
           "message": {
             "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
           }
         },
         "required": [
           "code",
           "message",
+          "retryable",
+          "requestId",
           "_tag"
+        ],
+        "type": "object"
+      },
+      "RouteProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "allowConnectionRetry": {
+            "type": "boolean"
+          },
+          "carrier": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "customerId": {
+            "type": "string"
+          },
+          "geography": {
+            "$ref": "#/components/schemas/Geography"
+          },
+          "isTargetAuthenticated": {
+            "type": "boolean"
+          },
+          "profileId": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "rotating",
+              "failed",
+              "revoked"
+            ],
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profileId",
+          "customerId",
+          "isTargetAuthenticated",
+          "allowConnectionRetry",
+          "status",
+          "createdAt",
+          "updatedAt"
         ],
         "type": "object"
       },
       "RouteProfileInput": {
         "additionalProperties": false,
         "properties": {
-          "allowedProtocols": {
-            "items": {
-              "enum": [
-                "http",
-                "https",
-                "socks5"
-              ],
-              "type": "string"
-            },
-            "type": "array"
+          "allowConnectionRetry": {
+            "type": "boolean"
+          },
+          "carrier": {
+            "type": "string"
           },
           "customerId": {
             "type": "string"
           },
-          "forceProvider": {
-            "enum": [
-              "bright_data",
-              "proxidize"
-            ],
-            "type": "string"
-          },
-          "isAuthenticated": {
-            "type": "boolean"
-          },
-          "name": {
-            "type": "string"
-          },
-          "retryPolicy": {
+          "geography": {
             "additionalProperties": false,
             "properties": {
-              "maxAttempts": {
-                "type": "number"
-              }
-            },
-            "required": [],
-            "type": "object"
-          },
-          "rotation": {
-            "$ref": "#/components/schemas/RotationPolicy"
-          },
-          "session": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
+              "city": {
                 "type": "string"
               },
-              "mode": {
-                "enum": [
-                  "none",
-                  "sticky"
-                ],
+              "countryCode": {
                 "type": "string"
               },
-              "requireGeographicContinuity": {
-                "type": "boolean"
+              "regionCode": {
+                "type": "string"
               }
             },
-            "required": [
-              "mode"
-            ],
             "type": "object"
           },
-          "shouldRetry": {
+          "isTargetAuthenticated": {
             "type": "boolean"
-          },
-          "targeting": {
-            "$ref": "#/components/schemas/Targeting"
           }
         },
         "required": [
-          "name",
-          "targeting",
           "customerId",
-          "isAuthenticated",
-          "shouldRetry"
+          "isTargetAuthenticated",
+          "allowConnectionRetry"
         ],
         "type": "object"
       },
@@ -586,39 +473,20 @@
           },
           "message": {
             "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
           }
         },
         "required": [
           "code",
           "message",
+          "retryable",
+          "requestId",
           "_tag"
-        ],
-        "type": "object"
-      },
-      "Targeting": {
-        "additionalProperties": false,
-        "properties": {
-          "asn": {
-            "type": "number"
-          },
-          "carrier": {
-            "type": "string"
-          },
-          "city": {
-            "type": "string"
-          },
-          "country": {
-            "type": "string"
-          },
-          "postalCode": {
-            "type": "string"
-          },
-          "region": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "country"
         ],
         "type": "object"
       },
@@ -636,11 +504,19 @@
           },
           "message": {
             "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
           }
         },
         "required": [
           "code",
           "message",
+          "retryable",
+          "requestId",
           "_tag"
         ],
         "type": "object"
@@ -655,9 +531,9 @@
     }
   },
   "info": {
-    "description": "Create reusable route profiles and independently revocable per-principal proxy access grants.",
+    "description": "Manage reusable provider-neutral route profiles, independently revocable access grants, and one-time proxy credentials.",
     "title": "Profound Proxy Router Control API",
-    "version": "0.5.0"
+    "version": "0.6.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -761,7 +637,7 @@
         ]
       }
     },
-    "/v1/access-grants/{grantId}": {
+    "/v1/grants/{grantId}": {
       "delete": {
         "operationId": "revokeAccessGrant",
         "parameters": [
@@ -825,11 +701,93 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
+        ]
+      },
+      "get": {
+        "operationId": "getAccessGrant",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "grant": {
+                      "$ref": "#/components/schemas/AccessGrant"
+                    }
+                  },
+                  "required": [
+                    "grant"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
         ]
       }
     },
-    "/v1/access-grants/{grantId}/credentials/emergency-rotate": {
+    "/v1/grants/{grantId}/credentials/emergency-rotate": {
       "post": {
         "description": "Replace a suspected-compromised credential immediately without overlap; return the replacement secret only in this response",
         "operationId": "emergencyRotateAccessGrantCredential",
@@ -901,11 +859,11 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
         ]
       }
     },
-    "/v1/access-grants/{grantId}/credentials/rotate": {
+    "/v1/grants/{grantId}/credentials/rotate": {
       "post": {
         "description": "Rotate this grant's bearer credential without changing its device lease; return the replacement secret only in this response",
         "operationId": "rotateAccessGrantCredential",
@@ -977,18 +935,25 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
         ]
       }
     },
-    "/v1/access-grants/{grantId}/emergency-revoke": {
-      "post": {
-        "description": "Revoke this grant and terminate only its established connections",
-        "operationId": "emergencyRevokeAccessGrant",
+    "/v1/grants/{grantId}/credentials/{credentialId}": {
+      "delete": {
+        "operationId": "revokeAccessGrantCredential",
         "parameters": [
           {
             "in": "path",
             "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "credentialId",
             "required": true,
             "schema": {
               "type": "string"
@@ -1046,14 +1011,11 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
         ]
-      }
-    },
-    "/v1/access-grants/{grantId}/release": {
-      "post": {
-        "description": "Explicitly release this grant's device-backed session lease",
-        "operationId": "releaseAccessGrantLease",
+      },
+      "get": {
+        "operationId": "getAccessGrantCredential",
         "parameters": [
           {
             "in": "path",
@@ -1062,10 +1024,34 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "path",
+            "name": "credentialId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "credential": {
+                      "$ref": "#/components/schemas/AccessGrantCredential"
+                    }
+                  },
+                  "required": [
+                    "credential"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Success"
           },
           "400": {
@@ -1115,13 +1101,13 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
         ]
       }
     },
-    "/v1/providers": {
+    "/v1/profiles": {
       "get": {
-        "operationId": "providerDescriptors",
+        "operationId": "listProfiles",
         "parameters": [],
         "responses": {
           "200": {
@@ -1132,222 +1118,7 @@
                   "properties": {
                     "data": {
                       "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "capabilities": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "assignmentControl": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "providerManagedReassignment": {
-                                    "enum": [
-                                      "disabled",
-                                      "observable",
-                                      "uncontrolled"
-                                    ],
-                                    "type": "string"
-                                  },
-                                  "providerManagedRotation": {
-                                    "enum": [
-                                      "disabled",
-                                      "uncontrolled"
-                                    ],
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "providerManagedReassignment",
-                                  "providerManagedRotation"
-                                ],
-                                "type": "object"
-                              },
-                              "authenticatedTraffic": {
-                                "type": "boolean"
-                              },
-                              "clientProtocols": {
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "countries": {
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "dnsResolution": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "http": {
-                                    "enum": [
-                                      "provider_configurable",
-                                      "provider_remote",
-                                      "unverified"
-                                    ],
-                                    "type": "string"
-                                  },
-                                  "socks5": {
-                                    "enum": [
-                                      "provider_configurable",
-                                      "provider_remote",
-                                      "unverified"
-                                    ],
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "http",
-                                  "socks5"
-                                ],
-                                "type": "object"
-                              },
-                              "exactCity": {
-                                "enum": [
-                                  "provider_guaranteed",
-                                  "verifiable",
-                                  "unsupported"
-                                ],
-                                "type": "string"
-                              },
-                              "geography": {
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "rotation": {
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "sessions": {
-                                "type": "boolean"
-                              },
-                              "targetPorts": {
-                                "anyOf": [
-                                  {
-                                    "enum": [
-                                      "any_public"
-                                    ],
-                                    "type": "string"
-                                  },
-                                  {
-                                    "items": {
-                                      "type": "number"
-                                    },
-                                    "type": "array"
-                                  }
-                                ]
-                              },
-                              "unauthenticatedTraffic": {
-                                "type": "boolean"
-                              },
-                              "upstreamProtocols": {
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              }
-                            },
-                            "required": [
-                              "clientProtocols",
-                              "upstreamProtocols",
-                              "authenticatedTraffic",
-                              "unauthenticatedTraffic",
-                              "geography",
-                              "sessions",
-                              "exactCity",
-                              "assignmentControl",
-                              "rotation",
-                              "targetPorts",
-                              "dnsResolution"
-                            ],
-                            "type": "object"
-                          },
-                          "costRank": {
-                            "type": "number"
-                          },
-                          "id": {
-                            "enum": [
-                              "bright_data",
-                              "proxidize"
-                            ],
-                            "type": "string"
-                          },
-                          "pricing": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "amountUsd": {
-                                "type": "number"
-                              },
-                              "model": {
-                                "enum": [
-                                  "per_gib",
-                                  "per_device_month"
-                                ],
-                                "type": "string"
-                              },
-                              "source": {
-                                "enum": [
-                                  "provider_api",
-                                  "versioned_config"
-                                ],
-                                "type": "string"
-                              },
-                              "version": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "source",
-                              "version",
-                              "model",
-                              "amountUsd"
-                            ],
-                            "type": "object"
-                          },
-                          "providerClass": {
-                            "enum": [
-                              "residential",
-                              "device_backed"
-                            ],
-                            "type": "string"
-                          },
-                          "usageDimensions": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "common": {
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "providerSpecific": {
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              }
-                            },
-                            "required": [
-                              "common",
-                              "providerSpecific"
-                            ],
-                            "type": "object"
-                          }
-                        },
-                        "required": [
-                          "id",
-                          "providerClass",
-                          "capabilities",
-                          "pricing",
-                          "usageDimensions",
-                          "costRank"
-                        ],
-                        "type": "object"
+                        "$ref": "#/components/schemas/RouteProfile"
                       },
                       "type": "array"
                     }
@@ -1398,176 +1169,11 @@
           }
         ],
         "tags": [
-          "providers"
-        ]
-      }
-    },
-    "/v1/providers/health": {
-      "get": {
-        "operationId": "providerHealth",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "checkedAt": {
-                            "type": "string"
-                          },
-                          "message": {
-                            "type": "string"
-                          },
-                          "provider": {
-                            "enum": [
-                              "bright_data",
-                              "proxidize"
-                            ],
-                            "type": "string"
-                          },
-                          "state": {
-                            "enum": [
-                              "healthy",
-                              "degraded",
-                              "unhealthy"
-                            ],
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "provider",
-                          "state",
-                          "checkedAt"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "data"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
-                }
-              }
-            },
-            "description": "The request did not match the expected schema"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InternalError"
-                }
-              }
-            },
-            "description": "InternalError"
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "providers"
-        ]
-      }
-    },
-    "/v1/routes": {
-      "get": {
-        "operationId": "listRoutes",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "$ref": "#/components/schemas/Route"
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "data"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
-                }
-              }
-            },
-            "description": "The request did not match the expected schema"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InternalError"
-                }
-              }
-            },
-            "description": "InternalError"
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "routes"
+          "profiles"
         ]
       },
       "post": {
-        "operationId": "createRoute",
+        "operationId": "createProfile",
         "parameters": [],
         "requestBody": {
           "content": {
@@ -1586,41 +1192,12 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "accessGrant": {
-                      "$ref": "#/components/schemas/AccessGrant"
-                    },
-                    "credential": {
-                      "$ref": "#/components/schemas/AccessGrantCredential"
-                    },
-                    "proxyUrls": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "http": {
-                          "type": "string"
-                        },
-                        "socks5": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "http",
-                        "socks5"
-                      ],
-                      "type": "object"
-                    },
-                    "proxyUsername": {
+                    "profileId": {
                       "type": "string"
-                    },
-                    "route": {
-                      "$ref": "#/components/schemas/Route"
                     }
                   },
                   "required": [
-                    "route",
-                    "accessGrant",
-                    "credential",
-                    "proxyUsername",
-                    "proxyUrls"
+                    "profileId"
                   ],
                   "type": "object"
                 }
@@ -1682,13 +1259,13 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
         ]
       }
     },
-    "/v1/routes/{id}": {
+    "/v1/profiles/{id}": {
       "delete": {
-        "operationId": "deleteRoute",
+        "operationId": "deleteProfile",
         "parameters": [
           {
             "in": "path",
@@ -1750,11 +1327,11 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
         ]
       },
       "get": {
-        "operationId": "getRoute",
+        "operationId": "getProfile",
         "parameters": [
           {
             "in": "path",
@@ -1772,12 +1349,12 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "route": {
-                      "$ref": "#/components/schemas/Route"
+                    "profile": {
+                      "$ref": "#/components/schemas/RouteProfile"
                     }
                   },
                   "required": [
-                    "route"
+                    "profile"
                   ],
                   "type": "object"
                 }
@@ -1832,11 +1409,121 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
+        ]
+      },
+      "put": {
+        "description": "Replace provider-neutral routing requirements; changes apply to new connections",
+        "operationId": "updateProfile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteProfileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "profile": {
+                      "$ref": "#/components/schemas/RouteProfile"
+                    }
+                  },
+                  "required": [
+                    "profile"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/HttpApiDecodeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BadRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailable"
+                }
+              }
+            },
+            "description": "ServiceUnavailable"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
         ]
       }
     },
-    "/v1/routes/{id}/access-grants": {
+    "/v1/profiles/{id}/grants": {
       "get": {
         "description": "List the authenticated principal's redacted grants for this route profile",
         "operationId": "listAccessGrants",
@@ -1920,7 +1607,7 @@
           }
         ],
         "tags": [
-          "routes"
+          "profiles"
         ]
       },
       "post": {
@@ -1943,13 +1630,59 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "accessGrant": {
-                      "$ref": "#/components/schemas/AccessGrant"
-                    },
                     "credential": {
-                      "$ref": "#/components/schemas/AccessGrantCredential"
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "credentialId": {
+                          "type": "string"
+                        },
+                        "expiresAt": {
+                          "type": "string"
+                        },
+                        "lastUsedAt": {
+                          "type": "string"
+                        },
+                        "password": {
+                          "type": "string"
+                        },
+                        "renewalDue": {
+                          "type": "boolean"
+                        },
+                        "renewalDueAt": {
+                          "type": "string"
+                        },
+                        "revokeAt": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "active",
+                            "overlap",
+                            "revoked",
+                            "expired"
+                          ],
+                          "type": "string"
+                        },
+                        "username": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "credentialId",
+                        "username",
+                        "status",
+                        "createdAt",
+                        "renewalDueAt",
+                        "renewalDue",
+                        "expiresAt",
+                        "password"
+                      ],
+                      "type": "object"
                     },
-                    "proxyUrls": {
+                    "endpoints": {
                       "additionalProperties": false,
                       "properties": {
                         "http": {
@@ -1965,15 +1698,14 @@
                       ],
                       "type": "object"
                     },
-                    "proxyUsername": {
-                      "type": "string"
+                    "grant": {
+                      "$ref": "#/components/schemas/AccessGrant"
                     }
                   },
                   "required": [
-                    "accessGrant",
+                    "grant",
                     "credential",
-                    "proxyUsername",
-                    "proxyUrls"
+                    "endpoints"
                   ],
                   "type": "object"
                 }
@@ -2020,6 +1752,16 @@
               }
             },
             "description": "InternalError"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailable"
+                }
+              }
+            },
+            "description": "ServiceUnavailable"
           }
         },
         "security": [
@@ -2028,160 +1770,7 @@
           }
         ],
         "tags": [
-          "routes"
-        ]
-      }
-    },
-    "/v1/routes/{id}/emergency-revoke": {
-      "post": {
-        "description": "Revoke the route and terminate its established connections",
-        "operationId": "emergencyRevokeRoute",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
-                }
-              }
-            },
-            "description": "The request did not match the expected schema"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
-                }
-              }
-            },
-            "description": "RouteNotFound"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InternalError"
-                }
-              }
-            },
-            "description": "InternalError"
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "routes"
-        ]
-      }
-    },
-    "/v1/routes/{id}/rotate": {
-      "post": {
-        "operationId": "rotateRoute",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "route": {
-                      "$ref": "#/components/schemas/Route"
-                    }
-                  },
-                  "required": [
-                    "route"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
-                }
-              }
-            },
-            "description": "The request did not match the expected schema"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
-                }
-              }
-            },
-            "description": "RouteNotFound"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InternalError"
-                }
-              }
-            },
-            "description": "InternalError"
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "routes"
+          "profiles"
         ]
       }
     }
@@ -2192,10 +1781,7 @@
       "name": "health"
     },
     {
-      "name": "routes"
-    },
-    {
-      "name": "providers"
+      "name": "profiles"
     }
   ]
 }

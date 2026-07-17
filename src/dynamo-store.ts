@@ -10,7 +10,7 @@ import {
   type QueryCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { NotFoundError } from "./errors.js";
-import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, type RouteStore } from "./store.js";
+import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
 import { DEVICE_LEASE_IDLE_TIMEOUT_MS } from "./types.js";
 import type {
   CapabilityHealthSnapshot,
@@ -237,11 +237,14 @@ export class DynamoRouteStore implements RouteStore {
       allowedProtocols: profile.allowedProtocols,
       session: profile.session,
       customerId: profile.customerId,
+      ...(profile.geography === undefined ? {} : { geography: profile.geography }),
+      ...(profile.carrier === undefined ? {} : { carrier: profile.carrier }),
+      isTargetAuthenticated: profile.isTargetAuthenticated,
+      allowConnectionRetry: profile.allowConnectionRetry,
       userId: profile.userId,
       isAuthenticated: profile.isAuthenticated,
       shouldRetry: profile.shouldRetry,
       retryPolicy: profile.retryPolicy,
-      ...(profile.forceProvider === undefined ? {} : { forceProvider: profile.forceProvider }),
       provider,
       ...(endpointId === undefined ? {} : { endpointId }),
       status: "ready",
@@ -264,6 +267,36 @@ export class DynamoRouteStore implements RouteStore {
         TableName: this.tableName,
         Item: item,
         ConditionExpression: "attribute_not_exists(pk)",
+      }),
+    );
+    return route;
+  }
+
+  async update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute> {
+    const previous = await this.get(id);
+    const now = new Date().toISOString();
+    const { endpointId: _endpointId, lastError: _lastError, ...retained } = previous;
+    void _endpointId;
+    void _lastError;
+    const route: StoredRoute = {
+      ...retained,
+      ...profile,
+      provider,
+      status: "ready",
+      updatedAt: now,
+    };
+    const item: RouteItem = {
+      ...routeKey(id),
+      entity: "route",
+      createdAt: route.createdAt,
+      status: route.status,
+      route,
+    };
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: item,
+        ConditionExpression: "attribute_exists(pk)",
       }),
     );
     return route;
@@ -369,10 +402,22 @@ export class DynamoRouteStore implements RouteStore {
     return items.map((item) => (item as unknown as AccessGrantItem).grant);
   }
 
-  async authenticateAccessGrant(id: string, token: string): Promise<StoredAccessGrant | undefined> {
-    let grant: StoredAccessGrant;
+  async authenticateAccessGrant(username: string, token: string): Promise<StoredAccessGrant | undefined> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity",
+      ExpressionAttributeNames: { "#entity": "entity" },
+      ExpressionAttributeValues: { ":entity": "access_grant" },
+    });
+    const grant = items
+      .map((item) => (item as unknown as AccessGrantItem).grant)
+      .find(
+        (candidate) =>
+          candidate.status !== "revoked" && candidate.credentials.some((credential) => credentialUsername(credential.id) === username),
+      );
+    if (grant === undefined) return undefined;
     try {
-      grant = await this.getAccessGrant(id);
       await this.get(grant.routeId);
     } catch {
       return undefined;
@@ -380,22 +425,23 @@ export class DynamoRouteStore implements RouteStore {
     const now = new Date().toISOString();
     const nowMs = Date.parse(now);
     const credentialIndex = grant.credentials.findIndex((candidateCredential) => {
+      if (credentialUsername(candidateCredential.id) !== username) return false;
       if (!credentialUsable(candidateCredential, nowMs)) return false;
       const candidate = scryptSync(token, candidateCredential.tokenSalt, 32);
       const expected = Buffer.from(candidateCredential.tokenHash, "hex");
       return candidate.length === expected.length && timingSafeEqual(candidate, expected);
     });
     if (credentialIndex < 0) return undefined;
-    const credential = grant.credentials[credentialIndex]!;
+    const credential = grant.credentials[credentialIndex];
+    if (credential === undefined) throw new Error("Matched access-grant credential disappeared");
     credential.lastUsedAt = now;
     grant.updatedAt = now;
     await this.#client.send(
       new UpdateCommand({
         TableName: this.tableName,
-        Key: accessGrantKey(id),
+        Key: accessGrantKey(grant.id),
         UpdateExpression: `SET #grant.#credentials[${credentialIndex}].#lastUsedAt = :now, #grant.updatedAt = :now`,
-        ConditionExpression:
-          "attribute_exists(pk) AND #status <> :revoked AND #grant.#credentials[" + credentialIndex + "].#tokenHash = :tokenHash",
+        ConditionExpression: `attribute_exists(pk) AND #status <> :revoked AND #grant.#credentials[${credentialIndex}].#tokenHash = :tokenHash`,
         ExpressionAttributeNames: {
           "#grant": "grant",
           "#credentials": "credentials",
@@ -444,6 +490,24 @@ export class DynamoRouteStore implements RouteStore {
     } catch (error) {
       conditionalNotFound(error);
     }
+  }
+
+  async revokeAccessGrantCredential(id: string, credentialId: string): Promise<void> {
+    const grant = await this.getAccessGrant(id, true);
+    const credential = grant.credentials.find((candidate) => candidate.id === credentialId);
+    if (credential === undefined) throw new NotFoundError();
+    if (credential.status === "revoked") return;
+    const now = new Date().toISOString();
+    credential.status = "revoked";
+    credential.revokeAt = now;
+    grant.updatedAt = now;
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: grantItem(grant),
+        ConditionExpression: "attribute_exists(pk)",
+      }),
+    );
   }
 
   async revokeAccessGrant(id: string, terminateActive = false): Promise<void> {

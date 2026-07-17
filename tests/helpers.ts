@@ -24,7 +24,7 @@ export interface TestApp {
 }
 
 export interface CreatedRouteResponse {
-  route: {
+  profile: {
     id: string;
     status: string;
   };
@@ -54,6 +54,74 @@ export interface CreatedRouteResponse {
   };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
+}
+
+export interface IssuedAccessGrantApiResponse {
+  grant: {
+    grantId: string;
+    profileId: string;
+    status: string;
+    credentials: Array<Record<string, unknown> & { credentialId: string }>;
+    createdAt: string;
+    updatedAt: string;
+  };
+  credential: Record<string, unknown> & { credentialId: string; username: string; password: string };
+  endpoints: { http: string; socks5: string };
+}
+
+export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiResponse) {
+  return {
+    accessGrant: {
+      ...issued.grant,
+      id: issued.grant.grantId,
+      routeId: issued.grant.profileId,
+      credentials: issued.grant.credentials.map((credential) => ({ ...credential, id: credential.credentialId })),
+    } as unknown as CreatedRouteResponse["accessGrant"],
+    credential: { ...issued.credential, id: issued.credential.credentialId } as unknown as CreatedRouteResponse["credential"],
+    proxyUsername: issued.credential.username,
+    proxyUrls: {
+      http: authenticatedProxyUrl(issued.endpoints.http, issued.credential.username, issued.credential.password),
+      socks5: authenticatedProxyUrl(issued.endpoints.socks5, issued.credential.username, issued.credential.password),
+    },
+  };
+}
+
+type LegacyTestProfileInput = Partial<RouteProfileInput> & {
+  name?: string;
+  targeting?: { country?: string; region?: string; city?: string; carrier?: string; postalCode?: string; asn?: number };
+  rotation?: { mode: string; intervalSeconds?: number };
+  session?: unknown;
+  allowedProtocols?: unknown;
+  retryPolicy?: unknown;
+  isAuthenticated?: boolean;
+  shouldRetry?: boolean;
+};
+
+function canonicalTestProfile(input: LegacyTestProfileInput): RouteProfileInput {
+  const { targeting, isAuthenticated, shouldRetry, ...profile } = input;
+  const carrier = profile.carrier ?? targeting?.carrier;
+  const geography =
+    targeting === undefined
+      ? profile.geography
+      : {
+          ...(targeting.country === undefined ? {} : { countryCode: targeting.country }),
+          ...(targeting.region === undefined ? {} : { regionCode: targeting.region }),
+          ...(targeting.city === undefined ? {} : { city: targeting.city }),
+        };
+  return {
+    customerId: profile.customerId ?? "test-customer",
+    ...(geography === undefined ? {} : { geography }),
+    ...(carrier === undefined ? {} : { carrier }),
+    isTargetAuthenticated: profile.isTargetAuthenticated ?? isAuthenticated ?? false,
+    allowConnectionRetry: profile.allowConnectionRetry ?? shouldRetry ?? false,
+  };
+}
+
+function authenticatedProxyUrl(endpoint: string, username: string, password: string): string {
+  const url = new URL(endpoint);
+  url.username = username;
+  url.password = password;
+  return url.toString();
 }
 
 export async function startHttpTarget(): Promise<TestTarget> {
@@ -146,23 +214,25 @@ export async function controlRequest(
   });
 }
 
-export async function createRoute(
-  app: RunningApplication,
-  profile: Omit<RouteProfileInput, "customerId" | "isAuthenticated" | "shouldRetry"> &
-    Partial<Pick<RouteProfileInput, "customerId" | "isAuthenticated" | "shouldRetry">>,
-): Promise<CreatedRouteResponse> {
-  const response = await controlRequest(app, "/v1/routes", {
+export async function createRoute(app: RunningApplication, profile: LegacyTestProfileInput): Promise<CreatedRouteResponse> {
+  const response = await controlRequest(app, "/v1/profiles", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      customerId: "test-customer",
-      isAuthenticated: false,
-      shouldRetry: false,
-      ...profile,
-    }),
+    body: JSON.stringify(canonicalTestProfile(profile)),
   });
   if (response.status !== 201) throw new Error(`Route creation failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as CreatedRouteResponse;
+  const { profileId } = (await response.json()) as { profileId: string };
+  const [profileResponse, grantResponse] = await Promise.all([
+    controlRequest(app, `/v1/profiles/${profileId}`),
+    controlRequest(app, `/v1/profiles/${profileId}/grants`, { method: "POST" }),
+  ]);
+  if (!profileResponse.ok || grantResponse.status !== 201) throw new Error("Profile setup failed");
+  const publicProfile = ((await profileResponse.json()) as { profile: Record<string, unknown> }).profile;
+  const issued = (await grantResponse.json()) as IssuedAccessGrantApiResponse;
+  return {
+    profile: { ...publicProfile, id: profileId } as CreatedRouteResponse["profile"],
+    ...materializeIssuedAccessGrant(issued),
+  };
 }
 
 export async function requestViaProxy(
@@ -311,9 +381,9 @@ function assertBytes(actual: Buffer, expected: number[]): void {
 export async function waitForRouteStatus(app: RunningApplication, id: string, status: string): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    const response = await controlRequest(app, `/v1/routes/${id}`);
-    const body = (await response.json()) as { route: { status: string } };
-    if (body.route.status === status) return;
+    const response = await controlRequest(app, `/v1/profiles/${id}`);
+    const body = (await response.json()) as { profile: { status: string } };
+    if (body.profile.status === status) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Route ${id} did not reach ${status}`);

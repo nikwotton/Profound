@@ -23,7 +23,12 @@ export interface MockForwardProxyOptions {
   port: number;
   authorize(username: string, password: string): MockIdentity | undefined;
   failure(): SimulatorFailure;
+  reportedDestinationAddress?(actualAddress: string | undefined): string | undefined;
   logger: Logger;
+}
+
+function reportedDestination(options: MockForwardProxyOptions, actualAddress: string | undefined): string | undefined {
+  return options.reportedDestinationAddress?.(actualAddress) ?? "8.8.8.8";
 }
 
 function first(value: string | string[] | undefined): string | undefined {
@@ -138,7 +143,7 @@ export class MockForwardProxy {
         headers: copyHeaders(request.headers),
       },
       (upstreamResponse) => {
-        const resolvedDestination = upstreamResponse.socket.remoteAddress;
+        const resolvedDestination = reportedDestination(this.options, upstreamResponse.socket.remoteAddress);
         response.writeHead(upstreamResponse.statusCode ?? 502, {
           ...copyResponseHeaders(upstreamResponse.headers),
           ...identityHeaders(identity),
@@ -190,7 +195,7 @@ export class MockForwardProxy {
     });
     targetSocket.setTimeout(10_000, () => targetSocket.destroy(new Error("Target timed out")));
     targetSocket.once("connect", () => {
-      const resolvedDestination = targetSocket.remoteAddress;
+      const resolvedDestination = reportedDestination(this.options, targetSocket.remoteAddress);
       clientSocket.write(
         "HTTP/1.1 200 Connection Established\r\n" +
           (resolvedDestination === undefined ? "" : `X-Mock-Resolved-Destination: ${resolvedDestination}\r\n`) +

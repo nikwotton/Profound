@@ -51,7 +51,7 @@ test("DynamoDB persistence hashes credentials and uses the route and affinity in
     destroy: () => {
       destroyed = true;
     },
-  } as unknown as DynamoDBDocumentClient;
+  } as DynamoDBDocumentClient;
   const store = new DynamoRouteStore("route-state", client);
   const profile: RouteProfile = {
     name: "aws-route",
@@ -61,6 +61,8 @@ test("DynamoDB persistence hashes credentials and uses the route and affinity in
     session: { mode: "sticky", id: "session-1", requireGeographicContinuity: true },
     customerId: "customer-a",
     userId: "user-a",
+    isTargetAuthenticated: true,
+    allowConnectionRetry: false,
     isAuthenticated: true,
     shouldRetry: false,
     retryPolicy: { maxAttempts: 1 },
@@ -73,8 +75,8 @@ test("DynamoDB persistence hashes credentials and uses the route and affinity in
   const grant = await store.createAccessGrant("grant-1", "route-1", "user-a", "credential-1", token);
   assert.notEqual(grant.credentials[0]?.tokenHash, token);
   assert.doesNotMatch(JSON.stringify(accessGrantItem), new RegExp(token));
-  assert.equal((await store.authenticateAccessGrant("grant-1", token))?.id, "grant-1");
-  assert.equal(await store.authenticateAccessGrant("grant-1", "incorrect"), undefined);
+  assert.equal((await store.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
+  assert.equal(await store.authenticateAccessGrant("pxy_credential-1", "incorrect"), undefined);
   assert.deepEqual(
     (await store.list()).map((route) => route.id),
     ["route-1"],
@@ -131,9 +133,10 @@ test("DynamoDB persists alert episodes and delivery state", async () => {
         const values = command.input.ExpressionAttributeValues as Record<string, unknown>;
         const entity = values[":entity"];
         const dueBefore = values[":dueBefore"];
+        if (dueBefore !== undefined && typeof dueBefore !== "string") throw new TypeError(":dueBefore must be a string");
         const matched = [...items.values()]
           .filter((item) => entity === undefined || item.entity === entity)
-          .filter((item) => dueBefore === undefined || String(item.createdAt) <= String(dueBefore))
+          .filter((item) => dueBefore === undefined || String(item.createdAt) <= dueBefore)
           .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
         if (command.input.ScanIndexForward === false) matched.reverse();
         return { Items: matched.slice(0, Number(command.input.Limit ?? matched.length)) };
@@ -141,7 +144,7 @@ test("DynamoDB persists alert episodes and delivery state", async () => {
       return {};
     },
     destroy: () => undefined,
-  } as unknown as DynamoDBDocumentClient;
+  } as DynamoDBDocumentClient;
   const store = new DynamoRouteStore("route-state", client);
   const state: HealthAlertState = {
     capability: "all_traffic",
@@ -170,8 +173,10 @@ test("DynamoDB persists alert episodes and delivery state", async () => {
   assert.deepEqual(await store.healthAlertHistory(10), [event]);
   const pending = await store.pendingHealthAlertDeliveries("2026-07-15T00:00:01.000Z", 10);
   assert.equal(pending.length, 1);
+  const pendingDelivery = pending[0];
+  assert.ok(pendingDelivery);
   await store.saveHealthAlertDelivery({
-    ...pending[0]!,
+    ...pendingDelivery,
     status: "delivered",
     attemptCount: 1,
     deliveredAt: "2026-07-15T00:00:01.000Z",
@@ -220,7 +225,8 @@ test("DynamoDB device leases conditionally lock endpoints and survive gateway-lo
             items.set(keyOf(item), item);
           } else if (operation.Update !== undefined) {
             const key = keyOf(operation.Update.Key as Record<string, unknown>);
-            const existing = items.get(key)!;
+            const existing = items.get(key);
+            assert.ok(existing);
             const values = operation.Update.ExpressionAttributeValues as Record<string, unknown>;
             items.set(key, {
               ...existing,
@@ -236,7 +242,7 @@ test("DynamoDB device leases conditionally lock endpoints and survive gateway-lo
       return {};
     },
     destroy: () => undefined,
-  } as unknown as DynamoDBDocumentClient;
+  } as DynamoDBDocumentClient;
   const store = new DynamoRouteStore("route-state", client);
   const now = "2026-07-15T00:00:00.000Z";
   const first = await store.acquireDeviceLease("session-a", "route-a", ["device-1"], now, 15 * 60_000);

@@ -441,7 +441,7 @@ deployedTest("deployed access-grant credentials and mobile affinity survive an E
     isAuthenticated: true,
     shouldRetry: false,
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
   const target = new URL("/restart", environment.metadata.integrationTarget.url).toString();
   const before = await requestViaHttpProxy(route.proxyUrls.http, target);
   assert.equal(before.status, 200);

@@ -35,15 +35,8 @@ export function buildBrightDataUsername(
   now = Date.now(),
   assignment: { logicalOperationId?: string; candidateIndex?: number } = {},
 ): string {
-  const fields = [
-    "brd",
-    "customer",
-    compact(config.customerId),
-    "zone",
-    compact(config.zone),
-    "country",
-    route.targeting.country.toLowerCase(),
-  ];
+  const fields = ["brd", "customer", compact(config.customerId), "zone", compact(config.zone)];
+  if (route.targeting.country !== undefined) fields.push("country", route.targeting.country.toLowerCase());
   if (route.targeting.region !== undefined) fields.push("state", compact(route.targeting.region));
   if (route.targeting.city !== undefined) fields.push("city", compact(route.targeting.city));
   if (route.targeting.postalCode !== undefined) fields.push("zip", route.targeting.postalCode);

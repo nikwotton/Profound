@@ -12,6 +12,7 @@ test("access-grant credentials and mobile affinity survive a service restart", a
   });
   const route = await createRoute(testApp.application, {
     name: "persistent",
+    customerId: "customer-persistent",
     isAuthenticated: true,
     targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
   });
@@ -21,14 +22,18 @@ test("access-grant credentials and mobile affinity survive a service restart", a
   await testApp.stop(false);
   testApp = await startTestApp([target.port], saved);
 
-  const response = await requestViaProxy(route.proxyUrls.http.replace(/:\d+$/, `:${testApp.application.forwardAddress.port}`), target.url);
+  const restartedHttpProxy = new URL(route.proxyUrls.http);
+  restartedHttpProxy.port = String(testApp.application.forwardAddress.port);
+  const response = await requestViaProxy(restartedHttpProxy.toString(), target.url);
   assert.equal(response.status, 200);
   assert.equal(response.headers["x-mock-endpoint-id"], endpointId);
-  assert.equal((await testApp.application.routes.get(route.route.id)).customerId, "test-customer");
-  assert.equal((await testApp.application.routes.get(route.route.id)).userId, "local-dev");
-  assert.deepEqual((await testApp.application.routes.get(route.route.id)).allowedProtocols, ["http", "https", "socks5"]);
-  const socks5Url = route.proxyUrls.socks5.replace(/:\d+$/, `:${testApp.application.socks5Address.port}`);
-  assert.equal(await socks5AuthenticationStatus(socks5Url), 0x00);
+  const persisted = await testApp.application.routes.get(route.profile.id, "local-dev");
+  assert.equal(persisted.customerId, "customer-persistent");
+  assert.equal(persisted.isTargetAuthenticated, true);
+  assert.deepEqual(persisted.geography, { countryCode: "US", regionCode: "CA", city: "Los Angeles" });
+  const restartedSocks5Proxy = new URL(route.proxyUrls.socks5);
+  restartedSocks5Proxy.port = String(testApp.application.socks5Address.port);
+  assert.equal(await socks5AuthenticationStatus(restartedSocks5Proxy.toString()), 0x00);
 });
 
 test("provider authentication, rate limiting, and unavailable peers are normalized", async (t) => {

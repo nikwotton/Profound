@@ -11,7 +11,7 @@ test("versioned OpenAPI artifact stays synchronized with Effect schemas and excl
 
   assert.equal(artifact.info?.version, CONTROL_API_VERSION);
   assert.deepEqual(artifact, live);
-  assert.ok(artifact.paths?.["/v1/routes"]);
+  assert.ok(artifact.paths?.["/v1/profiles"]);
   for (const path of Object.keys(artifact.paths ?? {})) {
     assert.match(path, /^(\/v1\/|\/health\/)/);
     assert.doesNotMatch(path, /proxy|connect|socks/i);
@@ -21,13 +21,13 @@ test("versioned OpenAPI artifact stays synchronized with Effect schemas and excl
 test("OpenAPI compatibility check rejects breaking management-contract changes", () => {
   const baseline = OpenApi.fromApi(ControlApi) as unknown as OpenApiDocument;
   const removedPath = structuredClone(baseline);
-  delete removedPath.paths?.["/v1/routes"];
-  assert.ok(findBreakingOpenApiChanges(baseline, removedPath).some((change) => change.includes("removed path /v1/routes")));
+  delete removedPath.paths?.["/v1/profiles"];
+  assert.ok(findBreakingOpenApiChanges(baseline, removedPath).some((change) => change.includes("removed path /v1/profiles")));
 
   const newlyRequired = structuredClone(baseline);
-  const operation = newlyRequired.paths?.["/v1/routes"] as Record<string, unknown> | undefined;
+  const operation = newlyRequired.paths?.["/v1/profiles"] as Record<string, unknown> | undefined;
   const post = operation?.post as Record<string, unknown> | undefined;
-  if (post === undefined) assert.fail("Expected POST /v1/routes to exist");
+  if (post === undefined) assert.fail("Expected POST /v1/profiles to exist");
   post.parameters = [{ name: "x-breaking-input", in: "header", required: true, schema: { type: "string" } }];
   assert.ok(
     findBreakingOpenApiChanges(baseline, newlyRequired).some((change) =>

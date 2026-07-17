@@ -2,17 +2,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
   type CreatedRouteResponse,
-  controlRequest,
   createRoute,
   deployedEnvironment,
   deployedTest,
-  httpConnectStatus,
   requestViaHttpConnect,
   requestViaHttpProxy,
   requestViaSocks5,
   revokeRoute,
   socks5CommandReply,
-  waitForRouteStatus,
 } from "./helpers.js";
 
 function parsedBody(response: { body: string }): Record<string, unknown> {
@@ -28,7 +25,7 @@ deployedTest("deployed HTTP forwarding preserves native method, path, query, hea
     isAuthenticated: false,
     shouldRetry: false,
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
   const testId = randomUUID();
   const target = new URL(
     "/echo/path?first=one&second=two",
@@ -68,7 +65,7 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
     shouldRetry: true,
     retryPolicy: { maxAttempts: 4 },
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
 
   const statusId = randomUUID();
   const unavailable = await requestViaHttpProxy(route.proxyUrls.http, new URL("/status/503", metadata.integrationTarget.url).toString(), {
@@ -88,7 +85,7 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
   assert.equal(parsedBody(redirect).requestCount, 1);
 });
 
-deployedTest("deployed Bright Data routes support fresh, interval, manual, and authenticated exact-city policies", async (t) => {
+deployedTest("deployed Bright Data routes support fresh exits and authenticated exact-city policies", async (t) => {
   const { metadata } = await deployedEnvironment();
   assert.ok(metadata.integrationTarget);
   const target = new URL("/bright-data", metadata.integrationTarget.url).toString();
@@ -102,50 +99,21 @@ deployedTest("deployed Bright Data routes support fresh, interval, manual, and a
     isAuthenticated: false,
     shouldRetry: false,
   });
-  routeIds.push(fresh.route.id);
+  routeIds.push(fresh.profile.id);
   const freshFirst = await requestViaHttpProxy(fresh.proxyUrls.http, target);
   const freshSecond = await requestViaHttpProxy(fresh.proxyUrls.http, target);
   assert.notEqual(freshFirst.headers["x-mock-exit-ip"], freshSecond.headers["x-mock-exit-ip"]);
   assert.equal(freshFirst.headers["x-mock-city"], "newyork");
 
-  const interval = await createRoute({
-    name: `interval-${Date.now()}`,
-    targeting: { country: "US", region: "NY" },
-    rotation: { mode: "interval", intervalSeconds: 60 },
-    isAuthenticated: false,
-    shouldRetry: false,
-  });
-  routeIds.push(interval.route.id);
-  const intervalFirst = await requestViaHttpProxy(interval.proxyUrls.http, target);
-  const intervalSecond = await requestViaHttpProxy(interval.proxyUrls.http, target);
-  assert.equal(intervalFirst.headers["x-mock-exit-ip"], intervalSecond.headers["x-mock-exit-ip"]);
-
-  const manual = await createRoute({
-    name: `manual-${Date.now()}`,
-    targeting: { country: "US" },
-    rotation: { mode: "manual" },
-    isAuthenticated: false,
-    shouldRetry: false,
-  });
-  routeIds.push(manual.route.id);
-  const before = await requestViaHttpProxy(manual.proxyUrls.http, target);
-  const rotate = await controlRequest(`/v1/routes/${manual.route.id}/rotate`, { method: "POST" });
-  assert.equal(rotate.status, 202);
-  await waitForRouteStatus(manual.route.id, "ready");
-  const after = await requestViaHttpProxy(manual.proxyUrls.http, target);
-  assert.notEqual(before.headers["x-mock-exit-ip"], after.headers["x-mock-exit-ip"]);
-
   const authenticated = await createRoute({
     name: `authenticated-bright-${Date.now()}`,
-    targeting: { country: "US", city: "New York" },
+    targeting: { country: "GB", city: "London" },
     rotation: { mode: "per_request" },
     isAuthenticated: true,
     shouldRetry: false,
-    forceProvider: "bright_data",
   });
-  routeIds.push(authenticated.route.id);
-  assert.equal(authenticated.route.provider, "bright_data");
-  assert.equal((await requestViaHttpProxy(authenticated.proxyUrls.http, target)).headers["x-mock-city"], "newyork");
+  routeIds.push(authenticated.profile.id);
+  assert.equal((await requestViaHttpProxy(authenticated.proxyUrls.http, target)).headers["x-mock-city"], "london");
 });
 
 deployedTest("deployed Proxidize routes retain device affinity, distribute capacity, and rotate within the city", async (t) => {
@@ -165,9 +133,8 @@ deployedTest("deployed Proxidize routes retain device affinity, distribute capac
       }),
     );
   }
-  t.after(async () => Promise.all(routes.map(({ route }) => revokeRoute(route.id).catch(() => undefined))));
+  t.after(async () => Promise.all(routes.map(({ profile }) => revokeRoute(profile.id).catch(() => undefined))));
 
-  assert.ok(routes.every(({ route }) => route.provider === "proxidize"));
   const first = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
   const firstStable = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
   const second = await requestViaHttpProxy(routes[1]!.proxyUrls.http, target);
@@ -175,14 +142,6 @@ deployedTest("deployed Proxidize routes retain device affinity, distribute capac
   assert.equal(first.headers["x-mock-exit-ip"], firstStable.headers["x-mock-exit-ip"]);
   assert.notEqual(first.headers["x-mock-endpoint-id"], second.headers["x-mock-endpoint-id"]);
   assert.equal(first.headers["x-mock-city"], "New York");
-
-  const rotate = await controlRequest(`/v1/routes/${routes[0]!.route.id}/rotate`, { method: "POST" });
-  assert.equal(rotate.status, 202);
-  await waitForRouteStatus(routes[0]!.route.id, "ready");
-  const rotated = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
-  assert.equal(rotated.headers["x-mock-endpoint-id"], first.headers["x-mock-endpoint-id"]);
-  assert.equal(rotated.headers["x-mock-city"], first.headers["x-mock-city"]);
-  assert.notEqual(rotated.headers["x-mock-exit-ip"], first.headers["x-mock-exit-ip"]);
 });
 
 deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic", async (t) => {
@@ -195,7 +154,7 @@ deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and T
     isAuthenticated: false,
     shouldRetry: false,
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
 
   const connectTarget = new URL("/connect?native=query", metadata.integrationTarget.url).toString();
   const connected = await requestViaHttpConnect(route.proxyUrls.http, connectTarget, {
@@ -227,21 +186,17 @@ deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and T
   assert.equal(await socks5CommandReply(route.proxyUrls.socks5, connectTarget, 0x03), 0x07);
 });
 
-deployedTest("deployed gateways enforce route protocols, public destinations, ports, and credential-free targets", async (t) => {
+deployedTest("deployed gateways enforce public destinations, ports, and credential-free targets", async (t) => {
   const { metadata } = await deployedEnvironment();
   assert.ok(metadata.integrationTarget);
   const route = await createRoute({
     name: `http-only-security-${Date.now()}`,
-    allowedProtocols: ["http"],
     targeting: { country: "US" },
     isAuthenticated: false,
     shouldRetry: false,
   });
-  t.after(() => revokeRoute(route.route.id).catch(() => undefined));
+  t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
   const publicTarget = new URL("/security", metadata.integrationTarget.url).toString();
-
-  assert.equal(await httpConnectStatus(route.proxyUrls.http, publicTarget), 403);
-  assert.equal(await socks5CommandReply(route.proxyUrls.socks5, publicTarget, 0x01), 0x02);
 
   const privateTarget = await requestViaHttpProxy(route.proxyUrls.http, "http://127.0.0.1:80/internal");
   assert.equal(privateTarget.status, 403);

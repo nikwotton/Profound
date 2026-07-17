@@ -8,6 +8,7 @@ import {
   proxyWithCredentials,
   requestViaHttpProxy,
   revokeRoute,
+  type PublicRoute,
 } from "./helpers.js";
 
 deployedTest("deployed SST metadata identifies a mock non-production stage with a controlled serverless target", async () => {
@@ -20,7 +21,7 @@ deployedTest("deployed SST metadata identifies a mock non-production stage with 
   assert.notEqual(metadata.productVpcId, metadata.canaryVpcId);
 });
 
-deployedTest("deployed control plane exposes liveness, readiness, OpenAPI, providers, and health", async () => {
+deployedTest("deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI", async () => {
   const live = await controlRequest("/health/live", {}, null);
   assert.equal(live.status, 200);
   assert.deepEqual(await live.json(), { status: "live" });
@@ -33,78 +34,44 @@ deployedTest("deployed control plane exposes liveness, readiness, OpenAPI, provi
   assert.equal(openapi.status, 200);
   const contract = (await openapi.json()) as { openapi?: string; paths?: Record<string, unknown>; components?: unknown };
   assert.match(contract.openapi ?? "", /^3\./);
-  for (const path of ["/v1/routes", "/v1/routes/{id}", "/v1/routes/{id}/rotate", "/v1/providers", "/v1/providers/health"]) {
+  for (const path of ["/v1/profiles", "/v1/profiles/{id}", "/v1/profiles/{id}/grants", "/v1/grants/{grantId}"]) {
     assert.ok(contract.paths?.[path], `OpenAPI is missing ${path}`);
   }
-
-  const providers = await controlRequest("/v1/providers");
-  assert.equal(providers.status, 200);
-  const descriptors = ((await providers.json()) as { data: Array<Record<string, unknown>> }).data;
-  assert.deepEqual(descriptors.map(({ id }) => id).sort(), ["bright_data", "proxidize"]);
-  const serialized = JSON.stringify(descriptors);
-  for (const capability of [
-    "clientProtocols",
-    "geography",
-    "sessions",
-    "exactCity",
-    "rotation",
-    "dnsResolution",
-    "pricing",
-    "usageDimensions",
-  ]) {
-    assert.match(serialized, new RegExp(capability));
-  }
-
-  const health = await controlRequest("/v1/providers/health");
-  assert.equal(health.status, 200);
-  const providerHealth = ((await health.json()) as { data: Array<{ provider: string; state: string }> }).data;
-  assert.deepEqual(providerHealth.map(({ provider }) => provider).sort(), ["bright_data", "proxidize"]);
-  assert.ok(providerHealth.every(({ state }) => state === "healthy"));
+  assert.equal(contract.paths?.["/v1/providers"], undefined);
+  assert.equal(contract.paths?.["/v1/providers/health"], undefined);
 });
 
 deployedTest("deployed route management rejects untrusted and malformed requests", async () => {
-  const unauthorized = await controlRequest("/v1/routes", {}, null);
+  const unauthorized = await controlRequest("/v1/profiles", {}, null);
   assert.equal(unauthorized.status, 401);
 
   const malformedCases: unknown[] = [
     {
-      name: "missing-required-booleans",
       customerId: "customer",
-      targeting: { country: "US" },
+      geography: { countryCode: "US" },
     },
     {
-      name: "authenticated-without-city",
       customerId: "customer",
-      targeting: { country: "US" },
-      isAuthenticated: true,
-      shouldRetry: false,
+      geography: { countryCode: "US" },
+      isTargetAuthenticated: true,
+      allowConnectionRetry: false,
     },
     {
-      name: "bad-interval",
       customerId: "customer",
-      targeting: { country: "US" },
-      isAuthenticated: false,
-      shouldRetry: false,
+      geography: { countryCode: "USA" },
+      isTargetAuthenticated: false,
+      allowConnectionRetry: false,
+    },
+    {
+      customerId: "customer",
+      geography: { countryCode: "US" },
+      isTargetAuthenticated: false,
+      allowConnectionRetry: false,
       rotation: { mode: "interval", intervalSeconds: 59 },
-    },
-    {
-      name: "bad-zip",
-      customerId: "customer",
-      targeting: { country: "CA", postalCode: "10001" },
-      isAuthenticated: false,
-      shouldRetry: false,
-    },
-    {
-      name: "bad-retries",
-      customerId: "customer",
-      targeting: { country: "US" },
-      isAuthenticated: false,
-      shouldRetry: true,
-      retryPolicy: { maxAttempts: 7 },
     },
   ];
   for (const payload of malformedCases) {
-    const response = await controlRequest("/v1/routes", {
+    const response = await controlRequest("/v1/profiles", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -127,38 +94,44 @@ deployedTest(
       shouldRetry: false,
     });
     t.after(async () => {
-      await revokeRoute(route.route.id).catch(() => undefined);
+      await revokeRoute(route.profile.id).catch(() => undefined);
     });
     const issued = new URL(route.proxyUrls.http);
     const token = decodeURIComponent(issued.password);
-    assert.equal(decodeURIComponent(issued.username), route.accessGrant.id);
-    assert.equal(route.proxyUsername, route.accessGrant.id);
-    assert.equal(route.accessGrant.routeId, route.route.id);
+    assert.equal(decodeURIComponent(issued.username), route.credential.username);
+    assert.equal(route.proxyUsername, route.credential.username);
+    assert.notEqual(route.proxyUsername, route.accessGrant.id);
+    assert.equal(route.accessGrant.routeId, route.profile.id);
     assert.equal(route.credential.status, "active");
     assert.equal(Date.parse(route.credential.expiresAt) - Date.parse(route.credential.createdAt), 30 * 24 * 60 * 60_000);
     assert.equal(Date.parse(route.credential.expiresAt) - Date.parse(route.credential.renewalDueAt), 7 * 24 * 60 * 60_000);
     assert.ok(token.length >= 32);
-    assert.equal(route.route.userId, process.env.DEPLOYED_EXPECTED_USER_ID?.trim() || `sst:${environment.stage}`);
-    assert.equal(route.route.customerId, "integration-customer");
-    assert.equal(route.route.provider, "bright_data");
-    assert.deepEqual(route.route.allowedProtocols, ["http", "https", "socks5"]);
+    assert.equal(route.profile.customerId, "integration-customer");
+    assert.deepEqual(route.profile.geography, { countryCode: "US" });
+    assert.equal(route.profile.isTargetAuthenticated, false);
 
-    const detail = await controlRequest(`/v1/routes/${route.route.id}`);
+    const detail = await controlRequest(`/v1/profiles/${route.profile.id}`);
     assert.equal(detail.status, 200);
     const detailText = await detail.text();
     assert.doesNotMatch(detailText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(detailText, /proxyUrl|proxyPassword|tokenHash|tokenSalt|endpointId|password/i);
 
-    const list = await controlRequest("/v1/routes");
+    const list = await controlRequest("/v1/profiles");
     assert.equal(list.status, 200);
     assert.doesNotMatch(await list.text(), new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-    const immutable = await controlRequest(`/v1/routes/${route.route.id}`, {
-      method: "PATCH",
+    const updated = await controlRequest(`/v1/profiles/${route.profile.id}`, {
+      method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ targeting: { country: "CA" } }),
+      body: JSON.stringify({
+        customerId: "integration-customer",
+        geography: { countryCode: "CA" },
+        isTargetAuthenticated: false,
+        allowConnectionRetry: true,
+      }),
     });
-    assert.ok(immutable.status === 404 || immutable.status === 405);
+    assert.equal(updated.status, 200);
+    assert.equal(((await updated.json()) as { profile: PublicRoute }).profile.geography?.countryCode, "CA");
 
     const stored = await awsJson<Record<string, unknown>>(
       [
@@ -168,7 +141,7 @@ deployedTest(
         environment.metadata.routeTable,
         "--consistent-read",
         "--key",
-        JSON.stringify({ pk: { S: `ROUTE#${route.route.id}` }, sk: { S: "STATE" } }),
+        JSON.stringify({ pk: { S: `ROUTE#${route.profile.id}` }, sk: { S: "STATE" } }),
       ],
       environment.region,
     );
@@ -192,39 +165,41 @@ deployedTest(
     assert.match(storedGrantText, /tokenHash|tokenSalt/);
     assert.doesNotMatch(storedGrantText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-    const secondResponse = await controlRequest(`/v1/routes/${route.route.id}/access-grants`, { method: "POST" });
+    const secondResponse = await controlRequest(`/v1/profiles/${route.profile.id}/grants`, { method: "POST" });
     assert.equal(secondResponse.status, 201);
     const second = (await secondResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
-    assert.notEqual(second.accessGrant.id, route.accessGrant.id);
-    assert.equal(second.accessGrant.principalId, route.accessGrant.principalId);
+    assert.notEqual(second.grant.grantId, route.accessGrant.id);
 
     const before = await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString());
     assert.equal(before.status, 200);
-    const rotationResponse = await controlRequest(`/v1/access-grants/${route.accessGrant.id}/credentials/rotate`, { method: "POST" });
+    const rotationResponse = await controlRequest(`/v1/grants/${route.accessGrant.id}/credentials/rotate`, { method: "POST" });
     assert.equal(rotationResponse.status, 200);
     const rotated = (await rotationResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
-    assert.equal(rotated.accessGrant.credentials[0]?.status, "overlap");
+    assert.equal(rotated.grant.credentials[0]?.status, "overlap");
     assert.equal((await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 200);
-    assert.equal((await requestViaHttpProxy(rotated.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 200);
+    const rotatedProxy = proxyWithCredentials(rotated.endpoints.http, rotated.credential.username, rotated.credential.password);
+    assert.equal((await requestViaHttpProxy(rotatedProxy, new URL("/lifecycle", target.url).toString())).status, 200);
 
-    const emergencyRotationResponse = await controlRequest(`/v1/access-grants/${route.accessGrant.id}/credentials/emergency-rotate`, {
+    const emergencyRotationResponse = await controlRequest(`/v1/grants/${route.accessGrant.id}/credentials/emergency-rotate`, {
       method: "POST",
     });
     assert.equal(emergencyRotationResponse.status, 200);
     const emergency = (await emergencyRotationResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
+    const emergencyProxy = proxyWithCredentials(emergency.endpoints.http, emergency.credential.username, emergency.credential.password);
     assert.equal((await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 407);
-    assert.equal((await requestViaHttpProxy(rotated.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 407);
-    assert.equal((await requestViaHttpProxy(emergency.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 200);
+    assert.equal((await requestViaHttpProxy(rotatedProxy, new URL("/lifecycle", target.url).toString())).status, 407);
+    assert.equal((await requestViaHttpProxy(emergencyProxy, new URL("/lifecycle", target.url).toString())).status, 200);
 
-    const revoke = await controlRequest(`/v1/access-grants/${route.accessGrant.id}`, { method: "DELETE" });
+    const revoke = await controlRequest(`/v1/grants/${route.accessGrant.id}`, { method: "DELETE" });
     assert.equal(revoke.status, 204);
-    assert.equal((await controlRequest(`/v1/access-grants/${route.accessGrant.id}`, { method: "DELETE" })).status, 204);
-    const revoked = await requestViaHttpProxy(emergency.proxyUrls.http, new URL("/lifecycle", target.url).toString());
+    assert.equal((await controlRequest(`/v1/grants/${route.accessGrant.id}`, { method: "DELETE" })).status, 204);
+    const revoked = await requestViaHttpProxy(emergencyProxy, new URL("/lifecycle", target.url).toString());
     assert.equal(revoked.status, 407);
-    assert.equal((await requestViaHttpProxy(second.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 200);
+    const secondProxy = proxyWithCredentials(second.endpoints.http, second.credential.username, second.credential.password);
+    assert.equal((await requestViaHttpProxy(secondProxy, new URL("/lifecycle", target.url).toString())).status, 200);
 
     const wrong = await requestViaHttpProxy(
-      proxyWithCredentials(route.proxyUrls.http, route.accessGrant.id, "wrong-route-secret"),
+      proxyWithCredentials(route.proxyUrls.http, route.proxyUsername, "wrong-route-secret"),
       new URL("/lifecycle", target.url).toString(),
     );
     assert.equal(wrong.status, 407);
