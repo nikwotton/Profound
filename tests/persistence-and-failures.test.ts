@@ -80,6 +80,7 @@ test("structured logs redact credentials, cookies, authorization, and URL querie
     proxyUrl: "http://user:token@proxy",
     target: new URL("https://example.test/path?secret=value"),
     destination: "https://embedded-user:embedded-password@example.test/other?embedded=secret#fragment",
+    error: new Error("request to https://error-user:error-password@example.test/failure?token=secret failed; token=another-secret"),
   });
   const output = lines.join("\n");
   assert.doesNotMatch(
@@ -89,6 +90,8 @@ test("structured logs redact credentials, cookies, authorization, and URL querie
   assert.match(output, /\[REDACTED\]/);
   assert.match(output, /https:\/\/example\.test\/path/);
   assert.match(output, /https:\/\/example\.test\/other/);
+  assert.match(output, /Error|failure/);
+  assert.doesNotMatch(output, /error-user|error-password|another-secret/);
 });
 
 test("OpenTelemetry mode keeps console output as an error-only fallback", () => {

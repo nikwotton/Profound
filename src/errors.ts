@@ -5,6 +5,8 @@ export type AppErrorKind =
   | "validation"
   | "authentication"
   | "not_found"
+  | "provider_authentication"
+  | "provider_rate_limit"
   | "provider_unavailable"
   | "provider_protocol"
   | "provider_capacity_limit"
@@ -12,18 +14,55 @@ export type AppErrorKind =
   | "upstream"
   | "internal";
 
+export type AppErrorCode =
+  | "caller_cancelled"
+  | "internal_error"
+  | "invalid_socks5"
+  | "invalid_target"
+  | "not_found"
+  | "payload_too_large"
+  | "protocol_not_allowed"
+  | "provider_authentication_failed"
+  | "provider_capacity_limit"
+  | "provider_override_unsatisfied"
+  | "provider_protocol_error"
+  | "provider_rate_limited"
+  | "provider_target_forbidden"
+  | "provider_unavailable"
+  | "proxy_authentication_required"
+  | "proxy_error"
+  | "request_too_large"
+  | "response_too_large"
+  | "rotation_not_supported"
+  | "route_emergency_revoked"
+  | "target_forbidden"
+  | "target_port_forbidden"
+  | "unsupported_socks5_address"
+  | "unsupported_socks5_command"
+  | "upstream_authentication_failed"
+  | "upstream_error"
+  | "validation_error";
+
+export interface AppErrorOptions extends ErrorOptions {
+  retryAfterMs?: number;
+}
+
 export class AppError extends Error {
   readonly kind: AppErrorKind = "application";
 
   constructor(
     message: string,
-    readonly code: string,
+    readonly code: AppErrorCode,
     readonly statusCode: number,
     readonly retryable = statusCode >= 500,
+    options: AppErrorOptions = {},
   ) {
-    super(message);
+    super(message, options);
     this.name = new.target.name;
+    this.retryAfterMs = options.retryAfterMs;
   }
+
+  readonly retryAfterMs: number | undefined;
 }
 
 export class ValidationError extends AppError {
@@ -58,11 +97,27 @@ export class ProviderUnavailableError extends AppError {
   }
 }
 
+export class ProviderAuthenticationError extends AppError {
+  override readonly kind = "provider_authentication" as const;
+
+  constructor(message = "Upstream provider rejected its configured credentials") {
+    super(message, "provider_authentication_failed", 502, false);
+  }
+}
+
+export class ProviderRateLimitError extends AppError {
+  override readonly kind = "provider_rate_limit" as const;
+
+  constructor(message = "Upstream provider rate limit exceeded", retryAfterMs?: number) {
+    super(message, "provider_rate_limited", 503, true, retryAfterMs === undefined ? {} : { retryAfterMs });
+  }
+}
+
 export class ProviderProtocolError extends AppError {
   override readonly kind = "provider_protocol" as const;
 
   constructor(message = "Upstream provider returned an invalid response") {
-    super(message, "provider_protocol_error", 502, true);
+    super(message, "provider_protocol_error", 502, false);
   }
 }
 
@@ -93,8 +148,8 @@ export class UpstreamError extends AppError {
 export class InternalServiceError extends AppError {
   override readonly kind = "internal" as const;
 
-  constructor() {
-    super("Unexpected internal error", "internal_error", 500, true);
+  constructor(cause?: unknown) {
+    super("Unexpected internal error", "internal_error", 500, true, cause === undefined ? {} : { cause });
   }
 }
 
@@ -102,6 +157,8 @@ export type RouteServiceError =
   | ValidationError
   | AuthenticationError
   | NotFoundError
+  | ProviderAuthenticationError
+  | ProviderRateLimitError
   | ProviderUnavailableError
   | ProviderProtocolError
   | ProviderCapacityLimitError
@@ -114,6 +171,8 @@ export function toRouteServiceError(error: unknown): RouteServiceError {
     error instanceof ValidationError ||
     error instanceof AuthenticationError ||
     error instanceof NotFoundError ||
+    error instanceof ProviderAuthenticationError ||
+    error instanceof ProviderRateLimitError ||
     error instanceof ProviderUnavailableError ||
     error instanceof ProviderProtocolError ||
     error instanceof ProviderCapacityLimitError ||
@@ -123,7 +182,7 @@ export function toRouteServiceError(error: unknown): RouteServiceError {
   ) {
     return error;
   }
-  return new InternalServiceError();
+  return new InternalServiceError(error);
 }
 
 export function errorMessage(error: unknown): string {
@@ -173,8 +232,14 @@ export function assignmentFromError(error: unknown): AssignmentEvidence | undefi
 }
 
 export function isRetryableUpstreamFailure(error: unknown): boolean {
-  if (error instanceof ProviderUnavailableError || error instanceof ProviderProtocolError || error instanceof ProviderCapacityLimitError) {
-    return true;
+  if (
+    error instanceof ProviderAuthenticationError ||
+    error instanceof ProviderRateLimitError ||
+    error instanceof ProviderUnavailableError ||
+    error instanceof ProviderProtocolError ||
+    error instanceof ProviderCapacityLimitError
+  ) {
+    return error.retryable;
   }
   if (!(error instanceof Error)) return false;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;

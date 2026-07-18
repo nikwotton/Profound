@@ -211,7 +211,16 @@ export class RouteService {
       [dependencies.proxidize.descriptor.id, dependencies.proxidize],
     ]);
     const attempt = <A>(operation: () => Promise<A>): Effect.Effect<A, RouteServiceError> =>
-      Effect.tryPromise({ try: operation, catch: toRouteServiceError });
+      Effect.tryPromise({
+        try: operation,
+        catch: (error) => {
+          const normalized = toRouteServiceError(error);
+          if (normalized.kind === "internal") {
+            this.logger.error("Route service operation failed unexpectedly", { error: normalized });
+          }
+          return normalized;
+        },
+      });
     this.effects = {
       ready: () => attempt(() => this.ready()),
       create: (input, userId) => attempt(() => this.create(input, userId)),
@@ -834,6 +843,9 @@ export class RouteService {
   }
 
   async authenticate(id: string, token: string): Promise<AuthenticatedRoute> {
+    if (!/^pxy_[a-zA-Z0-9_-]{1,128}$/.test(id) || token.length === 0 || token.length > 512) {
+      throw new AuthenticationError();
+    }
     const grant = await this.store.authenticateAccessGrant(id, token);
     if (grant === undefined) throw new AuthenticationError();
     return this.#routeForGrant(await this.store.get(grant.routeId), grant);
