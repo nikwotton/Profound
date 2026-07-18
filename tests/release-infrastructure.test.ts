@@ -23,6 +23,11 @@ test("repository delivery policy encodes required CI, review, dependency, migrat
   assert.match(file(".github/workflows/codeql.yml"), /security_and_analysis\.advanced_security\.status == 'enabled'/);
   assert.match(file(".github/workflows/live-provider-smoke.yml"), /schedule:/);
   assert.match(file(".github/workflows/live-provider-smoke.yml"), /src\/providers\/\*\*/);
+  assert.match(
+    file(".github/workflows/live-provider-smoke.yml"),
+    /Live provider smoke skipped because the environment has no vendor credentials/,
+  );
+  assert.match(file(".github/workflows/live-provider-smoke.yml"), /github\.event_name != 'pull_request'/);
 });
 
 test("AWS delivery workflows build once, promote unchanged, serialize releases, and clean ephemeral stages", () => {
