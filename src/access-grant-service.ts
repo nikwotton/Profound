@@ -47,6 +47,10 @@ export class AccessGrantService {
     private readonly logger: Logger,
   ) {}
 
+  #now(): number {
+    return this.options.now?.() ?? Date.now();
+  }
+
   #proxyEndpoints(): IssuedAccessGrant["endpoints"] {
     const addresses = this.options.proxyAddresses();
     return {
@@ -63,7 +67,7 @@ export class AccessGrantService {
   }
 
   #newLogicalSession(id: string, grantId: string, routeId: string): StoredLogicalSession {
-    const now = new Date(this.options.now?.() ?? Date.now()).toISOString();
+    const now = new Date(this.#now()).toISOString();
     return {
       id,
       grantId,
@@ -84,7 +88,7 @@ export class AccessGrantService {
     const grant = await this.store.createAccessGrant(grantId, routeId, principalId, credentialId, token, sessionMode, sessionId, jobId);
     const session = sessionId === undefined ? undefined : this.#newLogicalSession(sessionId, grantId, routeId);
     if (session !== undefined) await this.store.createLogicalSession(session);
-    const publicGrant = toPublicAccessGrant(grant);
+    const publicGrant = toPublicAccessGrant(grant, this.#now());
     const credential = publicGrant.credentials.find((candidate) => candidate.credentialId === credentialId);
     if (credential === undefined) throw new Error("New access-grant credential was not persisted");
     this.logger.info("Access grant issued", { routeId, accessGrantId: grantId, userId: principalId });
@@ -111,7 +115,7 @@ export class AccessGrantService {
     const session = this.#newLogicalSession(sessionId, existing.id, existing.routeId);
     await this.store.createLogicalSession(session);
     const grant = await this.store.addAccessGrantCredential(existing.id, credentialId, token, "managed", sessionId);
-    const publicGrant = toPublicAccessGrant(grant);
+    const publicGrant = toPublicAccessGrant(grant, this.#now());
     const credential = publicGrant.credentials.find((candidate) => candidate.credentialId === credentialId);
     if (credential === undefined) throw new Error("Managed-session credential was not persisted");
     return {
@@ -130,7 +134,7 @@ export class AccessGrantService {
     const credentialId = randomUUID();
     const token = randomBytes(32).toString("base64url");
     const grant = await this.store.addAccessGrantCredential(existing.id, credentialId, token, "none");
-    const publicGrant = toPublicAccessGrant(grant);
+    const publicGrant = toPublicAccessGrant(grant, this.#now());
     const credential = publicGrant.credentials.find((candidate) => candidate.credentialId === credentialId);
     if (credential === undefined) throw new Error("Stateless credential was not persisted");
     return { grant: publicGrant, credential: { ...credential, password: token }, endpoints: this.#proxyEndpoints() };
@@ -159,11 +163,12 @@ export class AccessGrantService {
   async list(routeId: string, principalId: string): Promise<PublicAccessGrant[]> {
     const route = await this.store.get(routeId);
     if (route.userId !== principalId) throw new NotFoundError();
-    return (await this.store.listAccessGrants(routeId, principalId)).map(toPublicAccessGrant);
+    const now = this.#now();
+    return (await this.store.listAccessGrants(routeId, principalId)).map((grant) => toPublicAccessGrant(grant, now));
   }
 
   async get(id: string, principalId: string): Promise<PublicAccessGrant> {
-    return toPublicAccessGrant(await this.#ownedAccessGrant(id, principalId, true));
+    return toPublicAccessGrant(await this.#ownedAccessGrant(id, principalId, true), this.#now());
   }
 
   async getCredential(grantId: string, credentialId: string, principalId: string): Promise<PublicAccessGrantCredential> {
@@ -189,7 +194,7 @@ export class AccessGrantService {
       token,
       suspectedCompromise,
     );
-    const grant = toPublicAccessGrant(rotated);
+    const grant = toPublicAccessGrant(rotated, this.#now());
     const credential = grant.credentials.find((candidate) => candidate.credentialId === credentialId);
     if (credential === undefined) throw new Error("Rotated access-grant credential was not persisted");
     this.logger.info("Access grant credential rotated", {

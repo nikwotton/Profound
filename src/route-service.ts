@@ -327,7 +327,7 @@ export class RouteService {
     if (error instanceof AppError && /hard_limit|capacity_limit/.test(error.code)) return "provider_hard_limit";
     if (error instanceof AppError && error.code.includes("capacity")) return "capacity_failure";
     if (error instanceof Error && "code" in error && error.code === "ETIMEDOUT") return "timeout";
-    if (error instanceof ProviderUnavailableError && /timed out|timeout/i.test(error.message)) return "timeout";
+    if (error instanceof ProviderUnavailableError && error.reason === "timeout") return "timeout";
     return "establishment_failure";
   }
 

@@ -90,6 +90,7 @@ function establishedUsage(
     failover: upstream.provider !== route.provider,
     bytesSent: options.bytesSent,
     bytesReceived: options.bytesReceived,
+    latencyMs: Math.max(0, Date.parse(options.completedAt) - options.attemptStartedAt),
     ...usageDestination(options.target.host, options.target.port),
     ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
@@ -166,6 +167,7 @@ function failedUsage(
     failover: options.attemptedProvider !== undefined && options.attemptedProvider !== route.provider,
     bytesSent: 0,
     bytesReceived: 0,
+    latencyMs: Math.max(0, Date.parse(options.completedAt) - options.attemptStartedAt),
     ...usageDestination(options.target.host, options.target.port),
     ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
@@ -324,7 +326,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         throw error;
       }
       opened.socket.setTimeout(options.streamIdleTimeoutMs, () => {
-        opened.socket.destroy(new ProviderUnavailableError("Proxy tunnel exceeded the stream idle timeout"));
+        opened.socket.destroy(new ProviderUnavailableError("Proxy tunnel exceeded the stream idle timeout", "timeout"));
       });
       options.clientSocket
         .pipe(

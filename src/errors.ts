@@ -92,8 +92,19 @@ export class NotFoundError extends AppError {
 export class ProviderUnavailableError extends AppError {
   override readonly kind = "provider_unavailable" as const;
 
-  constructor(message = "Upstream provider is unavailable") {
+  constructor(
+    message = "Upstream provider is unavailable",
+    readonly reason: "timeout" | "unavailable" = "unavailable",
+  ) {
     super(message, "provider_unavailable", 503);
+  }
+}
+
+export class RequestTooLargeError extends AppError {
+  override readonly kind = "validation" as const;
+
+  constructor(message = "Request body is too large") {
+    super(message, "request_too_large", 413, false);
   }
 }
 

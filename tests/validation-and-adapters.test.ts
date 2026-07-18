@@ -168,7 +168,7 @@ test("provisional operational values are typed, versioned policies", () => {
     OBSERVABILITY_POLICY,
     TRANSPORT_POLICY,
   ]) {
-    assert.match(policy.version, /v0|hypotheses/);
+    assert.match(policy.version, /v0|hypotheses|roadmap/);
     assert.equal(policy.lastValidatedAt, "2026-07-18");
   }
   assert.deepEqual(

@@ -215,7 +215,7 @@ export async function openUpstreamTunnel(
   };
   options.signal.addEventListener("abort", abort, { once: true });
   const timeout = setTimeout(() => {
-    socket.destroy(new ProviderUnavailableError("Upstream proxy timed out"));
+    socket.destroy(new ProviderUnavailableError("Upstream proxy timed out", "timeout"));
   }, options.connectTimeoutMs);
   try {
     await once(socket, "connect", { signal: options.signal });

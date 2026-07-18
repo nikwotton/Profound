@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { CAPACITY_POLICY, recommendCapacity, type CapacityRecommendation } from "./capacity-policy.js";
+import { expectIsoTimestamp } from "./decoding.js";
 import type { Logger } from "./logger.js";
 import { ROUTING_POLICY } from "./routing-policy.js";
 import { toPublicAccessGrant, toPublicLogicalSession, type RouteStore } from "./store.js";
@@ -237,6 +238,20 @@ const USAGE_GROUPS = [
 ] as const satisfies readonly UsageGroupBy[];
 const USAGE_PROVIDERS = ["bright_data", "proxidize", "unresolved"] as const satisfies readonly UsageProvider[];
 
+type UsageQueryErrorCode =
+  | "invalid_usage_group"
+  | "invalid_usage_interval"
+  | "invalid_usage_preset"
+  | "invalid_usage_provider"
+  | "invalid_usage_range"
+  | "invalid_usage_session_mode";
+
+class UsageQueryError extends Error {
+  constructor(readonly code: UsageQueryErrorCode) {
+    super(code);
+  }
+}
+
 function includes<const Values extends readonly string[]>(values: Values, value: string): value is Values[number] {
   return values.some((candidate) => candidate === value);
 }
@@ -244,17 +259,29 @@ function includes<const Values extends readonly string[]>(values: Values, value:
 function usageQuery(url: URL, now: number): UsageQuery {
   const preset = url.searchParams.get("preset");
   const presetMs = preset === "day" ? 86_400_000 : preset === "week" ? 7 * 86_400_000 : preset === "month" ? 30 * 86_400_000 : undefined;
-  if (preset !== null && presetMs === undefined) throw new Error("invalid_usage_preset");
-  const from = url.searchParams.get("from") ?? new Date(now - (presetMs ?? 30 * 86_400_000)).toISOString();
-  const to = url.searchParams.get("to") ?? new Date(now).toISOString();
+  if (preset !== null && presetMs === undefined) throw new UsageQueryError("invalid_usage_preset");
+  let from: string;
+  let to: string;
+  try {
+    from = expectIsoTimestamp(
+      url.searchParams.get("from") ?? new Date(now - (presetMs ?? 30 * 86_400_000)).toISOString(),
+      "usage query from",
+    );
+    to = expectIsoTimestamp(url.searchParams.get("to") ?? new Date(now).toISOString(), "usage query to");
+  } catch {
+    throw new UsageQueryError("invalid_usage_range");
+  }
+  if (Date.parse(from) >= Date.parse(to)) throw new UsageQueryError("invalid_usage_range");
   const intervalValue = url.searchParams.get("interval") ?? "day";
-  if (!includes(USAGE_INTERVALS, intervalValue)) throw new Error("invalid_usage_interval");
+  if (!includes(USAGE_INTERVALS, intervalValue)) throw new UsageQueryError("invalid_usage_interval");
   const groupValue = url.searchParams.get("groupBy") ?? undefined;
-  if (groupValue !== undefined && !includes(USAGE_GROUPS, groupValue)) throw new Error("invalid_usage_group");
+  if (groupValue !== undefined && !includes(USAGE_GROUPS, groupValue)) throw new UsageQueryError("invalid_usage_group");
   const providerValue = url.searchParams.get("provider") ?? undefined;
-  if (providerValue !== undefined && !includes(USAGE_PROVIDERS, providerValue)) throw new Error("invalid_usage_provider");
+  if (providerValue !== undefined && !includes(USAGE_PROVIDERS, providerValue)) throw new UsageQueryError("invalid_usage_provider");
   const sessionMode = url.searchParams.get("sessionMode") ?? undefined;
-  if (sessionMode !== undefined && sessionMode !== "managed" && sessionMode !== "none") throw new Error("invalid_session_mode");
+  if (sessionMode !== undefined && sessionMode !== "managed" && sessionMode !== "none") {
+    throw new UsageQueryError("invalid_usage_session_mode");
+  }
   return {
     from,
     to,
@@ -498,7 +525,7 @@ export class StatusApplicationServer {
             capacityUsage,
             await this.store.latestProviderInventory("proxidize"),
             profiles,
-            accessGrants.map(toPublicAccessGrant),
+            accessGrants.map((grant) => toPublicAccessGrant(grant, now)),
             logicalSessions.map(toPublicLogicalSession),
             await this.store.listCapacityCircuits(to),
             now,
@@ -511,8 +538,8 @@ export class StatusApplicationServer {
       }
       json(response, 404, { error: "not_found" });
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith("invalid_usage_")) {
-        json(response, 400, { error: error.message });
+      if (error instanceof UsageQueryError) {
+        json(response, 400, { error: error.code });
         return;
       }
       this.logger.error("Status application request failed", {

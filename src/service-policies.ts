@@ -24,7 +24,7 @@ export interface AccountingPolicy {
 }
 
 export const ACCOUNTING_POLICY: AccountingPolicy = Object.freeze({
-  version: "usage-accounting-v0-2026-07-18",
+  version: "usage-accounting-roadmap-2026-07-18",
   lastValidatedAt: "2026-07-18",
   reconciliationCadence: "daily",
   varianceAbsoluteFloorUsd: 1,
@@ -55,7 +55,7 @@ export interface HealthPolicy {
 }
 
 export const HEALTH_POLICY: HealthPolicy = Object.freeze({
-  version: "health-verification-v0-2026-07-18",
+  version: "health-policy-hypotheses-2026-07-18",
   lastValidatedAt: "2026-07-18",
   syntheticCooldownMs: 5 * 60_000,
   geoIpRefreshIntervalMs: (7 * 24 * 60 * 60_000) / 2,

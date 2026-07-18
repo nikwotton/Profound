@@ -209,6 +209,7 @@ test("HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage recor
     }
     assert.deepEqual(new Set(records.map((record) => record.protocol)), new Set(["http", "https", "socks5"]));
     assert.ok(records.every((record) => record.kind === "attempt" && record.pricingVersion !== undefined));
+    assert.ok(records.every((record) => record.latencyMs !== undefined && record.latencyMs >= 0));
     assert.ok(records.every((record) => record.logicalOperationId && record.customerId && record.userId && record.routeId));
   } finally {
     await store.close();

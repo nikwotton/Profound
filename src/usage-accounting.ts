@@ -456,6 +456,19 @@ function estimatedCost(
   return { amount, connectionMs };
 }
 
+function latencyMetrics(records: readonly UsageRecord[]): { averageLatencyMs: number; p95LatencyMs: number } {
+  const values = records
+    .flatMap((record) => (record.latencyMs === undefined ? [] : [record.latencyMs]))
+    .sort((left, right) => left - right);
+  if (values.length === 0) return { averageLatencyMs: 0, p95LatencyMs: 0 };
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const p95Index = Math.max(0, Math.ceil(values.length * 0.95) - 1);
+  return {
+    averageLatencyMs: total / values.length,
+    p95LatencyMs: values[p95Index] ?? 0,
+  };
+}
+
 export function summarizeUsage(
   records: readonly UsageRecord[],
   query: UsageQuery,
@@ -524,6 +537,7 @@ export function summarizeUsage(
       const customerId = query.groupBy === "customer" ? groupedValue : query.customerId;
       const estimate = estimatedCost(query.groupBy === "customer" ? periodEntries : entries, periodStartedAt, periodEndsAt, customerId);
       const capacity = capacityMetrics(entries, periodStartedAt, periodEndsAt);
+      const latency = latencyMetrics(completedEntries);
       const providers = new Set(entries.map((record) => record.provider).filter((provider) => provider !== "unresolved"));
       const matchingTotals = totals.filter(
         (total) => providers.has(total.provider) && total.periodStartedAt === periodStartedAt && total.periodEndsAt === periodEndsAt,
@@ -559,6 +573,7 @@ export function summarizeUsage(
         failoverCount: completedEntries.filter((record) => record.failover).length,
         bytesSent: completedEntries.reduce((sum, record) => sum + record.bytesSent, 0),
         bytesReceived: completedEntries.reduce((sum, record) => sum + record.bytesReceived, 0),
+        ...latency,
         ...capacity,
         capacityPolicyVersion: CAPACITY_POLICY.version,
         providerSpendUsd,
@@ -687,6 +702,8 @@ export class UsageAccountingWorker {
             failoverCount: 0,
             bytesSent: 0,
             bytesReceived: 0,
+            averageLatencyMs: 0,
+            p95LatencyMs: 0,
             activeConnectionMs: 0,
             provisionedSlotMs: 0,
             healthyIdleSlotMs: 0,

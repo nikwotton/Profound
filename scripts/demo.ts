@@ -14,7 +14,7 @@ const pauseBeforeStep =
       };
 
 const demo = await startDemo({
-  ...(ephemeralPorts ? { forwardPort: 0, socks5Port: 0, controlPort: 0 } : {}),
+  ...(ephemeralPorts ? { forwardPort: 0, socks5Port: 0, controlPort: 0, statusPort: 0 } : {}),
   ...(pauseBeforeStep === undefined ? {} : { pauseBeforeStep }),
   logger: createLogger({ consoleMode: "errors", instrumentationScope: "profound-proxy-demo" }),
 }).finally(() => {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Schema } from "effect";
 import {
   axiomJson,
   awsJson,
@@ -37,9 +38,50 @@ interface TaskDefinition {
   containerDefinitions?: ContainerDefinition[];
 }
 
+const optional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
+const mutableArray = <S extends Schema.Schema.Any>(schema: S) => Schema.mutable(Schema.Array(schema));
+const StringEntrySchema = Schema.Struct({ name: optional(Schema.String), value: optional(Schema.String) });
+const SecretEntrySchema = Schema.Struct({ name: optional(Schema.String), valueFrom: optional(Schema.String) });
+const AttributeSchema = Schema.Struct({ Key: optional(Schema.String), Value: optional(Schema.String) });
+const SubnetSchema = Schema.Struct({ VpcId: optional(Schema.String) });
+const EcsServiceSchema: Schema.Schema<EcsService> = Schema.Struct({
+  serviceName: optional(Schema.String),
+  status: optional(Schema.String),
+  desiredCount: optional(Schema.Number),
+  runningCount: optional(Schema.Number),
+  taskDefinition: optional(Schema.String),
+  deployments: optional(
+    mutableArray(
+      Schema.Struct({ status: optional(Schema.String), runningCount: optional(Schema.Number), desiredCount: optional(Schema.Number) }),
+    ),
+  ),
+  networkConfiguration: optional(
+    Schema.Struct({ awsvpcConfiguration: optional(Schema.Struct({ subnets: optional(mutableArray(Schema.String)) })) }),
+  ),
+  loadBalancers: optional(mutableArray(Schema.Struct({ targetGroupArn: optional(Schema.String) }))),
+  launchType: optional(Schema.String),
+  capacityProviderStrategy: optional(mutableArray(Schema.Struct({ capacityProvider: optional(Schema.String) }))),
+});
+const ContainerDefinitionSchema: Schema.Schema<ContainerDefinition> = Schema.Struct({
+  name: optional(Schema.String),
+  image: optional(Schema.String),
+  environment: optional(mutableArray(StringEntrySchema)),
+  secrets: optional(mutableArray(SecretEntrySchema)),
+});
+const TaskDefinitionSchema: Schema.Schema<TaskDefinition> = Schema.Struct({
+  taskDefinitionArn: optional(Schema.String),
+  taskRoleArn: optional(Schema.String),
+  executionRoleArn: optional(Schema.String),
+  containerDefinitions: optional(mutableArray(ContainerDefinitionSchema)),
+});
+const ApiDescriptionSchema = Schema.Struct({ ProtocolType: optional(Schema.String), ApiEndpoint: optional(Schema.String) });
+const SubnetsResponseSchema = Schema.Struct({ Subnets: optional(mutableArray(SubnetSchema)) });
+const AttributesResponseSchema = Schema.Struct({ Attributes: optional(mutableArray(AttributeSchema)) });
+
 async function describeService(cluster: string, service: string, region: string): Promise<EcsService> {
-  const result = await awsJson<{ services?: EcsService[] }>(
+  const result = await awsJson(
     ["ecs", "describe-services", "--cluster", cluster, "--services", service],
+    Schema.Struct({ services: optional(mutableArray(EcsServiceSchema)) }),
     region,
   );
   const described = result.services?.[0];
@@ -48,8 +90,9 @@ async function describeService(cluster: string, service: string, region: string)
 }
 
 async function describeTaskDefinition(taskDefinition: string, region: string): Promise<TaskDefinition> {
-  const result = await awsJson<{ taskDefinition?: TaskDefinition }>(
+  const result = await awsJson(
     ["ecs", "describe-task-definition", "--task-definition", taskDefinition],
+    Schema.Struct({ taskDefinition: optional(TaskDefinitionSchema) }),
     region,
   );
   if (result.taskDefinition === undefined) throw new Error(`Task definition ${taskDefinition} was not found`);
@@ -69,13 +112,17 @@ async function loadBalancerSchemes(service: EcsService, region: string): Promise
     targetGroupArn === undefined ? [] : [targetGroupArn],
   );
   if (targetGroups.length === 0) return [];
-  const groups = await awsJson<{ TargetGroups?: Array<{ LoadBalancerArns?: string[] }> }>(
+  const groups = await awsJson(
     ["elbv2", "describe-target-groups", "--target-group-arns", ...targetGroups],
+    Schema.Struct({
+      TargetGroups: optional(mutableArray(Schema.Struct({ LoadBalancerArns: optional(mutableArray(Schema.String)) }))),
+    }),
     region,
   );
   const loadBalancers = [...new Set((groups.TargetGroups ?? []).flatMap(({ LoadBalancerArns }) => LoadBalancerArns ?? []))];
-  const described = await awsJson<{ LoadBalancers?: Array<{ Scheme?: string }> }>(
+  const described = await awsJson(
     ["elbv2", "describe-load-balancers", "--load-balancer-arns", ...loadBalancers],
+    Schema.Struct({ LoadBalancers: optional(mutableArray(Schema.Struct({ Scheme: optional(Schema.String) }))) }),
     region,
   );
   return (described.LoadBalancers ?? []).flatMap(({ Scheme }) => (Scheme === undefined ? [] : [Scheme]));
@@ -152,14 +199,20 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
     }
   }
 
-  const canaryFunction = await awsJson<{
-    Configuration?: {
-      FunctionArn?: string;
-      Role?: string;
-      VpcConfig?: { SubnetIds?: string[] };
-      Environment?: { Variables?: Record<string, string> };
-    };
-  }>(["lambda", "get-function", "--function-name", metadata.canary.functionArn], environment.region);
+  const canaryFunction = await awsJson(
+    ["lambda", "get-function", "--function-name", metadata.canary.functionArn],
+    Schema.Struct({
+      Configuration: optional(
+        Schema.Struct({
+          FunctionArn: optional(Schema.String),
+          Role: optional(Schema.String),
+          VpcConfig: optional(Schema.Struct({ SubnetIds: optional(mutableArray(Schema.String)) })),
+          Environment: optional(Schema.Struct({ Variables: optional(Schema.Record({ key: Schema.String, value: Schema.String })) })),
+        }),
+      ),
+    }),
+    environment.region,
+  );
   assert.equal(canaryFunction.Configuration?.FunctionArn, metadata.canary.functionArn);
   const canaryText = JSON.stringify(canaryFunction);
   for (const forbidden of ["ROUTE_TABLE_NAME", "BRIGHT_DATA", "PROXIDIZE", "CONTROL_API_TOKEN", "HEALTH_AGGREGATOR_URL"]) {
@@ -170,8 +223,9 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
   assert.match(canaryEnvironment["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "", /^http:\/\/CanaryTelemetryCollector\./);
   assert.equal(metadata.geoIpBundleConfigured, true);
   assert.equal(metadata.canary.geoIpPackaged, true);
-  const canaryApi = await awsJson<{ ProtocolType?: string; ApiEndpoint?: string }>(
+  const canaryApi = await awsJson(
     ["apigatewayv2", "get-api", "--api-id", metadata.canary.apiId],
+    ApiDescriptionSchema,
     environment.region,
   );
   assert.equal(canaryApi.ProtocolType, "HTTP");
@@ -179,25 +233,33 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
 
   const integrationTarget = metadata.integrationTarget;
   assert.ok(integrationTarget);
-  const integrationFunction = await awsJson<{
-    Configuration?: {
-      FunctionArn?: string;
-      Environment?: { Variables?: Record<string, string> };
-    };
-  }>(["lambda", "get-function", "--function-name", integrationTarget.functionArn], environment.region);
+  const integrationFunction = await awsJson(
+    ["lambda", "get-function", "--function-name", integrationTarget.functionArn],
+    Schema.Struct({
+      Configuration: optional(
+        Schema.Struct({
+          FunctionArn: optional(Schema.String),
+          Environment: optional(Schema.Struct({ Variables: optional(Schema.Record({ key: Schema.String, value: Schema.String })) })),
+        }),
+      ),
+    }),
+    environment.region,
+  );
   assert.equal(integrationFunction.Configuration?.FunctionArn, integrationTarget.functionArn);
   const integrationEnvironment = integrationFunction.Configuration?.Environment?.Variables ?? {};
   assert.equal(integrationEnvironment["INTEGRATION_TARGET_TABLE_NAME"], integrationTarget.stateTable);
   for (const forbidden of ["ROUTE_TABLE_NAME", "BRIGHT_DATA", "PROXIDIZE", "CONTROL_API_TOKEN", "AXIOM_TOKEN"]) {
     assert.ok(!JSON.stringify(integrationEnvironment).includes(forbidden));
   }
-  const targetConcurrency = await awsJson<{ ReservedConcurrentExecutions?: number }>(
+  const targetConcurrency = await awsJson(
     ["lambda", "get-function-concurrency", "--function-name", integrationTarget.functionArn],
+    Schema.Struct({ ReservedConcurrentExecutions: optional(Schema.Number) }),
     environment.region,
   );
   assert.equal(targetConcurrency.ReservedConcurrentExecutions, 5);
-  const targetApi = await awsJson<{ ProtocolType?: string; ApiEndpoint?: string }>(
+  const targetApi = await awsJson(
     ["apigatewayv2", "get-api", "--api-id", integrationTarget.apiId],
+    ApiDescriptionSchema,
     environment.region,
   );
   assert.equal(targetApi.ProtocolType, "HTTP");

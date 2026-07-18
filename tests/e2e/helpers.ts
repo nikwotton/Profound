@@ -4,6 +4,8 @@ import { request as httpsRequest } from "node:https";
 import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
+import { Schema } from "effect";
+import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema } from "../../src/control-contract.js";
 import { expectBufferChunk } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
 import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../../src/types.js";
@@ -88,7 +90,7 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
     body: JSON.stringify(profile),
   });
   if (response.status !== 201) throw new Error(`Profile creation failed: ${response.status} ${await response.text()}`);
-  const { profileId } = (await response.json()) as { profileId: string };
+  const { profileId } = Schema.decodeUnknownSync(CreatedProfileSchema)(await response.json());
   const [profileResponse, grantResponse] = await Promise.all([
     controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}`),
     controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}/grants`, {
@@ -100,8 +102,8 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
   if (!profileResponse.ok || grantResponse.status !== 201) {
     throw new Error(`Profile setup failed: profile=${profileResponse.status} grant=${grantResponse.status}`);
   }
-  const publicProfile = ((await profileResponse.json()) as { profile: PublicRoute }).profile;
-  const issued = (await grantResponse.json()) as IssuedAccessGrantResponse;
+  const publicProfile = Schema.decodeUnknownSync(ProfileResponseSchema)(await profileResponse.json()).profile;
+  const issued = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await grantResponse.json());
   return {
     profile: publicProfile,
     accessGrant: issued.grant,
@@ -156,8 +158,9 @@ async function readExactly(socket: ProxySocket, length: number): Promise<Buffer>
   const chunks: Buffer[] = [];
   let remaining = length;
   while (remaining > 0) {
-    const chunk = socket.read(remaining) as Buffer | null;
-    if (chunk !== null) {
+    const value: unknown = socket.read(remaining);
+    if (value !== null) {
+      const chunk = expectBufferChunk(value, "E2E proxy response chunk");
       chunks.push(chunk);
       remaining -= chunk.length;
       continue;

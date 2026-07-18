@@ -49,7 +49,8 @@ test("the fixed local runtime adds no standalone environment configuration contr
   const localRuntime = readFileSync("src/local-runtime.ts", "utf8");
   assert.match(localRuntime, /PROVIDER_MODE: "mock"/);
   assert.match(localRuntime, /OTEL_SDK_DISABLED: "true"/);
-  assert.match(localRuntime, /storeFactory: \(\) => new InMemoryRouteStore\(\)/);
+  assert.match(localRuntime, /storeFactory: \(\) => \{/);
+  assert.match(localRuntime, /store = new InMemoryRouteStore\(\)/);
   assert.doesNotMatch(localRuntime, /process\.env|PERSISTENCE_BACKEND/);
 
   const infrastructure = readFileSync("infra/providers/aws.ts", "utf8");

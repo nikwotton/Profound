@@ -6,7 +6,9 @@ import { connect as netConnect, isIP, type Socket } from "node:net";
 import { promisify } from "node:util";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
-import { expectBufferChunk } from "../../src/decoding.js";
+import { Schema } from "effect";
+import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema } from "../../src/control-contract.js";
+import { expectBufferChunk, parseJson } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
 import type { RouteProfileInput } from "../../src/types.js";
 
@@ -102,6 +104,90 @@ export interface DeployedEnvironment {
   canarySigningSecret?: string;
   metadata: DeployedMetadata;
 }
+
+const mutableArray = <S extends Schema.Schema.Any>(schema: S) => Schema.mutable(Schema.Array(schema));
+const optional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
+
+const ServiceMetadataSchema: Schema.Schema<ServiceMetadata> = Schema.Struct({
+  cluster: Schema.String,
+  service: Schema.String,
+  taskDefinition: Schema.String,
+  taskRole: Schema.String,
+  executionRole: Schema.String,
+});
+
+const DeployedMetadataSchema: Schema.Schema<DeployedMetadata> = Schema.Struct({
+  schemaVersion: Schema.Literal(3),
+  app: Schema.String,
+  stage: Schema.String,
+  deploymentProvider: Schema.Literal("aws"),
+  region: Schema.String,
+  providerMode: Schema.Literal("mock", "live"),
+  geoIpBundleConfigured: Schema.Boolean,
+  routeTable: Schema.String,
+  compute: Schema.Struct({
+    orchestration: Schema.Literal("ecs"),
+    launchType: Schema.Literal("FARGATE"),
+    expansionPath: Schema.mutable(Schema.Tuple(Schema.Literal("ECS_MANAGED_INSTANCES"), Schema.Literal("EC2"))),
+  }),
+  proxyTransport: Schema.Struct({
+    loadBalancer: Schema.Literal("network"),
+    scheme: Schema.Literal("internal"),
+    httpListenerIdleTimeoutSeconds: Schema.Number,
+    socks5ListenerIdleTimeoutSeconds: Schema.Number,
+    deregistrationDelaySeconds: Schema.Number,
+    connectionTerminationOnDeregistration: Schema.Literal(false),
+  }),
+  telemetry: Schema.Struct({
+    backend: Schema.Literal("axiom"),
+    endpoint: Schema.String,
+    datasets: Schema.Struct({ logs: Schema.String, traces: Schema.String, metrics: Schema.String }),
+    retentionDays: Schema.Number,
+  }),
+  httpProxy: Schema.String,
+  socks5Proxy: Schema.String,
+  controlApi: Schema.String,
+  publicCanary: Schema.String,
+  statusApplication: Schema.String,
+  healthAggregator: Schema.String,
+  productVpcId: Schema.String,
+  canaryVpcId: Schema.String,
+  services: Schema.Struct({
+    proxy: ServiceMetadataSchema,
+    controlPlane: ServiceMetadataSchema,
+    healthAggregator: ServiceMetadataSchema,
+    status: ServiceMetadataSchema,
+    notification: ServiceMetadataSchema,
+    telemetry: ServiceMetadataSchema,
+    canaryTelemetry: ServiceMetadataSchema,
+  }),
+  canary: Schema.Struct({
+    compute: Schema.Literal("lambda"),
+    api: Schema.Literal("api-gateway-v2"),
+    apiId: Schema.String,
+    functionArn: Schema.String,
+    geoIpPackaged: Schema.Boolean,
+  }),
+  integrationTarget: Schema.NullOr(
+    Schema.Struct({
+      url: Schema.String,
+      compute: Schema.Literal("lambda"),
+      api: Schema.Literal("api-gateway-v2"),
+      apiId: Schema.String,
+      functionArn: Schema.String,
+      stateTable: Schema.String,
+    }),
+  ),
+  integrationTransportTarget: Schema.NullOr(
+    Schema.Struct({
+      url: Schema.String,
+      compute: Schema.Literal("ecs-fargate"),
+      cluster: Schema.String,
+      service: Schema.String,
+      taskDefinition: Schema.String,
+    }),
+  ),
+});
 
 export interface CreatedRouteResponse {
   profile: PublicRoute & { id: string };
@@ -199,7 +285,11 @@ function optionalEnvironment(name: string): string | undefined {
   return value ? value : undefined;
 }
 
-export async function awsJson<T>(args: string[], region = optionalEnvironment("AWS_REGION")): Promise<T> {
+export async function awsJson<A, I>(
+  args: string[],
+  schema: Schema.Schema<A, I, never>,
+  region = optionalEnvironment("AWS_REGION"),
+): Promise<A> {
   const command = [...args, ...(region === undefined ? [] : ["--region", region]), "--output", "json"];
   try {
     const { stdout } = await execFileAsync("aws", command, {
@@ -207,14 +297,14 @@ export async function awsJson<T>(args: string[], region = optionalEnvironment("A
       maxBuffer: 16 * 1024 * 1024,
       timeout: 120_000,
     });
-    return JSON.parse(stdout) as T;
+    return Schema.decodeUnknownSync(schema)(parseJson(stdout, `AWS CLI response for ${args.join(" ")}`));
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`AWS CLI failed: aws ${command.join(" ")}\n${detail}`);
   }
 }
 
-export async function axiomJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function axiomJson<A, I>(path: string, schema: Schema.Schema<A, I, never>, init: RequestInit = {}): Promise<A> {
   const token = requiredEnvironment("DEPLOYED_AXIOM_QUERY_TOKEN");
   const base = optionalEnvironment("DEPLOYED_AXIOM_API_URL") ?? "https://api.axiom.co";
   const headers = new Headers(init.headers);
@@ -228,18 +318,22 @@ export async function axiomJson<T>(path: string, init: RequestInit = {}): Promis
   if (!response.ok) {
     throw new Error(`Axiom API request failed: ${response.status} ${body}`);
   }
-  return JSON.parse(body) as T;
+  return Schema.decodeUnknownSync(schema)(parseJson(body, `Axiom response for ${path}`));
 }
 
 export function axiomApl(apl: string, startTimeMs: number): Promise<unknown> {
-  return axiomJson("v1/datasets/_apl?format=tabular", {
-    method: "POST",
-    body: JSON.stringify({
-      apl,
-      startTime: new Date(startTimeMs).toISOString(),
-      endTime: new Date().toISOString(),
-    }),
-  });
+  return axiomJson(
+    "v1/datasets/_apl?format=tabular",
+    Schema.Unknown,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        apl,
+        startTime: new Date(startTimeMs).toISOString(),
+        endTime: new Date().toISOString(),
+      }),
+    },
+  );
 }
 
 let environmentPromise: Promise<DeployedEnvironment> | undefined;
@@ -252,10 +346,13 @@ export function deployedEnvironment(): Promise<DeployedEnvironment> {
 async function loadDeployedEnvironment(): Promise<DeployedEnvironment> {
   const stage = requiredEnvironment("DEPLOYED_STAGE");
   const parameterName = optionalEnvironment("DEPLOYED_METADATA_PARAMETER") ?? `/sst/profound-proxy-router/${stage}/deployed-integration`;
-  const parameter = await awsJson<{ Parameter?: { Value?: string } }>(["ssm", "get-parameter", "--name", parameterName]);
+  const parameter = await awsJson(
+    ["ssm", "get-parameter", "--name", parameterName],
+    Schema.Struct({ Parameter: optional(Schema.Struct({ Value: optional(Schema.String) })) }),
+  );
   const value = parameter.Parameter?.Value;
   if (value === undefined) throw new Error(`SSM parameter ${parameterName} has no value`);
-  const metadata = JSON.parse(value) as DeployedMetadata;
+  const metadata = Schema.decodeUnknownSync(DeployedMetadataSchema)(parseJson(value, `SSM parameter ${parameterName}`));
   if (metadata.schemaVersion !== 3 || metadata.stage !== stage) {
     throw new Error(`SSM parameter ${parameterName} is not deployed-integration schema v3 for stage ${stage}`);
   }
@@ -293,7 +390,7 @@ export async function createRoute(
     body: JSON.stringify(canonicalTestProfile(profile)),
   });
   if (response.status !== 201) throw new Error(`Route creation failed: ${response.status} ${await response.text()}`);
-  const { profileId } = (await response.json()) as { profileId: string };
+  const { profileId } = Schema.decodeUnknownSync(CreatedProfileSchema)(await response.json());
   const [profileResponse, grantResponse] = await Promise.all([
     controlRequest(`/v1/profiles/${profileId}`),
     controlRequest(`/v1/profiles/${profileId}/grants`, {
@@ -303,8 +400,8 @@ export async function createRoute(
     }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) throw new Error("Profile setup failed");
-  const publicProfile = ((await profileResponse.json()) as { profile: PublicRoute }).profile;
-  const issued = (await grantResponse.json()) as IssuedAccessGrantResponse;
+  const publicProfile = Schema.decodeUnknownSync(ProfileResponseSchema)(await profileResponse.json()).profile;
+  const issued = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await grantResponse.json());
   return {
     profile: { ...publicProfile, id: profileId },
     accessGrant: {
@@ -387,8 +484,9 @@ async function readExactly(socket: ProxySocket, length: number): Promise<Buffer>
   const chunks: Buffer[] = [];
   let remaining = length;
   while (remaining > 0) {
-    const chunk = socket.read(remaining) as Buffer | null;
-    if (chunk !== null) {
+    const value: unknown = socket.read(remaining);
+    if (value !== null) {
+      const chunk = expectBufferChunk(value, "deployed proxy response chunk");
       chunks.push(chunk);
       remaining -= chunk.length;
       continue;
@@ -623,7 +721,7 @@ export async function waitForRouteStatus(id: string, expected: string): Promise<
     async () => {
       const response = await controlRequest(`/v1/profiles/${encodeURIComponent(id)}`);
       if (!response.ok) return undefined;
-      const body = (await response.json()) as { profile: PublicRoute };
+      const body = Schema.decodeUnknownSync(ProfileResponseSchema)(await response.json());
       return body.profile.status === expected ? body.profile : undefined;
     },
     { timeoutMs: 30_000, intervalMs: 250 },

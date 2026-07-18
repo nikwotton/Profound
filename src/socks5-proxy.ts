@@ -141,7 +141,7 @@ export class Socks5ProxyServer {
     };
 
     clientSocket.setTimeout(this.options.attemptEstablishmentTimeoutMs, () => {
-      clientSocket.destroy(new ProviderUnavailableError("SOCKS5 handshake timed out"));
+      clientSocket.destroy(new ProviderUnavailableError("SOCKS5 handshake timed out", "timeout"));
     });
     try {
       const greeting = await reader.read(2);
@@ -213,7 +213,7 @@ export class Socks5ProxyServer {
         telemetry: this.options.telemetry,
         prepareClient: (opened) => {
           clientSocket.setTimeout(this.options.streamIdleTimeoutMs, () => {
-            clientSocket.destroy(new ProviderUnavailableError("SOCKS5 tunnel exceeded the stream idle timeout"));
+            clientSocket.destroy(new ProviderUnavailableError("SOCKS5 tunnel exceeded the stream idle timeout", "timeout"));
           });
           sendReply(clientSocket, 0x00);
           if (opened.remainder.length > 0) clientSocket.write(opened.remainder);

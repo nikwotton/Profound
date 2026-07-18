@@ -1,8 +1,10 @@
 import { once } from "node:events";
 import { request as httpRequest, createServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, isIP, type Socket } from "node:net";
+import { Schema } from "effect";
 import { startStandaloneApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
+import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema } from "../src/control-contract.js";
 import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
@@ -171,7 +173,7 @@ export async function startTestApp(
   });
   const application = await startStandaloneApplication(config, logger, {
     targetValidator: async () => undefined,
-    storeFactory: () => new InMemoryRouteStore(storeState),
+    storeFactory: () => new InMemoryRouteStore(storeState, dependencies.now),
     ...dependencies,
   });
   return {
@@ -207,7 +209,7 @@ export async function createRoute(
     body: JSON.stringify(canonicalTestProfile(profile)),
   });
   if (response.status !== 201) throw new Error(`Route creation failed: ${response.status} ${await response.text()}`);
-  const { profileId } = (await response.json()) as { profileId: string };
+  const { profileId } = Schema.decodeUnknownSync(CreatedProfileSchema)(await response.json());
   const [profileResponse, grantResponse] = await Promise.all([
     controlRequest(app, `/v1/profiles/${profileId}`),
     controlRequest(app, `/v1/profiles/${profileId}/grants`, {
@@ -219,10 +221,10 @@ export async function createRoute(
     }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) throw new Error("Profile setup failed");
-  const publicProfile = ((await profileResponse.json()) as { profile: Record<string, unknown> }).profile;
-  const issued = (await grantResponse.json()) as IssuedAccessGrantApiResponse;
+  const publicProfile = Schema.decodeUnknownSync(ProfileResponseSchema)(await profileResponse.json()).profile;
+  const issued = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await grantResponse.json());
   return {
-    profile: { ...publicProfile, id: profileId } as CreatedRouteResponse["profile"],
+    profile: { ...publicProfile, id: profileId },
     ...materializeIssuedAccessGrant(issued),
   };
 }
@@ -294,8 +296,9 @@ async function readExactly(socket: Socket, length: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let remaining = length;
   while (remaining > 0) {
-    const chunk = socket.read(remaining) as Buffer | null;
-    if (chunk !== null) {
+    const value: unknown = socket.read(remaining);
+    if (value !== null) {
+      const chunk = expectBufferChunk(value, "proxy response chunk");
       chunks.push(chunk);
       remaining -= chunk.length;
     } else {
@@ -394,7 +397,7 @@ export async function waitForRouteStatus(app: RunningApplication, id: string, st
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const response = await controlRequest(app, `/v1/profiles/${id}`);
-    const body = (await response.json()) as { profile: { status: string } };
+    const body = Schema.decodeUnknownSync(ProfileResponseSchema)(await response.json());
     if (body.profile.status === status) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

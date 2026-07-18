@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { AppError } from "./errors.js";
 import { InMemoryRouteStore } from "./in-memory-route-store.js";
 import { createLogger, type Logger } from "./logger.js";
+import type { RouteStore } from "./store.js";
 import { createTargetValidator, type TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
 
@@ -20,6 +21,7 @@ export interface LocalRuntimeOptions {
 export interface RunningLocalApplication extends RunningApplication {
   readonly controlToken: typeof LOCAL_CONTROL_TOKEN;
   readonly persistence: "memory";
+  readonly store: RouteStore;
 }
 
 function localTargetValidator(allowedPorts: ReadonlySet<number>): TargetValidator {
@@ -68,17 +70,23 @@ export async function startLocalRuntime(options: LocalRuntimeOptions = {}): Prom
     ALLOWED_TARGET_PORTS: [...allowedTargetPorts].join(","),
   });
 
+  let store: InMemoryRouteStore | undefined;
   try {
     const application = await startStandaloneApplication(config, logger, {
       telemetry,
-      storeFactory: () => new InMemoryRouteStore(),
+      storeFactory: () => {
+        store = new InMemoryRouteStore();
+        return store;
+      },
       targetValidator: localTargetValidator(allowedTargetPorts),
     });
+    if (store === undefined) throw new Error("Local in-memory store was not initialized");
     let stopped = false;
     return {
       ...application,
       controlToken: LOCAL_CONTROL_TOKEN,
       persistence: "memory",
+      store,
       stop: async () => {
         if (stopped) return;
         stopped = true;

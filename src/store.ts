@@ -65,8 +65,7 @@ export function credentialUsername(credentialId: string): string {
   return `pxy_${credentialId}`;
 }
 
-export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant {
-  const nowMs = Date.now();
+export function toPublicAccessGrant(grant: StoredAccessGrant, nowMs = Date.now()): PublicAccessGrant {
   return {
     grantId: grant.id,
     profileId: grant.routeId,

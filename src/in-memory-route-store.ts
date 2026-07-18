@@ -65,11 +65,18 @@ export class InMemoryRouteStoreState {
 
 /** Ephemeral persistence for local development and tests. Deployed services use DynamoRouteStore. */
 export class InMemoryRouteStore implements RouteStore {
-  constructor(readonly state = new InMemoryRouteStoreState()) {}
+  constructor(
+    readonly state = new InMemoryRouteStoreState(),
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  #nowIso(): string {
+    return new Date(this.now()).toISOString();
+  }
 
   async create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute> {
     if (this.state.routes.has(id)) throw new Error("duplicate_route");
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     const route: StoredRoute = {
       ...copy(profile),
       id,
@@ -93,7 +100,7 @@ export class InMemoryRouteStore implements RouteStore {
       ...copy(profile),
       provider,
       status: "ready",
-      updatedAt: new Date().toISOString(),
+      updatedAt: this.#nowIso(),
     };
     delete route.endpointId;
     delete route.lastError;
@@ -126,7 +133,7 @@ export class InMemoryRouteStore implements RouteStore {
   ): Promise<StoredAccessGrant> {
     await this.get(routeId);
     if (this.state.grants.has(id)) throw new Error("duplicate_access_grant");
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     const grant: StoredAccessGrant = {
       id,
       routeId,
@@ -150,7 +157,7 @@ export class InMemoryRouteStore implements RouteStore {
     sessionId?: string,
   ): Promise<StoredAccessGrant> {
     const grant = await this.getAccessGrant(id);
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     grant.credentials.push(createStoredCredential(credentialId, token, sessionMode, now, sessionId));
     grant.updatedAt = now;
     this.state.grants.set(id, copy(grant));
@@ -179,7 +186,7 @@ export class InMemoryRouteStore implements RouteStore {
     if (grant === undefined) return undefined;
     const route = this.state.routes.get(grant.routeId);
     if (route === undefined || route.status === "revoked") return undefined;
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     const nowMs = Date.parse(now);
     const credential = grant.credentials.find((candidate) => {
       if (credentialUsername(candidate.id) !== username || !credentialUsable(candidate, nowMs)) return false;
@@ -202,7 +209,7 @@ export class InMemoryRouteStore implements RouteStore {
   ): Promise<StoredAccessGrant> {
     const grant = this.state.grants.get(id);
     if (grant === undefined || grant.status === "revoked") throw new NotFoundError();
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     const nowMs = Date.parse(now);
     const overlapLimit = nowMs + ACCESS_GRANT_CREDENTIAL_OVERLAP_MS;
     const previous = grant.credentials.find((credential) => credential.id === previousCredentialId);
@@ -227,7 +234,7 @@ export class InMemoryRouteStore implements RouteStore {
     const credential = grant.credentials.find((candidate) => candidate.id === credentialId);
     if (credential === undefined) throw new NotFoundError();
     if (credential.status === "revoked") return;
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     credential.status = "revoked";
     credential.revokeAt = now;
     grant.updatedAt = now;
@@ -238,7 +245,7 @@ export class InMemoryRouteStore implements RouteStore {
     if (grant === undefined) throw new NotFoundError();
     grant.status = "revoked";
     if (terminateActive) grant.terminateActive = true;
-    grant.updatedAt = new Date().toISOString();
+    grant.updatedAt = this.#nowIso();
     await this.closeLogicalSessions(id, terminateActive);
   }
 
@@ -270,7 +277,7 @@ export class InMemoryRouteStore implements RouteStore {
   async closeLogicalSession(id: string, terminateActive = false): Promise<void> {
     const session = await this.getLogicalSession(id, true);
     if (session.status === "closed") return;
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     session.status = "closed";
     session.terminateActive = terminateActive;
     session.closedAt = now;
@@ -288,7 +295,7 @@ export class InMemoryRouteStore implements RouteStore {
     if (route === undefined || (route.status === "revoked" && !terminateActive)) throw new NotFoundError();
     route.status = "revoked";
     route.terminateActive = terminateActive || route.terminateActive;
-    route.updatedAt = new Date().toISOString();
+    route.updatedAt = this.#nowIso();
   }
 
   async shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean> {
@@ -310,7 +317,7 @@ export class InMemoryRouteStore implements RouteStore {
     if (candidateEndpointIds.length === 0) throw new Error("no_slot_candidates");
     const candidates = new Set(candidateEndpointIds);
     const loads = new Map<string, number>();
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     for (const tunnel of this.state.tunnels.values()) {
       if (
         tunnel.expiresAt <= now ||
@@ -339,11 +346,11 @@ export class InMemoryRouteStore implements RouteStore {
     this.state.tunnels.delete(id);
   }
 
-  async listActiveTunnels(deploymentId: string, now = new Date().toISOString()): Promise<ActiveTunnel[]> {
+  async listActiveTunnels(deploymentId: string, now = this.#nowIso()): Promise<ActiveTunnel[]> {
     return (await this.listAllActiveTunnels(now)).filter((tunnel) => tunnel.deploymentId === deploymentId);
   }
 
-  async listAllActiveTunnels(now = new Date().toISOString()): Promise<ActiveTunnel[]> {
+  async listAllActiveTunnels(now = this.#nowIso()): Promise<ActiveTunnel[]> {
     return [...this.state.tunnels.values()]
       .filter((tunnel) => tunnel.expiresAt > now)
       .toSorted((left, right) => left.id.localeCompare(right.id))
@@ -353,7 +360,7 @@ export class InMemoryRouteStore implements RouteStore {
   async getCapacityCircuit(
     provider: StoredRoute["provider"],
     candidateKey: string,
-    now = new Date().toISOString(),
+    now = this.#nowIso(),
   ): Promise<CapacityCircuitState | undefined> {
     const key = circuitKey(provider, candidateKey);
     const state = this.state.circuits.get(key);
@@ -392,7 +399,7 @@ export class InMemoryRouteStore implements RouteStore {
     this.state.circuits.delete(circuitKey(provider, candidateKey));
   }
 
-  async listCapacityCircuits(now = new Date().toISOString()): Promise<CapacityCircuitState[]> {
+  async listCapacityCircuits(now = this.#nowIso()): Promise<CapacityCircuitState[]> {
     for (const [key, state] of this.state.circuits) if (state.expiresAt <= now) this.state.circuits.delete(key);
     return [...this.state.circuits.values()]
       .toSorted((left, right) => left.provider.localeCompare(right.provider) || left.candidateKey.localeCompare(right.candidateKey))
@@ -417,7 +424,7 @@ export class InMemoryRouteStore implements RouteStore {
     if (route === undefined || route.status === "revoked") throw new NotFoundError();
     if (endpointId === undefined) delete route.endpointId;
     else route.endpointId = endpointId;
-    route.updatedAt = new Date().toISOString();
+    route.updatedAt = this.#nowIso();
     return copy(route);
   }
 
@@ -427,7 +434,7 @@ export class InMemoryRouteStore implements RouteStore {
     route.status = status;
     if (lastError === undefined) delete route.lastError;
     else route.lastError = lastError;
-    route.updatedAt = new Date().toISOString();
+    route.updatedAt = this.#nowIso();
     return copy(route);
   }
 
@@ -436,14 +443,14 @@ export class InMemoryRouteStore implements RouteStore {
     if (route === undefined || route.status !== "ready" || route.lastRotationAt > dueBefore) return undefined;
     route.status = "rotating";
     delete route.lastError;
-    route.updatedAt = new Date().toISOString();
+    route.updatedAt = this.#nowIso();
     return copy(route);
   }
 
   async completeRotation(id: string): Promise<StoredRoute> {
     const route = this.state.routes.get(id);
     if (route === undefined || route.status !== "rotating") throw new NotFoundError();
-    const now = new Date().toISOString();
+    const now = this.#nowIso();
     route.status = "ready";
     delete route.lastError;
     route.lastRotationAt = now;
@@ -455,7 +462,7 @@ export class InMemoryRouteStore implements RouteStore {
     const route = this.state.routes.get(id);
     if (route === undefined || route.status === "revoked") throw new NotFoundError();
     route.rotationEpoch += 1;
-    route.updatedAt = new Date().toISOString();
+    route.updatedAt = this.#nowIso();
     return copy(route);
   }
 

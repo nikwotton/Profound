@@ -48,7 +48,7 @@ export class AdminAuthorization extends HttpApiMiddleware.Tag<AdminAuthorization
   },
 }) {}
 
-const PublicRoute = Schema.Struct({
+export const PublicRouteSchema = Schema.Struct({
   profileId: Schema.String,
   customerId: Schema.String,
   geography: Schema.optional(Geography),
@@ -60,7 +60,7 @@ const PublicRoute = Schema.Struct({
   updatedAt: Schema.String,
 }).annotations({ identifier: "RouteProfile" });
 
-const PublicAccessGrantCredential = Schema.Struct({
+export const PublicAccessGrantCredentialSchema = Schema.Struct({
   credentialId: Schema.String,
   username: Schema.String,
   sessionMode: Schema.Literal("managed", "none"),
@@ -74,17 +74,17 @@ const PublicAccessGrantCredential = Schema.Struct({
   lastUsedAt: Schema.optional(Schema.String),
 }).annotations({ identifier: "AccessGrantCredential" });
 
-const PublicAccessGrant = Schema.Struct({
+export const PublicAccessGrantSchema = Schema.Struct({
   grantId: Schema.String,
   profileId: Schema.String,
   jobId: Schema.NullOr(Schema.String),
   status: Schema.Literal("ready", "revoked"),
-  credentials: Schema.Array(PublicAccessGrantCredential),
+  credentials: Schema.Array(PublicAccessGrantCredentialSchema),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 }).annotations({ identifier: "AccessGrant" });
 
-const PublicLogicalSession = Schema.Struct({
+export const PublicLogicalSessionSchema = Schema.Struct({
   sessionId: Schema.String,
   grantId: Schema.String,
   profileId: Schema.String,
@@ -106,21 +106,21 @@ const GrantIssuancePayload = Schema.Struct({
   jobId: Schema.optional(Schema.String),
 }).annotations({ identifier: "GrantIssuanceInput", parseOptions: { onExcessProperty: "error" } });
 
-const IssuedAccessGrant = Schema.Struct({
-  grant: PublicAccessGrant,
-  credential: Schema.extend(PublicAccessGrantCredential, Schema.Struct({ password: Schema.String })),
-  session: Schema.optional(PublicLogicalSession),
+export const IssuedAccessGrantSchema = Schema.Struct({
+  grant: PublicAccessGrantSchema,
+  credential: Schema.extend(PublicAccessGrantCredentialSchema, Schema.Struct({ password: Schema.String })),
+  session: Schema.optional(PublicLogicalSessionSchema),
   endpoints: Schema.Struct({ http: Schema.String, socks5: Schema.String }),
 }).annotations({ identifier: "IssuedAccessGrant" });
 
-const CreatedProfile = Schema.Struct({
+export const CreatedProfileSchema = Schema.Struct({
   profileId: Schema.String,
 }).annotations({ identifier: "CreatedProfile" });
 
-const ProfileResponse = Schema.Struct({ profile: PublicRoute });
-const ProfilesResponse = Schema.Struct({ data: Schema.Array(PublicRoute) });
-const AccessGrantsResponse = Schema.Struct({ data: Schema.Array(PublicAccessGrant) });
-const LogicalSessionsResponse = Schema.Struct({ data: Schema.Array(PublicLogicalSession) });
+export const ProfileResponseSchema = Schema.Struct({ profile: PublicRouteSchema });
+const ProfilesResponse = Schema.Struct({ data: Schema.Array(PublicRouteSchema) });
+const AccessGrantsResponse = Schema.Struct({ data: Schema.Array(PublicAccessGrantSchema) });
+const LogicalSessionsResponse = Schema.Struct({ data: Schema.Array(PublicLogicalSessionSchema) });
 const LiveResponse = Schema.Struct({ status: Schema.Literal("live") });
 const ReadyResponse = Schema.Struct({ status: Schema.Literal("ready") });
 const profileId = HttpApiSchema.param("id", Schema.String);
@@ -141,7 +141,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   .add(
     HttpApiEndpoint.post("createProfile", "/v1/profiles")
       .setPayload(RouteProfilePayload)
-      .addSuccess(CreatedProfile, { status: 201 })
+      .addSuccess(CreatedProfileSchema, { status: 201 })
       .addError(BadRequest)
       .addError(ServiceUnavailable)
       .addError(InternalError),
@@ -149,14 +149,14 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   .add(HttpApiEndpoint.get("listProfiles", "/v1/profiles").addSuccess(ProfilesResponse).addError(InternalError))
   .add(
     HttpApiEndpoint.get("getProfile")`/v1/profiles/${profileId}`
-      .addSuccess(ProfileResponse)
+      .addSuccess(ProfileResponseSchema)
       .addError(RouteNotFound)
       .addError(InternalError),
   )
   .add(
     HttpApiEndpoint.put("updateProfile")`/v1/profiles/${profileId}`
       .setPayload(RouteProfilePayload)
-      .addSuccess(ProfileResponse)
+      .addSuccess(ProfileResponseSchema)
       .addError(BadRequest)
       .addError(RouteNotFound)
       .addError(ServiceUnavailable)
@@ -167,7 +167,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   .add(
     HttpApiEndpoint.post("createAccessGrant")`/v1/profiles/${profileId}/grants`
       .setPayload(GrantIssuancePayload)
-      .addSuccess(IssuedAccessGrant, { status: 201 })
+      .addSuccess(IssuedAccessGrantSchema, { status: 201 })
       .addError(BadRequest)
       .addError(RouteNotFound)
       .addError(ServiceUnavailable)
@@ -183,14 +183,14 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.get("getAccessGrant")`/v1/grants/${accessGrantId}`
-      .addSuccess(Schema.Struct({ grant: PublicAccessGrant }))
+      .addSuccess(Schema.Struct({ grant: PublicAccessGrantSchema }))
       .addError(RouteNotFound)
       .addError(InternalError),
   )
   .add(
     HttpApiEndpoint.post("createStatelessCredential")`/v1/grants/${accessGrantId}/credentials`
       .setPayload(SessionModePayload)
-      .addSuccess(IssuedAccessGrant, { status: 201 })
+      .addSuccess(IssuedAccessGrantSchema, { status: 201 })
       .addError(BadRequest)
       .addError(RouteNotFound)
       .addError(ServiceUnavailable)
@@ -198,7 +198,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.post("rotateAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/${credentialId}/rotate`
-      .addSuccess(IssuedAccessGrant)
+      .addSuccess(IssuedAccessGrantSchema)
       .addError(RouteNotFound)
       .addError(InternalError)
       .annotate(
@@ -208,7 +208,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.post("emergencyRotateAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/${credentialId}/emergency-rotate`
-      .addSuccess(IssuedAccessGrant)
+      .addSuccess(IssuedAccessGrantSchema)
       .addError(RouteNotFound)
       .addError(InternalError)
       .annotate(
@@ -218,7 +218,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.post("createLogicalSession")`/v1/grants/${accessGrantId}/sessions`
-      .addSuccess(IssuedAccessGrant, { status: 201 })
+      .addSuccess(IssuedAccessGrantSchema, { status: 201 })
       .addError(RouteNotFound)
       .addError(InternalError),
   )
@@ -230,7 +230,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.get("getLogicalSession")`/v1/grants/${accessGrantId}/sessions/${sessionId}`
-      .addSuccess(Schema.Struct({ session: PublicLogicalSession }))
+      .addSuccess(Schema.Struct({ session: PublicLogicalSessionSchema }))
       .addError(RouteNotFound)
       .addError(InternalError),
   )
@@ -246,7 +246,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.get("getAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/${credentialId}`
-      .addSuccess(Schema.Struct({ credential: PublicAccessGrantCredential }))
+      .addSuccess(Schema.Struct({ credential: PublicAccessGrantCredentialSchema }))
       .addError(RouteNotFound)
       .addError(InternalError),
   )

@@ -403,6 +403,7 @@ export interface UsageRecord {
   failover: boolean;
   bytesSent: number;
   bytesReceived: number;
+  latencyMs?: number;
   destinationDomain?: string;
   destinationHost?: string;
   destinationPort?: number;
@@ -459,6 +460,8 @@ export interface UsageRollup {
   failoverCount: number;
   bytesSent: number;
   bytesReceived: number;
+  averageLatencyMs: number;
+  p95LatencyMs: number;
   activeConnectionMs: number;
   provisionedSlotMs: number;
   healthyIdleSlotMs: number;

@@ -14,7 +14,7 @@ export function operationDeadline(startedAt: number, operationTimeoutMs: number)
 export function beginAttemptBudget(overallDeadline: number, attemptTimeoutMs: number, callerSignal?: AbortSignal): AttemptBudget {
   const now = Date.now();
   const remainingOverall = overallDeadline - now;
-  if (remainingOverall <= 0) throw new ProviderUnavailableError("Candidate establishment exceeded the operation deadline");
+  if (remainingOverall <= 0) throw new ProviderUnavailableError("Candidate establishment exceeded the operation deadline", "timeout");
   const timeoutMs = Math.min(attemptTimeoutMs, remainingOverall);
   const deadline = now + timeoutMs;
   const controller = new AbortController();
@@ -24,7 +24,7 @@ export function beginAttemptBudget(overallDeadline: number, attemptTimeoutMs: nu
   callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   if (callerSignal?.aborted === true) abortFromCaller();
   const timer = setTimeout(() => {
-    controller.abort(new ProviderUnavailableError("Candidate establishment timed out"));
+    controller.abort(new ProviderUnavailableError("Candidate establishment timed out", "timeout"));
   }, timeoutMs);
   let finished = false;
   return {

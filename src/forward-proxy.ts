@@ -316,6 +316,7 @@ export class ForwardProxyServer {
           });
           if (route !== undefined) {
             const completedAt = new Date().toISOString();
+            const latencyMs = Math.max(0, Date.parse(completedAt) - attemptStartedAt);
             void this.routes
               .recordUsage({
                 id: attemptId,
@@ -334,6 +335,7 @@ export class ForwardProxyServer {
                 failover: provider !== "unresolved" && provider !== route.provider,
                 bytesSent,
                 bytesReceived,
+                latencyMs,
                 ...destination,
                 ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                 ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),

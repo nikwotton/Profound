@@ -332,7 +332,7 @@ For evidence collection only, the roadmap hypothesis computes a 0–100 score:
 
 Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options. Managed sessions exhaust the eligible device-backed class despite soft saturation. For stateless traffic, residential soft saturation promotes compatible unsaturated device-backed capacity ahead of saturated residential overflow. Revalidate and version the roadmap policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent before allowing it to control production traffic.
 
-The initial `proxidize-capacity-v0-2026-07-17` policy is centralized in code and carried on durable records and rollups:
+The implemented roadmap hypothesis `proxidize-capacity-roadmap-2026-07-18` is centralized in code and carried on durable records and rollups. It does not control v0 least-loaded selection:
 
 - 20% headroom;
 - 8 planned Mbps per slot, derived from the documented 10 Mbps lower bound at 80%;

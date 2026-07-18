@@ -57,7 +57,7 @@ Start the complete single-process local stack and watch it exercise the main usa
 pnpm demo
 ```
 
-No AWS, Axiom, Bright Data, Proxidize, Docker, or other external account is needed. The command starts the real control API, HTTP/HTTPS forward proxy, and SOCKS5 proxy with in-memory persistence and local provider simulators. It then demonstrates readiness, per-request residential rotation, mobile-device affinity, HTTP forwarding, HTTPS `CONNECT`, SOCKS5 tunnelling, credential rotation, and revocation against controlled loopback recipients. In an interactive terminal, press Enter to run each step individually. Each step prints its live sanitized request, response, selected mock identity metadata, and protocol details; credentials remain redacted. Redirected output and `pnpm demo -- --no-interactive` run the walkthrough continuously without prompts.
+No AWS, Axiom, Bright Data, Proxidize, Docker, or other external account is needed. The command starts the real control API, HTTP/HTTPS forward proxy, SOCKS5 proxy, usage ledger, accounting worker, and analytics API with in-memory persistence and local provider simulators. It demonstrates readiness, residential rotation, mobile affinity, HTTP forwarding, a pre-commit `CONNECT` retry/failover, SOCKS5 tunnelling, credential lifecycle, and the complete request → usage event → rollup → analytics-query path. The output includes customer/job/provider attribution, bytes, latency, retry/failover and outcome metrics, Bright Data per-GiB cost, and Proxidize device-month cost allocation. In an interactive terminal, press Enter to run each step individually. Each step prints its live sanitized request, response, selected mock identity metadata, and protocol details; request bodies, URL queries, headers, cookies, authorization, and credentials remain absent or redacted. Redirected output and `pnpm demo -- --no-interactive` run the walkthrough continuously without prompts.
 
 After the walkthrough, the servers stay available for inspection:
 
@@ -67,6 +67,7 @@ After the walkthrough, the servers stay available for inspection:
 | SOCKS5 proxy             | `127.0.0.1:1080`             |
 | Control API              | `http://127.0.0.1:8081`      |
 | Swagger UI               | `http://127.0.0.1:8081/docs` |
+| Analytics and dashboard  | `http://127.0.0.1:8083`      |
 
 Use the local-only control token `change-me` in Swagger UI. Press Ctrl-C to stop the demo and discard its ephemeral data. To start the same local stack without the scripted walkthrough, run `pnpm dev:local`.
 

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { BlockList, isIP } from "node:net";
 import { expectBufferChunk } from "./decoding.js";
+import { RequestTooLargeError } from "./errors.js";
 import { isCanaryChallenge, verifyCanaryChallenge } from "./canary-challenge.js";
 import type { GeoIpResolver } from "./geoip.js";
 import type { Logger } from "./logger.js";
@@ -74,7 +75,7 @@ async function readBody(request: IncomingMessage, maximumBodyBytes: number): Pro
   for await (const chunk of request) {
     const buffer = expectBufferChunk(chunk, "public-canary request chunk");
     size += buffer.length;
-    if (size > maximumBodyBytes) throw new Error("request_too_large");
+    if (size > maximumBodyBytes) throw new RequestTooLargeError();
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
@@ -155,7 +156,7 @@ export class PublicCanary {
     }
 
     try {
-      if (request.body.length > (this.options.maximumBodyBytes ?? 4_096)) throw new Error("request_too_large");
+      if (request.body.length > (this.options.maximumBodyBytes ?? 4_096)) throw new RequestTooLargeError();
       const parsed: unknown = JSON.parse(request.body.toString("utf8"));
       const valid = isCanaryChallenge(parsed) && verifyCanaryChallenge(this.options.signingSecret, parsed, now);
       if (!valid) {
@@ -190,7 +191,7 @@ export class PublicCanary {
         correlationId: parsed.testId,
       });
     } catch (error) {
-      const tooLarge = error instanceof Error && error.message === "request_too_large";
+      const tooLarge = error instanceof RequestTooLargeError;
       this.logger.warn("Canary request rejected", {
         ...baseLog,
         tokenValidation: "invalid",

@@ -9,8 +9,8 @@ export interface CapacityPolicy {
 }
 
 export const CAPACITY_POLICY: CapacityPolicy = Object.freeze({
-  version: "proxidize-capacity-v0-2026-07-17",
-  lastValidatedAt: "2026-07-17",
+  version: "proxidize-capacity-roadmap-2026-07-18",
+  lastValidatedAt: "2026-07-18",
   headroomPercent: 20,
   plannedMbpsPerSlot: 8,
   assumedMbpsPerActiveConnection: 0.5,
