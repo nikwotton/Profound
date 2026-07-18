@@ -36,9 +36,9 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
   const ephemeral = file(".github/workflows/aws-pr.yml");
   const janitor = file(".github/workflows/ephemeral-janitor.yml");
   assert.match(release, /cancel-in-progress: false/);
-  assert.match(release, /vars\.AWS_REGION != ''/);
-  assert.match(release, /vars\.AWS_DEPLOY_ROLE_ARN != ''/);
-  assert.match(release, /vars\.ECR_REPOSITORY != ''/);
+  assert.match(release, /vars\.AWS_REGION &&/);
+  assert.match(release, /vars\.AWS_DEPLOY_ROLE_ARN &&/);
+  assert.match(release, /vars\.ECR_REPOSITORY\s*$/m);
   assert.match(release, /Build candidate once/);
   assert.ok((release.match(/RELEASE_IMAGE_URI: \$\{\{ steps\.image\.outputs\.uri \}\}/g) ?? []).length >= 2);
   assert.match(release, /assert-current-main/);
@@ -51,10 +51,10 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
   assert.match(ephemeral, /ROUTE_TABLE_NAME=/);
   assert.match(ephemeral, /Rollback rehearsal/);
   assert.match(ephemeral, /if: always\(\)/);
-  assert.match(ephemeral, /vars\.AWS_REGION != ''/);
-  assert.match(ephemeral, /vars\.AWS_DEPLOY_ROLE_ARN != ''/);
+  assert.match(ephemeral, /vars\.AWS_REGION &&/);
+  assert.match(ephemeral, /vars\.AWS_DEPLOY_ROLE_ARN\s*$/m);
   assert.match(janitor, /remove-expired-stages/);
-  assert.match(janitor, /vars\.AWS_REGION != '' && vars\.AWS_DEPLOY_ROLE_ARN != ''/);
+  assert.match(janitor, /vars\.AWS_REGION && vars\.AWS_DEPLOY_ROLE_ARN/);
 });
 
 test("gateway releases persist active tunnels and enforce the staged drain escalation policy", () => {

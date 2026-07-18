@@ -17,8 +17,8 @@ jobs:
   production-shaped:
     if: >-
       (github.event_name == 'merge_group' || github.event.pull_request.draft == false) &&
-      vars.AWS_REGION != '' &&
-      vars.AWS_DEPLOY_ROLE_ARN != ''
+      vars.AWS_REGION &&
+      vars.AWS_DEPLOY_ROLE_ARN
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: pull-request

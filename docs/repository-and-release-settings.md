@@ -49,7 +49,7 @@ Use disposable `ci-*` stages for pull-request deployments. The janitor workflow 
 
 Use GitHub OIDC roles scoped to this repository, workflow/ref, account, region, and environment. Do not store AWS access keys in GitHub.
 
-At minimum configure:
+At the repository level, configure these Actions variables so jobs can decide whether an AWS installation is connected before selecting a protected environment:
 
 - `AWS_REGION`
 - `AWS_DEPLOY_ROLE_ARN`
