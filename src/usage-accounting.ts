@@ -1,4 +1,4 @@
-import type { RouteStore } from "./store.js";
+import type { UsageRepository } from "./store.js";
 import { expectEnum, expectIsoTimestamp, expectNonNegativeNumber, expectOptionalString, expectRecord, expectString } from "./decoding.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import type {
@@ -560,7 +560,7 @@ export function summarizeUsage(
 export class UsageAccountingWorker {
   constructor(
     private readonly store: Pick<
-      RouteStore,
+      UsageRepository,
       | "listUsageRecords"
       | "saveUsageRollup"
       | "saveUsageReconciliation"

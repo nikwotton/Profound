@@ -4,15 +4,14 @@ import type { AppConfig } from "./config.js";
 import { DynamoRouteStore } from "./dynamo-store.js";
 import { ForwardProxyServer } from "./forward-proxy.js";
 import type { Logger } from "./logger.js";
-import { BrightDataAdapter } from "./providers/bright-data.js";
 import type { BrightDataConfig } from "./providers/bright-data.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
-import { ProxidizeAdapter } from "./providers/proxidize.js";
 import type { ProxidizeConfig } from "./providers/proxidize.js";
+import { createProviderRuntime } from "./provider-runtime.js";
 import { RouteService } from "./route-service.js";
 import { Socks5ProxyServer } from "./socks5-proxy.js";
-import { BrightDataSimulator } from "./simulators/bright-data.js";
-import { ProxidizeSimulator } from "./simulators/proxidize.js";
+import type { BrightDataSimulator } from "./simulators/bright-data.js";
+import type { ProxidizeSimulator } from "./simulators/proxidize.js";
 import type { RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import { createTargetValidator, type TargetValidator } from "./target-security.js";
@@ -74,53 +73,14 @@ async function createUnmanagedRoutingRuntime(
   let store: RouteStore;
   if (dependencies.storeFactory !== undefined) store = dependencies.storeFactory(config);
   else store = new DynamoRouteStore(config.routeTableName);
-  let simulators: RunningApplication["simulators"];
-  let brightConfig = config.brightData;
-  let proxidizeConfig = config.proxidize;
+  let providerRuntime: Awaited<ReturnType<typeof createProviderRuntime>> | undefined;
 
   try {
-    if (config.providerMode === "mock") {
-      const brightData = new BrightDataSimulator({
-        host: "127.0.0.1",
-        port: 0,
-        customerId: config.brightData.customerId,
-        zone: config.brightData.zone,
-        password: config.brightData.password,
-        logger,
-      });
-      const proxidize = new ProxidizeSimulator({
-        host: "127.0.0.1",
-        controlPort: 0,
-        dataPort: 0,
-        apiToken: config.proxidize.apiToken,
-        logger,
-      });
-      const [brightAddress, proxidizeAddresses] = await Promise.all([brightData.start(), proxidize.start()]);
-      simulators = { brightData, proxidize };
-      brightConfig = { ...config.brightData, host: brightAddress.host, port: brightAddress.port };
-      proxidizeConfig = {
-        ...config.proxidize,
-        apiBaseUrl: `http://${proxidizeAddresses.control.host}:${proxidizeAddresses.control.port}`,
-      };
-    }
-
-    const brightDataAdapterConfig: BrightDataConfig = {
-      ...brightConfig,
-      connectTimeoutMs: config.attemptEstablishmentTimeoutMs,
-      ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
-    };
-    const proxidizeAdapterConfig: ProxidizeConfig = {
-      ...proxidizeConfig,
-      requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
-      exactCity: config.proxidizeExactCity,
-      ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
-    };
-    const brightData = dependencies.brightDataFactory?.(brightDataAdapterConfig) ?? new BrightDataAdapter(brightDataAdapterConfig);
-    const proxidize = dependencies.mobileProviderFactory?.(proxidizeAdapterConfig) ?? new ProxidizeAdapter(proxidizeAdapterConfig);
+    providerRuntime = await createProviderRuntime(config, logger, dependencies);
     const routes = new RouteService({
       store,
-      brightData,
-      proxidize,
+      brightData: providerRuntime.brightData,
+      proxidize: providerRuntime.proxidize,
       proxyAddresses,
       advertisedProxyHost: config.advertisedProxyHost,
       advertisedHttpProxyProtocol: config.advertisedHttpProxyProtocol,
@@ -132,14 +92,14 @@ async function createUnmanagedRoutingRuntime(
     });
     return {
       routes,
-      ...(simulators === undefined ? {} : { simulators }),
+      ...(providerRuntime.simulators === undefined ? {} : { simulators: providerRuntime.simulators }),
       stop: async () => {
-        await Promise.allSettled([...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()])]);
+        await providerRuntime?.stop();
         await store.close();
       },
     };
   } catch (error) {
-    await Promise.allSettled([...(simulators === undefined ? [] : [simulators.brightData.stop(), simulators.proxidize.stop()])]);
+    await providerRuntime?.stop();
     await store.close();
     throw error;
   }

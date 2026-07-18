@@ -46,7 +46,7 @@ export interface RouteProfile {
   /** Internal display label; not part of the public profile contract. */
   name: string;
   customerId: string;
-  geography?: RouteProfileInput["geography"];
+  geography?: NonNullable<RouteProfileInput["geography"]>;
   carrier?: string;
   providerOverride?: ProviderId;
   isTargetAuthenticated: boolean;

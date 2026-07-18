@@ -5,7 +5,7 @@ import { expectBufferChunk, isUnknownRecord, parseJson } from "./decoding.js";
 import type { HealthAlertEvaluator } from "./alerting.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAdapter } from "./providers/provider.js";
-import type { RouteStore } from "./store.js";
+import type { CapabilityHealthRepository, ProviderHealthRepository, UsageRepository } from "./store.js";
 import type {
   CapabilityHealth,
   CapabilityHealthSnapshot,
@@ -71,6 +71,8 @@ export interface CapabilityHealthAggregatorOptions {
   alerting?: HealthAlertEvaluator;
   now?: () => number;
 }
+
+type HealthAggregationStore = ProviderHealthRepository & CapabilityHealthRepository & Pick<UsageRepository, "listCapacityPressureEvidence">;
 
 function latestTimestamp(values: Array<string | undefined>): string | undefined {
   const timestamps = values.filter((value): value is string => value !== undefined).sort();
@@ -182,7 +184,7 @@ export class CapabilityHealthAggregator {
   #lastSynthetic?: SyntheticValidationResult;
 
   constructor(
-    private readonly store: RouteStore,
+    private readonly store: HealthAggregationStore,
     private readonly providers: readonly ProviderAdapter[],
     private readonly options: CapabilityHealthAggregatorOptions,
     private readonly logger: Logger,
@@ -407,7 +409,7 @@ export class HealthAggregatorServer {
 
   constructor(
     private readonly aggregator: CapabilityHealthAggregator,
-    private readonly store: RouteStore,
+    private readonly store: Pick<CapabilityHealthRepository, "latestCapabilityHealth">,
     private readonly options: HealthAggregatorServerOptions,
     private readonly logger: Logger,
   ) {}

@@ -55,7 +55,7 @@ const Session = Schema.Union(
   }),
 );
 
-const StoredAccessGrantCredentialSchema = Schema.Struct({
+const StoredAccessGrantCredentialSchema: Schema.Schema<StoredAccessGrantCredential> = Schema.Struct({
   id: Schema.String,
   tokenSalt: Schema.String,
   tokenHash: Schema.String,
@@ -67,7 +67,7 @@ const StoredAccessGrantCredentialSchema = Schema.Struct({
   lastUsedAt: exactOptional(IsoTimestamp),
 });
 
-const StoredAccessGrantSchema = Schema.Struct({
+const StoredAccessGrantSchema: Schema.Schema<StoredAccessGrant> = Schema.Struct({
   id: Schema.String,
   routeId: Schema.String,
   principalId: Schema.String,
@@ -78,7 +78,7 @@ const StoredAccessGrantSchema = Schema.Struct({
   updatedAt: IsoTimestamp,
 });
 
-const StoredRouteSchema = Schema.Struct({
+const StoredRouteSchema: Schema.Schema<StoredRoute> = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   allowedProtocols: mutableArray(Schema.Literal("http", "https", "socks5")),
@@ -112,7 +112,7 @@ const StoredRouteSchema = Schema.Struct({
   updatedAt: IsoTimestamp,
 });
 
-const ActiveTunnelSchema = Schema.Struct({
+const ActiveTunnelSchema: Schema.Schema<ActiveTunnel> = Schema.Struct({
   id: Schema.String,
   deploymentId: Schema.String,
   routeId: Schema.String,
@@ -127,7 +127,7 @@ const ActiveTunnelSchema = Schema.Struct({
   expiresAt: IsoTimestamp,
 });
 
-const CapacityCircuitStateSchema = Schema.Struct({
+const CapacityCircuitStateSchema: Schema.Schema<CapacityCircuitState> = Schema.Struct({
   provider: Schema.Literal("bright_data", "proxidize"),
   candidateKey: Schema.String,
   status: Schema.Literal("closed", "open", "half_open"),
@@ -140,7 +140,7 @@ const CapacityCircuitStateSchema = Schema.Struct({
   expiresAt: IsoTimestamp,
 });
 
-const DeploymentDrainStateSchema = Schema.Struct({
+const DeploymentDrainStateSchema: Schema.Schema<DeploymentDrainState> = Schema.Struct({
   deploymentId: Schema.String,
   startedAt: IsoTimestamp,
   terminateRemaining: Schema.Boolean,
@@ -149,14 +149,14 @@ const DeploymentDrainStateSchema = Schema.Struct({
   updatedAt: IsoTimestamp,
 });
 
-const ProviderHealthSchema = Schema.Struct({
+const ProviderHealthSchema: Schema.Schema<ProviderHealth> = Schema.Struct({
   provider: Schema.Literal("bright_data", "proxidize"),
   state: Schema.Literal("healthy", "degraded", "unhealthy"),
   checkedAt: IsoTimestamp,
   message: exactOptional(Schema.String),
 });
 
-const ProviderInventorySnapshotSchema = Schema.Struct({
+const ProviderInventorySnapshotSchema: Schema.Schema<ProviderInventorySnapshot> = Schema.Struct({
   provider: Schema.Literal("proxidize"),
   providerAccountId: Schema.String,
   slots: mutableArray(
@@ -190,7 +190,7 @@ const GeographyHealth = Schema.Struct({
   source: Schema.Literal("passive", "synthetic"),
 });
 
-const CapabilityHealthSnapshotSchema = Schema.Struct({
+const CapabilityHealthSnapshotSchema: Schema.Schema<CapabilityHealthSnapshot> = Schema.Struct({
   id: Schema.String,
   generatedAt: IsoTimestamp,
   capabilities: mutableArray(CapabilityHealth),
@@ -198,7 +198,7 @@ const CapabilityHealthSnapshotSchema = Schema.Struct({
   geographies: mutableArray(GeographyHealth),
 });
 
-const HealthAlertEventSchema = Schema.Struct({
+const HealthAlertEventSchema: Schema.Schema<HealthAlertEvent> = Schema.Struct({
   id: Schema.String,
   dedupeKey: Schema.String,
   kind: Schema.Literal("alert", "recovery"),
@@ -212,7 +212,7 @@ const HealthAlertEventSchema = Schema.Struct({
   geographies: mutableArray(GeographyHealth),
 });
 
-const HealthAlertStateSchema = Schema.Struct({
+const HealthAlertStateSchema: Schema.Schema<HealthAlertState> = Schema.Struct({
   capability: Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic", "health_verification"),
   observedStatus: Schema.Literal("operational", "degraded", "unavailable"),
   observedSince: IsoTimestamp,
@@ -221,7 +221,7 @@ const HealthAlertStateSchema = Schema.Struct({
   updatedAt: IsoTimestamp,
 });
 
-const HealthAlertDeliverySchema = Schema.Struct({
+const HealthAlertDeliverySchema: Schema.Schema<HealthAlertDelivery> = Schema.Struct({
   alertId: Schema.String,
   destinationId: Schema.String,
   status: Schema.Literal("pending", "delivered", "failed"),
@@ -234,7 +234,7 @@ const HealthAlertDeliverySchema = Schema.Struct({
   event: HealthAlertEventSchema,
 });
 
-const UsageRecordSchema = Schema.Struct({
+const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
   kind: Schema.Literal("attempt", "capacity"),
   id: Schema.String,
   logicalOperationId: Schema.String,
@@ -285,7 +285,7 @@ const UsageRecordSchema = Schema.Struct({
   completedAt: IsoTimestamp,
 });
 
-const UsageRollupSchema = Schema.Struct({
+const UsageRollupSchema: Schema.Schema<UsageRollup> = Schema.Struct({
   id: Schema.String,
   interval: Schema.Literal("hour", "day", "week", "month"),
   periodStartedAt: IsoTimestamp,
@@ -324,7 +324,7 @@ const UsageRollupSchema = Schema.Struct({
   updatedAt: IsoTimestamp,
 });
 
-const UsageReconciliationSchema = Schema.Struct({
+const UsageReconciliationSchema: Schema.Schema<UsageReconciliation> = Schema.Struct({
   id: Schema.String,
   provider: Schema.Literal("bright_data", "proxidize"),
   periodStartedAt: IsoTimestamp,
@@ -339,7 +339,7 @@ const UsageReconciliationSchema = Schema.Struct({
   createdAt: IsoTimestamp,
 });
 
-const UsageAlertEventSchema = Schema.Struct({
+const UsageAlertEventSchema: Schema.Schema<UsageAlertEvent> = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literal("capacity_recommendation", "reconciliation_variance"),
   severity: Schema.Literal("warning", "error"),
@@ -357,7 +357,7 @@ const UsageAlertEventSchema = Schema.Struct({
   createdAt: IsoTimestamp,
 });
 
-const CapacityPressureEvidenceSchema = Schema.Struct({
+const CapacityPressureEvidenceSchema: Schema.Schema<CapacityPressureEvidence> = Schema.Struct({
   id: Schema.String,
   provider: Schema.Literal("bright_data", "proxidize"),
   periodStartedAt: IsoTimestamp,

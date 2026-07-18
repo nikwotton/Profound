@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
-import { Transform, type Duplex } from "node:stream";
+import type { Duplex } from "node:stream";
 import { assignmentAttributes, assignmentLogContext } from "./assignment-evidence.js";
 import { assertSafeProviderResolution, recordDestinationResolution, resolvedAddressesFromHeader } from "./destination-resolution.js";
 import { abortReason, beginAttemptBudget, operationDeadline } from "./establishment-budget.js";
@@ -19,8 +19,8 @@ import { RouteService } from "./route-service.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
+import { establishTunnel } from "./tunnel-operation.js";
 import { type AuthenticatedRoute, type ListenAddress, type UpstreamEndpoint, type UsageOutcome } from "./types.js";
-import { openUpstreamTunnel } from "./upstream-tunnel.js";
 
 export interface ForwardProxyOptions {
   host: string;
@@ -60,15 +60,6 @@ function responseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   delete result["transfer-encoding"];
   result.connection = "close";
   return result;
-}
-
-function counter(onBytes: (bytes: number) => void): Transform {
-  return new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      onBytes(chunk.length);
-      callback(null, chunk);
-    },
-  });
 }
 
 function headerBytes(headers: IncomingHttpHeaders): number {
@@ -676,368 +667,31 @@ export class ForwardProxyServer {
         "server.address": target.host,
         "server.port": target.port,
       });
-      const maxAttempts = route.shouldRetry ? route.retryPolicy.maxAttempts : 1;
-      const resolutionState = this.routes.createResolutionState();
-      let lastError: unknown;
-
-      for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
-        const budget =
-          attemptIndex === 0
-            ? initialBudget
-            : beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
-        const attemptId = randomUUID();
-        const attemptStartedAt = Date.now();
-        const attemptSpan = this.options.telemetry.startSpan("proxy.upstream_attempt", {
-          "proxy.operation.id": operationId,
-          "proxy.attempt.id": attemptId,
-          "proxy.attempt.index": attemptIndex,
-          "proxy.route.id": route.id,
-          "proxy.access_grant.id": route.accessGrantId,
-          "enduser.id": route.userId,
-          "customer.id": route.customerId,
-          "server.address": target.host,
-          "server.port": target.port,
-        });
-        let upstream: UpstreamEndpoint | undefined;
-        try {
-          upstream = await this.routes.resolve(route, "https", target, resolutionState, {
-            logicalOperationId: operationId,
-            signal: budget.signal,
-          });
-          attemptSpan.setAttributes({
-            ...assignmentAttributes(upstream.assignment),
-            ...routingScoreTelemetryAttributes(upstream),
-            ...(route.providerOverride === undefined ? {} : { "proxy.routing.provider_override": route.providerOverride }),
-          });
-          this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "selected", upstream.assignment);
-          if (upstream.assignment.previousCandidateId !== undefined) {
-            this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "changed", upstream.assignment);
-          }
-          if (upstream.assignment.expectedCity !== undefined) {
-            this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "verification", upstream.assignment);
-          }
-          this.options.logger.info("Upstream candidate selected", {
-            logicalOperationId: operationId,
-            upstreamAttemptId: attemptId,
-            routeId: route.id,
-            accessGrantId: route.accessGrantId,
-            provider: upstream.provider,
-            ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
-            ...assignmentLogContext(upstream.assignment),
-            ...routingScoreLogContext(upstream),
-          });
-          const opened = await openUpstreamTunnel(target, upstream, {
-            connectTimeoutMs: budget.remainingMs(),
-            maxHandshakeBytes: this.options.maxHeaderBytes,
-            signal: budget.signal,
-          });
-          budget.finish();
-          recordDestinationResolution({
-            validation: targetValidation,
-            providerMetadata: opened.providerMetadata,
-            expectedCountry: route.targeting.country,
-            logger: this.options.logger,
-            span: attemptSpan,
-            context: {
-              logicalOperationId: operationId,
-              upstreamAttemptId: attemptId,
-              routeId: route.id,
-              accessGrantId: route.accessGrantId,
-              provider: upstream.provider,
-              dataPlaneProtocol: "https",
-              targetHost: target.host,
-              targetPort: target.port,
-            },
-          });
-          try {
-            assertSafeProviderResolution(opened.providerMetadata);
-          } catch (error) {
-            opened.socket.destroy();
-            throw error;
-          }
-          await this.routes.recordCandidateSuccess(upstream);
-          if (opened.providerMetadata.opaqueIpId !== undefined) {
-            upstream.assignment.opaqueIpId = opened.providerMetadata.opaqueIpId;
-            this.options.telemetry.recordCandidateEvent(attemptSpan, upstream.provider, "identity_observed", upstream.assignment);
-            this.options.logger.info("Upstream candidate identity observed", {
-              logicalOperationId: operationId,
-              upstreamAttemptId: attemptId,
-              routeId: route.id,
-              accessGrantId: route.accessGrantId,
-              provider: upstream.provider,
-              ...assignmentLogContext(upstream.assignment),
-            });
-          }
-          if (callerController.signal.aborted || clientSocket.destroyed) {
-            opened.socket.destroy();
-            throw new AppError("Caller disconnected during tunnel establishment", "caller_cancelled", 499);
-          }
-          try {
-            await this.routes.assertNewConnectionAllowed(route.id, route.accessGrantId);
-          } catch (error) {
-            opened.socket.destroy();
-            throw error;
-          }
-          const stopTracking = await this.routes.trackActiveConnection(route.id, route.accessGrantId, "https", upstream, () => {
-            clientSocket.destroy(new AppError("Route was emergency-revoked", "route_emergency_revoked", 403));
-            opened.socket.destroy();
-          });
-          let bytesSent = head.length;
-          let bytesReceived = opened.remainder.length;
+      await establishTunnel({
+        routes: this.routes,
+        route,
+        protocol: "https",
+        target,
+        targetValidation,
+        clientSocket,
+        callerSignal: callerController.signal,
+        operationId,
+        operationSpan,
+        operationFinished: finishOperation,
+        establishmentDeadline,
+        initialBudget,
+        attemptEstablishmentTimeoutMs: this.options.attemptEstablishmentTimeoutMs,
+        streamIdleTimeoutMs: this.options.streamIdleTimeoutMs,
+        maxHandshakeBytes: this.options.maxHeaderBytes,
+        logger: this.options.logger,
+        telemetry: this.options.telemetry,
+        prepareClient: (opened) => {
           clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
           if (opened.remainder.length > 0) clientSocket.write(opened.remainder);
           if (head.length > 0) opened.socket.write(head);
-          opened.socket.setTimeout(this.options.streamIdleTimeoutMs, () => {
-            opened.socket.destroy(new ProviderUnavailableError("Proxy tunnel exceeded the stream idle timeout"));
-          });
-          clientSocket
-            .pipe(
-              counter((bytes) => {
-                bytesSent += bytes;
-              }),
-            )
-            .pipe(opened.socket);
-          opened.socket
-            .pipe(
-              counter((bytes) => {
-                bytesReceived += bytes;
-              }),
-            )
-            .pipe(clientSocket);
-          let tunnelFinished = false;
-          const activeRoute = route;
-          const activeUpstream = upstream;
-          const finishTunnel = (outcome: "success" | "failure", error?: unknown): void => {
-            if (tunnelFinished) return;
-            tunnelFinished = true;
-            stopTracking();
-            this.options.telemetry.finishAttempt(
-              attemptSpan,
-              attemptStartedAt,
-              {
-                provider: upstream?.provider ?? "unknown",
-                protocol: "https",
-                outcome,
-                "proxy.failover": upstream?.provider !== route?.provider,
-                "proxy.bytes_sent": bytesSent,
-                "proxy.bytes_received": bytesReceived,
-                "proxy.endpoint.id": upstream?.endpointId ?? "unknown",
-              },
-              error,
-              route === undefined
-                ? undefined
-                : {
-                    isAuthenticated: route.isAuthenticated,
-                    ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
-                    ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-                  },
-            );
-            this.options.logger.info("Proxy tunnel completed", {
-              logicalOperationId: operationId,
-              upstreamAttemptId: attemptId,
-              routeId: route?.id,
-              accessGrantId: route?.accessGrantId,
-              userId: route?.userId,
-              customerId: route?.customerId,
-              provider: upstream?.provider,
-              endpointId: upstream?.endpointId,
-              dataPlaneProtocol: "https",
-              retryIndex: attemptIndex,
-              failover: upstream?.provider !== route?.provider,
-              targetHost: target.host,
-              targetPort: target.port,
-              outcome,
-              latencyMs: Date.now() - attemptStartedAt,
-              bytesSent,
-              bytesReceived,
-            });
-            const completedAt = new Date().toISOString();
-            void this.routes
-              .recordUsage({
-                id: attemptId,
-                logicalOperationId: operationId,
-                accessGrantId: activeRoute.accessGrantId,
-                routeId: activeRoute.id,
-                userId: activeRoute.userId,
-                customerId: activeRoute.customerId,
-                provider: activeUpstream.provider,
-                protocol: "https",
-                outcome,
-                retryIndex: attemptIndex,
-                failover: activeUpstream.provider !== activeRoute.provider,
-                bytesSent,
-                bytesReceived,
-                ...(activeRoute.targeting.country === undefined ? {} : { country: activeRoute.targeting.country }),
-                ...(activeRoute.targeting.city === undefined ? {} : { city: activeRoute.targeting.city }),
-                ...(activeRoute.providerOverride === undefined ? {} : { providerOverride: activeRoute.providerOverride }),
-                endpointId: activeUpstream.endpointId,
-                ...(activeUpstream.proxySlotId === undefined
-                  ? {}
-                  : {
-                      proxySlotId: activeUpstream.proxySlotId,
-                      ...(activeUpstream.upstreamConnectionId === undefined
-                        ? {}
-                        : { upstreamConnectionId: activeUpstream.upstreamConnectionId }),
-                      connectionStartedAt: activeUpstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
-                      connectionEndedAt: completedAt,
-                      selectedSlotLoad: activeUpstream.selectedSlotLoad,
-                    }),
-                ...(activeUpstream.capacityPressure === true
-                  ? {
-                      capacityPressure: true,
-                      capacityPressureProvider: activeUpstream.capacityPressureProvider ?? activeUpstream.provider,
-                      ...(activeUpstream.capacityPolicyVersion === undefined
-                        ? {}
-                        : { capacityPolicyVersion: activeUpstream.capacityPolicyVersion }),
-                    }
-                  : {}),
-                ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
-                ...(activeUpstream.capacityCircuitState === undefined
-                  ? {}
-                  : {
-                      capacityCircuitState: activeUpstream.capacityCircuitState,
-                      capacityCircuitReason: activeUpstream.capacityCircuitReason,
-                      capacityCircuitCooldownUntil: activeUpstream.capacityCircuitCooldownUntil,
-                    }),
-                ...(activeUpstream.routingPolicyVersion === undefined
-                  ? {}
-                  : {
-                      routingPolicyVersion: activeUpstream.routingPolicyVersion,
-                      routingScore: activeUpstream.routingScore,
-                      routingScoreComponents: activeUpstream.routingScoreComponents,
-                    }),
-                establishmentWaitMs: resolutionState.establishmentWaitMs,
-                startedAt: new Date(attemptStartedAt).toISOString(),
-                completedAt,
-              })
-              .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
-            finishOperation(outcome, error);
-          };
-          clientSocket.once("close", () => finishTunnel("success"));
-          clientSocket.once("error", (error) => finishTunnel("failure", error));
-          opened.socket.once("error", (error) => finishTunnel("failure", error));
-          this.options.logger.info("Proxy tunnel opened", {
-            logicalOperationId: operationId,
-            upstreamAttemptId: attemptId,
-            routeId: route.id,
-            accessGrantId: route.accessGrantId,
-            userId: route.userId,
-            customerId: route.customerId,
-            provider: upstream.provider,
-            endpointId: upstream.endpointId,
-            ...assignmentLogContext(upstream.assignment),
-            dataPlaneProtocol: "https",
-            targetHost: target.host,
-            targetPort: target.port,
-          });
-          return;
-        } catch (error) {
-          budget.finish();
-          await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
-          await this.routes.releaseCandidate(upstream).catch(() => undefined);
-          lastError = error;
-          const failedAssignment = assignmentFromError(error);
-          if (failedAssignment !== undefined) {
-            attemptSpan.setAttributes(assignmentAttributes(failedAssignment));
-            this.options.telemetry.recordCandidateEvent(
-              attemptSpan,
-              providerIdFromError(error) ?? "unresolved",
-              "verification",
-              failedAssignment,
-            );
-            this.options.logger.warn("Upstream candidate verification failed", {
-              logicalOperationId: operationId,
-              upstreamAttemptId: attemptId,
-              routeId: route.id,
-              accessGrantId: route.accessGrantId,
-              provider: providerIdFromError(error),
-              ...assignmentLogContext(failedAssignment),
-            });
-          }
-          if (upstream !== undefined) resolutionState.excludedEndpointIds.add(upstream.endpointId);
-          const retry = !callerController.signal.aborted && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
-          const attemptedProvider = upstream?.provider ?? providerIdFromError(error);
-          this.options.telemetry.finishAttempt(
-            attemptSpan,
-            attemptStartedAt,
-            {
-              provider: attemptedProvider ?? "unresolved",
-              protocol: "https",
-              outcome: retry ? "retry" : "failure",
-              "proxy.failover": attemptedProvider !== undefined && attemptedProvider !== route.provider,
-              "proxy.bytes_sent": 0,
-              "proxy.bytes_received": 0,
-            },
-            error,
-            {
-              isAuthenticated: route.isAuthenticated,
-              ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
-              ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-            },
-          );
-          this.options.logger.warn("Proxy tunnel establishment failed", {
-            logicalOperationId: operationId,
-            upstreamAttemptId: attemptId,
-            routeId: route.id,
-            accessGrantId: route.accessGrantId,
-            userId: route.userId,
-            customerId: route.customerId,
-            provider: attemptedProvider,
-            endpointId: upstream?.endpointId,
-            dataPlaneProtocol: "https",
-            targetHost: target.host,
-            targetPort: target.port,
-            outcome: retry ? "retry" : "failure",
-            retryIndex: attemptIndex,
-            failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
-          });
-          const completedAt = new Date().toISOString();
-          void this.routes
-            .recordUsage({
-              id: attemptId,
-              logicalOperationId: operationId,
-              accessGrantId: route.accessGrantId,
-              routeId: route.id,
-              userId: route.userId,
-              customerId: route.customerId,
-              provider: attemptedProvider ?? "unresolved",
-              protocol: "https",
-              outcome: retry ? "retry" : "failure",
-              retryIndex: attemptIndex,
-              failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
-              bytesSent: 0,
-              bytesReceived: 0,
-              ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
-              ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-              ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
-              ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
-              ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
-              ...(upstream?.capacityCircuitState === undefined
-                ? {}
-                : {
-                    capacityCircuitState: upstream.capacityCircuitState,
-                    capacityCircuitReason: upstream.capacityCircuitReason,
-                    capacityCircuitCooldownUntil: upstream.capacityCircuitCooldownUntil,
-                  }),
-              ...(resolutionState.capacityPolicyVersion === undefined
-                ? {}
-                : { capacityPolicyVersion: resolutionState.capacityPolicyVersion }),
-              ...(upstream?.routingPolicyVersion === undefined
-                ? {}
-                : {
-                    routingPolicyVersion: upstream.routingPolicyVersion,
-                    routingScore: upstream.routingScore,
-                    routingScoreComponents: upstream.routingScoreComponents,
-                  }),
-              establishmentWaitMs: resolutionState.establishmentWaitMs,
-              startedAt: new Date(attemptStartedAt).toISOString(),
-              completedAt,
-            })
-            .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
-          if (!retry) break;
-        }
-      }
-      throw lastError instanceof Error ? lastError : new ProviderUnavailableError("No provider could establish the tunnel");
+          return { bytesSent: head.length, bytesReceived: opened.remainder.length };
+        },
+      });
     } catch (error) {
       initialBudget?.finish();
       finishOperation("failure", error);

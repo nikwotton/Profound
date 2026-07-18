@@ -11,7 +11,32 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { NotFoundError } from "./errors.js";
 import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capacity-circuit.js";
-import { expectRecord } from "./decoding.js";
+import {
+  ASSIGNMENT_INDEX,
+  ENTITY_INDEX,
+  accessGrantKey,
+  capacityCircuitKey,
+  conditionalNotFound,
+  credentialUsable,
+  grantItem,
+  itemField,
+  routeKey,
+  type ActiveTunnelItem,
+  type CapabilityHealthItem,
+  type CapacityCircuitItem,
+  type CapacityPressureEvidenceItem,
+  type DeploymentDrainItem,
+  type HealthAlertDeliveryItem,
+  type HealthAlertEventItem,
+  type HealthAlertStateItem,
+  type HealthItem,
+  type ProviderInventoryItem,
+  type RouteItem,
+  type UsageAlertEventItem,
+  type UsageReconciliationItem,
+  type UsageRecordItem,
+  type UsageRollupItem,
+} from "./dynamo-records.js";
 import {
   decodeActiveTunnel,
   decodeCapacityPressureEvidence,
@@ -47,197 +72,12 @@ import type {
   RouteProfile,
   RouteStatus,
   StoredAccessGrant,
-  StoredAccessGrantCredential,
   StoredRoute,
   UsageRecord,
   UsageAlertEvent,
   UsageReconciliation,
   UsageRollup,
 } from "./types.js";
-
-const ENTITY_INDEX = "EntityCreatedAt";
-const ASSIGNMENT_INDEX = "EndpointAssignments";
-
-function itemField(item: unknown, field: string, context: string): unknown {
-  return expectRecord(item, context)[field];
-}
-
-interface RouteItem {
-  pk: string;
-  sk: string;
-  entity: "route";
-  createdAt: string;
-  status: RouteStatus;
-  route: StoredRoute;
-  gsi1pk?: string;
-  gsi1sk?: string;
-}
-
-interface AccessGrantItem {
-  pk: string;
-  sk: "STATE";
-  entity: "access_grant";
-  createdAt: string;
-  status: StoredAccessGrant["status"];
-  routeId: string;
-  principalId: string;
-  grant: StoredAccessGrant;
-  gsi1pk?: string;
-  gsi1sk?: string;
-}
-
-interface HealthItem {
-  pk: string;
-  sk: string;
-  entity: "health";
-  createdAt: string;
-  health: ProviderHealth;
-}
-
-interface ProviderInventoryItem {
-  pk: string;
-  sk: "LATEST";
-  entity: "provider_inventory";
-  createdAt: string;
-  snapshot: ProviderInventorySnapshot;
-}
-
-interface CapabilityHealthItem {
-  pk: "CAPABILITY_HEALTH#GLOBAL";
-  sk: string;
-  entity: "capability_health";
-  createdAt: string;
-  snapshot: CapabilityHealthSnapshot;
-}
-
-interface HealthAlertStateItem {
-  pk: "HEALTH_ALERT_STATE#GLOBAL";
-  sk: CapabilityName;
-  entity: "health_alert_state";
-  createdAt: string;
-  state: HealthAlertState;
-}
-
-interface HealthAlertEventItem {
-  pk: string;
-  sk: "EVENT";
-  entity: "health_alert_event";
-  createdAt: string;
-  event: HealthAlertEvent;
-}
-
-interface HealthAlertDeliveryItem {
-  pk: string;
-  sk: string;
-  entity: "health_alert_delivery_pending" | "health_alert_delivery_delivered" | "health_alert_delivery_failed";
-  createdAt: string;
-  delivery: HealthAlertDelivery;
-}
-
-interface ActiveTunnelItem {
-  pk: string;
-  sk: "STATE";
-  entity: "active_tunnel";
-  createdAt: string;
-  gsi1pk: string;
-  gsi1sk: string;
-  expiresAtSeconds: number;
-  tunnel: ActiveTunnel;
-}
-
-interface CapacityCircuitItem {
-  pk: string;
-  sk: "STATE";
-  entity: "capacity_circuit";
-  createdAt: string;
-  expiresAtSeconds: number;
-  state: CapacityCircuitState;
-}
-
-interface DeploymentDrainItem {
-  pk: string;
-  sk: "DRAIN";
-  entity: "deployment_drain";
-  createdAt: string;
-  state: DeploymentDrainState;
-}
-
-interface UsageRecordItem {
-  pk: string;
-  sk: "RECORD";
-  entity: "usage_record";
-  createdAt: string;
-  record: UsageRecord;
-}
-
-interface UsageRollupItem {
-  pk: string;
-  sk: string;
-  entity: "usage_rollup";
-  createdAt: string;
-  rollup: UsageRollup;
-}
-
-interface UsageReconciliationItem {
-  pk: string;
-  sk: "RECORD";
-  entity: "usage_reconciliation";
-  createdAt: string;
-  reconciliation: UsageReconciliation;
-}
-
-interface UsageAlertEventItem {
-  pk: string;
-  sk: "EVENT";
-  entity: "usage_alert_event";
-  createdAt: string;
-  event: UsageAlertEvent;
-}
-
-interface CapacityPressureEvidenceItem {
-  pk: string;
-  sk: "EVIDENCE";
-  entity: "capacity_pressure_evidence";
-  createdAt: string;
-  evidence: CapacityPressureEvidence;
-}
-
-function routeKey(id: string): { pk: string; sk: string } {
-  return { pk: `ROUTE#${id}`, sk: "STATE" };
-}
-
-function accessGrantKey(id: string): { pk: string; sk: "STATE" } {
-  return { pk: `ACCESS_GRANT#${id}`, sk: "STATE" };
-}
-
-function capacityCircuitKey(provider: StoredRoute["provider"], candidateKey: string): { pk: string; sk: "STATE" } {
-  return { pk: `CAPACITY_CIRCUIT#${provider}#${candidateKey}`, sk: "STATE" };
-}
-
-function conditionalNotFound(error: unknown): never {
-  if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw new NotFoundError();
-  throw error;
-}
-
-function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number): boolean {
-  return (
-    credential.status !== "revoked" &&
-    Date.parse(credential.expiresAt) > nowMs &&
-    (credential.revokeAt === undefined || Date.parse(credential.revokeAt) > nowMs)
-  );
-}
-
-function grantItem(grant: StoredAccessGrant): AccessGrantItem {
-  return {
-    ...accessGrantKey(grant.id),
-    entity: "access_grant",
-    createdAt: grant.createdAt,
-    status: grant.status,
-    routeId: grant.routeId,
-    principalId: grant.principalId,
-    grant,
-  };
-}
 
 export class DynamoRouteStore implements RouteStore {
   readonly #client: DynamoDBDocumentClient;

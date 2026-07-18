@@ -1,0 +1,207 @@
+import { expectRecord } from "./decoding.js";
+import { NotFoundError } from "./errors.js";
+import type {
+  ActiveTunnel,
+  CapabilityHealthSnapshot,
+  CapabilityName,
+  CapacityCircuitState,
+  CapacityPressureEvidence,
+  DeploymentDrainState,
+  HealthAlertDelivery,
+  HealthAlertEvent,
+  HealthAlertState,
+  ProviderHealth,
+  ProviderInventorySnapshot,
+  RouteStatus,
+  StoredAccessGrant,
+  StoredAccessGrantCredential,
+  StoredRoute,
+  UsageAlertEvent,
+  UsageReconciliation,
+  UsageRecord,
+  UsageRollup,
+} from "./types.js";
+
+export const ENTITY_INDEX = "EntityCreatedAt";
+export const ASSIGNMENT_INDEX = "EndpointAssignments";
+
+export function itemField(item: unknown, field: string, context: string): unknown {
+  return expectRecord(item, context)[field];
+}
+
+export interface RouteItem {
+  pk: string;
+  sk: string;
+  entity: "route";
+  createdAt: string;
+  status: RouteStatus;
+  route: StoredRoute;
+  gsi1pk?: string;
+  gsi1sk?: string;
+}
+
+export interface AccessGrantItem {
+  pk: string;
+  sk: "STATE";
+  entity: "access_grant";
+  createdAt: string;
+  status: StoredAccessGrant["status"];
+  routeId: string;
+  principalId: string;
+  grant: StoredAccessGrant;
+  gsi1pk?: string;
+  gsi1sk?: string;
+}
+
+export interface HealthItem {
+  pk: string;
+  sk: string;
+  entity: "health";
+  createdAt: string;
+  health: ProviderHealth;
+}
+
+export interface ProviderInventoryItem {
+  pk: string;
+  sk: "LATEST";
+  entity: "provider_inventory";
+  createdAt: string;
+  snapshot: ProviderInventorySnapshot;
+}
+
+export interface CapabilityHealthItem {
+  pk: "CAPABILITY_HEALTH#GLOBAL";
+  sk: string;
+  entity: "capability_health";
+  createdAt: string;
+  snapshot: CapabilityHealthSnapshot;
+}
+
+export interface HealthAlertStateItem {
+  pk: "HEALTH_ALERT_STATE#GLOBAL";
+  sk: CapabilityName;
+  entity: "health_alert_state";
+  createdAt: string;
+  state: HealthAlertState;
+}
+
+export interface HealthAlertEventItem {
+  pk: string;
+  sk: "EVENT";
+  entity: "health_alert_event";
+  createdAt: string;
+  event: HealthAlertEvent;
+}
+
+export interface HealthAlertDeliveryItem {
+  pk: string;
+  sk: string;
+  entity: "health_alert_delivery_pending" | "health_alert_delivery_delivered" | "health_alert_delivery_failed";
+  createdAt: string;
+  delivery: HealthAlertDelivery;
+}
+
+export interface ActiveTunnelItem {
+  pk: string;
+  sk: "STATE";
+  entity: "active_tunnel";
+  createdAt: string;
+  gsi1pk: string;
+  gsi1sk: string;
+  expiresAtSeconds: number;
+  tunnel: ActiveTunnel;
+}
+
+export interface CapacityCircuitItem {
+  pk: string;
+  sk: "STATE";
+  entity: "capacity_circuit";
+  createdAt: string;
+  expiresAtSeconds: number;
+  state: CapacityCircuitState;
+}
+
+export interface DeploymentDrainItem {
+  pk: string;
+  sk: "DRAIN";
+  entity: "deployment_drain";
+  createdAt: string;
+  state: DeploymentDrainState;
+}
+
+export interface UsageRecordItem {
+  pk: string;
+  sk: "RECORD";
+  entity: "usage_record";
+  createdAt: string;
+  record: UsageRecord;
+}
+
+export interface UsageRollupItem {
+  pk: string;
+  sk: string;
+  entity: "usage_rollup";
+  createdAt: string;
+  rollup: UsageRollup;
+}
+
+export interface UsageReconciliationItem {
+  pk: string;
+  sk: "RECORD";
+  entity: "usage_reconciliation";
+  createdAt: string;
+  reconciliation: UsageReconciliation;
+}
+
+export interface UsageAlertEventItem {
+  pk: string;
+  sk: "EVENT";
+  entity: "usage_alert_event";
+  createdAt: string;
+  event: UsageAlertEvent;
+}
+
+export interface CapacityPressureEvidenceItem {
+  pk: string;
+  sk: "EVIDENCE";
+  entity: "capacity_pressure_evidence";
+  createdAt: string;
+  evidence: CapacityPressureEvidence;
+}
+
+export function routeKey(id: string): { pk: string; sk: string } {
+  return { pk: `ROUTE#${id}`, sk: "STATE" };
+}
+
+export function accessGrantKey(id: string): { pk: string; sk: "STATE" } {
+  return { pk: `ACCESS_GRANT#${id}`, sk: "STATE" };
+}
+
+export function capacityCircuitKey(provider: StoredRoute["provider"], candidateKey: string): { pk: string; sk: "STATE" } {
+  return { pk: `CAPACITY_CIRCUIT#${provider}#${candidateKey}`, sk: "STATE" };
+}
+
+export function conditionalNotFound(error: unknown): never {
+  if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw new NotFoundError();
+  throw error;
+}
+
+export function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number): boolean {
+  return (
+    credential.status !== "revoked" &&
+    Date.parse(credential.expiresAt) > nowMs &&
+    (credential.revokeAt === undefined || Date.parse(credential.revokeAt) > nowMs)
+  );
+}
+
+export function grantItem(grant: StoredAccessGrant): AccessGrantItem {
+  return {
+    ...accessGrantKey(grant.id),
+    entity: "access_grant",
+    createdAt: grant.createdAt,
+    status: grant.status,
+    routeId: grant.routeId,
+    principalId: grant.principalId,
+    grant,
+  };
+}
