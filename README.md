@@ -6,7 +6,7 @@ V0 includes:
 
 - native HTTP forwarding, HTTPS `CONNECT`, and SOCKS5 TCP `CONNECT`;
 - reusable, secret-free route profiles and independently revocable access grants;
-- versioned, capacity-aware candidate scoring, safe pre-commit retry, and atomic per-connection proxy-slot assignment;
+- deterministic least-loaded candidate selection, safe pre-commit retry, and atomic per-connection proxy-slot assignment;
 - mock providers in an entirely local runtime and personal SST stages that require no vendor account or payment;
 - ephemeral in-memory persistence for local review and DynamoDB persistence for deployed stages;
 - health aggregation, signed external canaries, alerts, usage accounting, and a company-facing dashboard;
@@ -25,7 +25,7 @@ The deployed control API, proxy gateways, and dashboard are company-wide service
 | Platform operators and on-call engineers   | [Operations guide](docs/OPERATIONS.md)                                     |
 | Contributors and maintainers               | [Development guide](docs/DEVELOPMENT.md)                                   |
 | Repository administrators                  | [Repository and release settings](docs/repository-and-release-settings.md) |
-| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.6.0.json)           |
+| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.7.0.json)           |
 | Configuration and secret sources           | [Configuration audit](docs/CONFIGURATION.md)                               |
 
 The OpenAPI contract covers management operations. Forwarding remains native HTTP proxy and SOCKS5 protocol traffic, so consumers do not wrap requests in a Profound-specific envelope.
@@ -97,7 +97,6 @@ curl -sS http://127.0.0.1:8081/v1/profiles \
   -d '{
     "customerId": "customer-a",
     "geography": { "countryCode": "US" },
-    "isTargetAuthenticated": false,
     "allowConnectionRetry": true
   }'
 ```
@@ -106,10 +105,12 @@ The response is `{ "profileId": "..." }`. Issue an independently revocable acces
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8081/v1/profiles/PROFILE_ID/grants \
-  -H 'Authorization: Bearer change-me'
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{ "sessionMode": "none" }'
 ```
 
-Save the returned `credential.username` and one-time `credential.password`; the password cannot be retrieved later. `endpoints` contains credential-free gateway addresses. Use them with an existing proxy-aware client:
+Use `sessionMode: "none"` for a stateless credential or `sessionMode: "managed"` for a managed logical session. Save the returned `credential.username` and one-time `credential.password`; the password cannot be retrieved later. `endpoints` contains credential-free gateway addresses. Use them with an existing proxy-aware client:
 
 ```sh
 curl --proxy 'http://127.0.0.1:8080' \

@@ -201,7 +201,7 @@ pnpm aws:remove --stage ci-manual
 
 ## OpenAPI workflow
 
-The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.6.0.json) is committed for client generation.
+The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.7.0.json) is committed for client generation.
 
 After any control schema or endpoint change:
 

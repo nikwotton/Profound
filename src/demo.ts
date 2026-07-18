@@ -174,6 +174,7 @@ async function controlRequest(application: RunningLocalApplication, path: string
 async function issueGrant(
   application: RunningLocalApplication,
   profile: Record<string, unknown>,
+  sessionMode: "managed" | "none",
   writeLine: WriteLine,
 ): Promise<IssuedGrant> {
   writeControlRequest(writeLine, "POST", "/v1/profiles", profile);
@@ -187,8 +188,13 @@ async function issueGrant(
   writeControlResponse(writeLine, created.status, createdBody);
   const profileId = expectString(createdBody["profileId"], "created profile.profileId");
   const grantPath = `/v1/profiles/${profileId}/grants`;
-  writeControlRequest(writeLine, "POST", grantPath);
-  const issued = await controlRequest(application, grantPath, { method: "POST" });
+  const grantInput = { sessionMode };
+  writeControlRequest(writeLine, "POST", grantPath, grantInput);
+  const issued = await controlRequest(application, grantPath, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(grantInput),
+  });
   assert(issued.status === 201, `grant issuance returned ${issued.status}`);
   const issuedBody = await responseJson(issued);
   writeControlResponse(writeLine, issued.status, issuedBody);
@@ -380,9 +386,9 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
       {
         customerId: "demo-public-data",
         geography: { countryCode: "US" },
-        isTargetAuthenticated: false,
         allowConnectionRetry: true,
       },
+      "none",
       writeLine,
     );
     const residentialFirst = await requestViaHttpProxy(residential, httpTarget.url);
@@ -395,16 +401,16 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
     assert(firstIp !== secondIp, "per-request residential exits did not rotate");
     writeLine(`      ✓ recipient saw transparent HTTP requests via fresh exits ${firstIp} → ${secondIp}`);
 
-    await step(3, "Authenticated profile → stable Proxidize mobile device");
+    await step(3, "Managed-session profile → stable Proxidize mobile device");
     const mobile = await issueGrant(
       application,
       {
         customerId: "demo-authenticated-session",
         geography: { countryCode: "US", regionCode: "NY", city: "New York" },
         carrier: "T-Mobile",
-        isTargetAuthenticated: true,
         allowConnectionRetry: false,
       },
+      "managed",
       writeLine,
     );
     const mobileFirst = await requestViaHttpProxy(mobile, httpTarget.url);
@@ -455,7 +461,7 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
     writeLine("      ✓ both tunnel protocols echoed application bytes unchanged");
 
     await step(5, "One-time credential rotation and revocation");
-    const rotatePath = `/v1/grants/${mobile.grant.grantId}/credentials/rotate`;
+    const rotatePath = `/v1/grants/${mobile.grant.grantId}/credentials/${mobile.credential.credentialId}/rotate`;
     writeControlRequest(writeLine, "POST", rotatePath);
     const rotatedResponse = await controlRequest(application, rotatePath, { method: "POST" });
     const rotatedBody = await responseJson(rotatedResponse);

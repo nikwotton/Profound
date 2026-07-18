@@ -27,7 +27,7 @@ test("local demo exercises the principal flows with no external services", async
   assert.deepEqual(pauses, [
     "1:Control-plane readiness",
     "2:Public-data profile → Bright Data residential routing",
-    "3:Authenticated profile → stable Proxidize mobile device",
+    "3:Managed-session profile → stable Proxidize mobile device",
     "4:Native HTTPS CONNECT and SOCKS5 tunnelling",
     "5:One-time credential rotation and revocation",
   ]);
