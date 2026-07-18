@@ -35,7 +35,7 @@ Run the self-contained reviewer walkthrough with local provider simulators and e
 pnpm demo
 ```
 
-In a terminal, the walkthrough waits for Enter before each major step; use `pnpm demo -- --no-interactive` to run all steps continuously. Redirected output is automatically non-interactive, so automation cannot wait on a prompt. The walkthrough leaves its loopback servers running until Ctrl-C, including its in-memory analytics API and dashboard on port `8083`. It induces a safe pre-commit provider failover, records the resulting attempts, runs accounting, and queries usage by customer, job, provider, and outcome so routing, observability, and both cost models can be reviewed together. Run `pnpm dev:local` for the local proxy/control runtime without the walkthrough or accounting/query steps. Neither command reads cloud, telemetry-exporter, or vendor credentials.
+In a terminal, the walkthrough waits for Enter before each major step; use `pnpm demo -- --no-interactive` to run all steps continuously. Redirected output is automatically non-interactive, so automation cannot wait on a prompt. The walkthrough leaves its loopback servers running until Ctrl-C, including its in-memory analytics API and dashboard on port `8083`. For an automated smoke run that binds available ports, cleans up, and exits after the walkthrough, use `pnpm demo -- --once --ephemeral-ports`. The demo induces a safe pre-commit provider failover, records the resulting attempts, runs accounting, and queries usage by customer, job, provider, and outcome so routing, observability, and both cost models can be reviewed together. Run `pnpm dev:local` for the local proxy/control runtime without the walkthrough or accounting/query steps. Neither command reads cloud, telemetry-exporter, or vendor credentials.
 
 Start a personal SST development stage. SST provisions the supporting AWS resources and starts each application service locally with generated configuration:
 
@@ -84,6 +84,8 @@ Run the standard local gate:
 ```sh
 pnpm verify
 ```
+
+This command bootstraps SST's generated providers and types before running the repository checks. It does not start a service or require AWS credentials.
 
 Format changed files with:
 

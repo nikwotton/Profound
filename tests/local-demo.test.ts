@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { expectArray, expectRecord, parseJson } from "../src/decoding.js";
-import { startDemo } from "../src/demo.js";
+import { demoCapacityPeriod, startDemo } from "../src/demo.js";
 import { silentLogger } from "../src/logger.js";
+
+test("demo capacity billing stays inside a half-open daily query during the final UTC hour", () => {
+  const queryEndsAt = new Date("2026-07-19T00:00:00.000Z");
+  const period = demoCapacityPeriod(new Date("2026-07-18T23:30:00.000Z"), queryEndsAt);
+
+  assert.equal(period.startedAt.toISOString(), "2026-07-18T23:00:00.000Z");
+  assert.equal(period.endsAt.toISOString(), "2026-07-18T23:59:59.999Z");
+  assert.ok(period.endsAt < queryEndsAt);
+});
 
 test("local demo exercises the principal flows with no external services", async (t) => {
   let output = "";

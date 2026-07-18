@@ -54,6 +54,7 @@ export interface DemoOptions {
   logger?: Logger;
   write?: (line: string) => void;
   pauseBeforeStep?: (step: DemoStep) => Promise<void>;
+  exitAfterRun?: boolean;
 }
 
 export interface DemoStep {
@@ -67,6 +68,16 @@ export interface RunningDemo {
   targetUrl: string;
   analyticsUrl: string;
   stop(): Promise<void>;
+}
+
+export function demoCapacityPeriod(now: Date, queryEndsAt: Date): { startedAt: Date; endsAt: Date } {
+  const startedAt = new Date(now);
+  startedAt.setUTCMinutes(0, 0, 0);
+  const naturalEnd = new Date(startedAt);
+  naturalEnd.setUTCHours(naturalEnd.getUTCHours() + 1);
+  const endsAt = new Date(Math.min(naturalEnd.getTime(), queryEndsAt.getTime() - 1));
+  if (endsAt <= startedAt) throw new Error("Demo capacity period must overlap the accounting query");
+  return { startedAt, endsAt };
 }
 
 function lineWriter(write: (line: string) => void): (line?: string) => void {
@@ -592,10 +603,7 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
 
     const proxidizePricing = application.routes.descriptors().find((descriptor) => descriptor.id === "proxidize")?.pricing;
     assert(proxidizePricing?.model === "per_device_month", "Proxidize pricing metadata was unavailable");
-    const capacityStartedAt = new Date(now);
-    capacityStartedAt.setUTCMinutes(0, 0, 0);
-    const capacityEndsAt = new Date(capacityStartedAt);
-    capacityEndsAt.setUTCHours(capacityEndsAt.getUTCHours() + 1);
+    const { startedAt: capacityStartedAt, endsAt: capacityEndsAt } = demoCapacityPeriod(now, toDate);
     const proxySlotIds = [...new Set(attemptRecords.flatMap((record) => (record.proxySlotId === undefined ? [] : [record.proxySlotId])))];
     assert(proxySlotIds.length > 0, "No mobile proxy-slot usage was recorded");
     for (const proxySlotId of proxySlotIds) {
@@ -705,9 +713,14 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
     assert(rejectedProxyResponse.status === 407, "revoked credential was still accepted");
     writeLine("      ✓ replacement works; revoked credential now receives HTTP 407");
     writeLine();
-    writeLine("Demo complete. The servers and in-memory routes remain available for inspection.");
-    writeLine(`Inspect analytics at ${analyticsUrl}, or use Swagger UI with the documented local demo bearer token.`);
-    writeLine("Press Ctrl-C to stop and discard all ephemeral data.");
+    if (options.exitAfterRun) {
+      writeLine("Demo complete. One-shot mode will stop every server and discard its in-memory data.");
+      await stop();
+    } else {
+      writeLine("Demo complete. The servers and in-memory routes remain available for inspection.");
+      writeLine(`Inspect analytics at ${analyticsUrl}, or use Swagger UI with the documented local demo bearer token.`);
+      writeLine("Press Ctrl-C to stop and discard all ephemeral data.");
+    }
 
     return { application, targetUrl: httpTarget.url, analyticsUrl, stop };
   } catch (error) {

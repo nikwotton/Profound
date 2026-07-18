@@ -16,14 +16,13 @@ const pauseBeforeStep =
 const demo = await startDemo({
   ...(ephemeralPorts ? { forwardPort: 0, socks5Port: 0, controlPort: 0, statusPort: 0 } : {}),
   ...(pauseBeforeStep === undefined ? {} : { pauseBeforeStep }),
+  exitAfterRun: runOnce,
   logger: createLogger({ consoleMode: "errors", instrumentationScope: "profound-proxy-demo" }),
 }).finally(() => {
   terminal?.close();
 });
 
-if (runOnce) {
-  await demo.stop();
-} else {
+if (!runOnce) {
   let stopping = false;
   const stop = async (signal: string): Promise<void> => {
     if (stopping) return;

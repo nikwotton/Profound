@@ -36,7 +36,7 @@
     "test": "pnpm build:test && node --test dist/tests/*.test.js dist/tests/**/*.test.js",
     "test:aws": "pnpm build:test && RUN_AWS_ACCEPTANCE_TESTS=1 node --test --test-concurrency=1 dist/tests/*.test.js dist/tests/deployed/**/*.test.js",
     "test:live": "pnpm build:test && RUN_LIVE_PROXY_TESTS=1 node --test dist/tests/live/**/*.test.js",
-    "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test:property && pnpm test:coverage && pnpm openapi:check"
+    "verify": "pnpm sst install && pnpm format:check && pnpm lint && pnpm check && pnpm test:property && pnpm test:coverage && pnpm openapi:check"
   },
   "devDependencies": {
     "@effect/vitest": "^0.27.0",

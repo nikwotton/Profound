@@ -59,7 +59,7 @@ Installing dependencies does not start the service:
 pnpm install
 ```
 
-This command does not start a server. Run `pnpm sst install` separately only when working with SST; it installs SST's generated infrastructure providers and types without starting a server.
+This command does not start a server. Run `pnpm sst install` separately when working directly with SST; it installs SST's generated infrastructure providers and types without starting a server. The top-level `pnpm verify` command performs this bootstrap automatically.
 
 `pnpm build` creates the production application artifact without tests. Production container builds also omit local provider simulators, demos, and controlled integration targets; those are included only in explicit development and test workflows.
 
@@ -71,7 +71,7 @@ Start the complete single-process local stack and watch it exercise the main usa
 pnpm demo
 ```
 
-No AWS, Axiom, Bright Data, Proxidize, Docker, or other external account is needed. The command starts the real control API, HTTP/HTTPS forward proxy, SOCKS5 proxy, usage ledger, accounting worker, and analytics API with in-memory persistence and local provider simulators. It demonstrates readiness, residential rotation, mobile affinity, HTTP forwarding, a pre-commit `CONNECT` retry/failover, SOCKS5 tunnelling, credential lifecycle, and the complete operation → immutable attempt records → rollup → analytics-query path. The output includes customer/job/provider attribution, bytes, latency, retry/failover and outcome metrics, Bright Data per-GiB cost, and Proxidize device-month cost allocation. In an interactive terminal, press Enter to run each step individually. Each step prints its live sanitized request, response, selected mock identity metadata, and protocol details; request bodies, URL queries, headers, cookies, authorization, and credentials remain absent or redacted. Redirected output and `pnpm demo -- --no-interactive` run the walkthrough continuously without prompts.
+No AWS, Axiom, Bright Data, Proxidize, Docker, or other external account is needed. The command starts the real control API, HTTP/HTTPS forward proxy, SOCKS5 proxy, usage ledger, accounting worker, and analytics API with in-memory persistence and local provider simulators. It demonstrates readiness, residential rotation, mobile affinity, HTTP forwarding, a pre-commit `CONNECT` retry/failover, SOCKS5 tunnelling, credential lifecycle, and the complete operation → immutable attempt records → rollup → analytics-query path. The output includes customer/job/provider attribution, bytes, latency, retry/failover and outcome metrics, Bright Data per-GiB cost, and Proxidize device-month cost allocation. In an interactive terminal, press Enter to run each step individually. Each step prints its live sanitized request, response, selected mock identity metadata, and protocol details; request bodies, URL queries, headers, cookies, authorization, and credentials remain absent or redacted. Redirected output and `pnpm demo -- --no-interactive` run the walkthrough continuously without prompts. For an automated one-shot smoke run that uses available ports, stops every server, and exits, run `pnpm demo -- --once --ephemeral-ports`.
 
 After the walkthrough, the servers stay available for inspection:
 
@@ -141,7 +141,7 @@ See [docs/USAGE.md](docs/USAGE.md) before integrating. It documents credential h
 pnpm verify
 ```
 
-Normal tests use local providers and controlled recipients. Live vendor checks and deployed AWS checks are explicitly gated; see the [development guide](docs/DEVELOPMENT.md#test-suites).
+The command first installs SST's generated providers and types, then runs formatting, lint, compilation, property tests, the full offline suite with coverage thresholds, and the OpenAPI synchronization check. It does not start a service or require AWS credentials. Normal tests use local providers and controlled recipients. Live vendor checks and deployed AWS checks are explicitly gated; see the [development guide](docs/DEVELOPMENT.md#test-suites).
 
 ## V0 boundaries
 
