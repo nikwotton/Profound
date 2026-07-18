@@ -1,7 +1,7 @@
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import { capacityCircuitAllowsCandidate } from "./capacity-circuit.js";
 import type { Logger } from "./logger.js";
-import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
+import type { ProviderAdapter } from "./providers/provider.js";
 import { preferredProviderClass } from "./provider-selection.js";
 import { historicalRoutingEvidence, ROUTING_POLICY, scoreRoutingCandidate, type ScoredRoutingCandidate } from "./routing-policy.js";
 import { V0_POLICY } from "./service-policies.js";
@@ -17,7 +17,6 @@ const SLOT_MONTH_SECONDS = (365.25 / 12) * 24 * 60 * 60;
 export class RoutingCandidateRanker {
   constructor(
     private readonly store: RoutingStore,
-    private readonly proxidize: MobileProviderAdapter,
     private readonly logger: Logger,
     private readonly now: () => number,
   ) {}
@@ -76,34 +75,35 @@ export class RoutingCandidateRanker {
           record.capacityPressure === true &&
           (record.capacityPressureProvider ?? (record.provider === "unresolved" ? undefined : record.provider)) === provider.descriptor.id,
       );
-      if (provider.descriptor.id === "proxidize") {
-        const compatibleEndpoints = (await this.proxidize.listEndpoints(false, signal)).filter(
-          (endpoint) => endpoint.healthy && !state.excludedEndpointIds.has(endpoint.id) && this.proxidize.matches(endpoint, route),
+      if (provider.candidates !== undefined) {
+        const candidateSource = provider.candidates;
+        const compatibleCandidates = (await candidateSource.list(false, signal)).filter(
+          (candidate) => candidate.healthy && !state.excludedCandidateIds.has(candidate.id) && candidateSource.matches(candidate, route),
         );
-        const endpoints: typeof compatibleEndpoints = [];
-        for (const endpoint of compatibleEndpoints) {
-          if (await this.capacityCircuitEligible("proxidize", endpoint.id)) endpoints.push(endpoint);
+        const candidatesWithCapacity: typeof compatibleCandidates = [];
+        for (const candidate of compatibleCandidates) {
+          if (await this.capacityCircuitEligible(provider.descriptor.id, candidate.id)) candidatesWithCapacity.push(candidate);
           else state.capacityConstraint = "capacity_circuit";
         }
-        if (endpoints.length === 0) continue;
-        const endpointLoads = (
+        if (candidatesWithCapacity.length === 0) continue;
+        const candidateLoads = (
           await this.store.getActiveConnectionCounts(
-            [],
-            endpoints.map(({ id }) => id),
+            [provider.descriptor.id],
+            candidatesWithCapacity.map(({ id }) => id),
             [],
           )
         ).endpoints;
-        const candidates = endpoints.map((endpoint): ScoredRoutingCandidate<string> & { activeConnections: number } => {
-          const load = endpointLoads.get(endpoint.id) ?? 0;
+        const candidates = candidatesWithCapacity.map((candidate): ScoredRoutingCandidate<string> & { activeConnections: number } => {
+          const load = candidateLoads.get(candidate.id) ?? 0;
           return {
-            candidate: endpoint.id,
+            candidate: candidate.id,
             activeConnections: load,
             ...this.scoreCandidate(
               provider,
-              providerRecords.filter((record) => record.proxySlotId === endpoint.id),
+              providerRecords.filter((record) => record.proxySlotId === candidate.id),
               load,
               true,
-              providerPressureRecords.filter((record) => record.proxySlotId === endpoint.id),
+              providerPressureRecords.filter((record) => record.proxySlotId === candidate.id),
             ),
           };
         });

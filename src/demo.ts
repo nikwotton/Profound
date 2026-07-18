@@ -601,6 +601,7 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
     for (const proxySlotId of proxySlotIds) {
       await application.store.recordUsage(
         provisionedProxySlotCapacityRecord({
+          provider: "proxidize",
           id: `demo:${proxySlotId}:${capacityStartedAt.toISOString()}`,
           proxySlotId,
           periodStartedAt: capacityStartedAt.toISOString(),

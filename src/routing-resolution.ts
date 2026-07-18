@@ -3,7 +3,7 @@ import type { UsageRecord } from "./domain/usage.js";
 
 export interface ResolutionState {
   readonly attemptsByProvider: Map<ProviderId, number>;
-  readonly excludedEndpointIds: Set<string>;
+  readonly excludedCandidateIds: Set<string>;
   previousCandidateId?: string;
   previousProvider?: ProviderId;
   primaryProvider?: ProviderId;
@@ -12,7 +12,7 @@ export interface ResolutionState {
   capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
   establishmentWaitMs: number;
   capacityPolicyVersion?: string;
-  preferredEndpointId?: string;
+  preferredCandidateId?: string;
   preferredAffinityHandle?: string;
   sessionAffinityHit?: boolean;
   sessionRebindCause?: string;
@@ -25,7 +25,7 @@ export interface ResolutionState {
 }
 
 export function createResolutionState(): ResolutionState {
-  return { attemptsByProvider: new Map(), excludedEndpointIds: new Set(), establishmentWaitMs: 0, sessionRebindRetries: 0 };
+  return { attemptsByProvider: new Map(), excludedCandidateIds: new Set(), establishmentWaitMs: 0, sessionRebindRetries: 0 };
 }
 
 export function sessionRoutingUsageContext(

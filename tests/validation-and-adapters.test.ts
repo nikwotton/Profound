@@ -215,8 +215,9 @@ test("profile validation accepts only stable requirements and derives routing be
 
   const overridden = validate({ providerOverride: "bright_data" });
   assert.equal(overridden.providerOverride, "bright_data");
-  assert.throws(() => validate({ providerOverride: null }), /providerOverride must be bright_data or proxidize/);
-  assert.throws(() => validate({ providerOverride: "unknown" }), /providerOverride must be bright_data or proxidize/);
+  assert.equal(validate({ providerOverride: "future_provider" }).providerOverride, "future_provider");
+  assert.throws(() => validate({ providerOverride: null }), /providerOverride must be a provider ID/);
+  assert.throws(() => validate({ providerOverride: "" }), /providerOverride must be a non-empty string/);
 });
 
 test("profile validation enforces geography hierarchy and rejects every non-canonical field", () => {

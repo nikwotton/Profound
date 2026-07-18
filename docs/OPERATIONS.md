@@ -338,7 +338,7 @@ curl -sS \
   'http://127.0.0.1:8083/v1/usage?preset=week&interval=day&groupBy=provider'
 ```
 
-`/v1/capacity` accepts optional `country`, `city`, and `carrier` filters. It returns the latest service-private provider-account/slot inventory with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
+`/v1/capacity` accepts optional `provider`, `country`, `city`, and `carrier` filters. It returns the requested provider's latest service-private provider-account/slot inventory, or the most recently captured inventory when `provider` is omitted, with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
 
 It also returns the typed routing policy and the latest 100 safe routing diagnostics. These diagnostics contain provider, optional provider override and service-private proxy-slot identity, policy version, active-load and soft-pressure evidence, shadow roadmap score components, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and diagnostic components are emitted on restricted selection logs, traces, and the durable attempt ledger.
 

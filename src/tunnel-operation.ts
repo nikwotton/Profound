@@ -297,7 +297,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
           ...assignmentLogContext(failedAssignment),
         });
       }
-      if (upstream !== undefined) resolutionState.excludedEndpointIds.add(upstream.endpointId);
+      if (upstream !== undefined) resolutionState.excludedCandidateIds.add(upstream.endpointId);
       const commitmentState = "pre_commit" as const;
       const retry = !options.callerSignal.aborted && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
       const attemptedProvider = upstream?.provider ?? providerIdFromError(error);

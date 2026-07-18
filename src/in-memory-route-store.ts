@@ -329,6 +329,7 @@ export class InMemoryRouteStore implements RouteStore {
   }
 
   async claimActiveTunnelSlot(
+    provider: ProviderId,
     candidateEndpointIds: readonly string[],
     selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
     createTunnel: (endpointId: string) => ActiveTunnel,
@@ -338,12 +339,7 @@ export class InMemoryRouteStore implements RouteStore {
     const loads = new Map<string, number>();
     const now = this.#nowIso();
     for (const tunnel of this.state.tunnels.values()) {
-      if (
-        tunnel.expiresAt <= now ||
-        tunnel.provider !== "proxidize" ||
-        tunnel.endpointId === undefined ||
-        !candidates.has(tunnel.endpointId)
-      )
+      if (tunnel.expiresAt <= now || tunnel.provider !== provider || tunnel.endpointId === undefined || !candidates.has(tunnel.endpointId))
         continue;
       loads.set(tunnel.endpointId, (loads.get(tunnel.endpointId) ?? 0) + 1);
     }
@@ -391,7 +387,11 @@ export class InMemoryRouteStore implements RouteStore {
     const sessionCounts = new Map<string, number>(sessionIds.map((sessionId) => [sessionId, 0]));
     for (const tunnel of await this.listAllActiveTunnels(now)) {
       if (providerCounts.has(tunnel.provider)) providerCounts.set(tunnel.provider, (providerCounts.get(tunnel.provider) ?? 0) + 1);
-      if (tunnel.endpointId !== undefined && endpointCounts.has(tunnel.endpointId)) {
+      if (
+        tunnel.endpointId !== undefined &&
+        endpointCounts.has(tunnel.endpointId) &&
+        (providers.length !== 1 || tunnel.provider === providers[0])
+      ) {
         endpointCounts.set(tunnel.endpointId, (endpointCounts.get(tunnel.endpointId) ?? 0) + 1);
       }
       if (tunnel.sessionId !== undefined && sessionCounts.has(tunnel.sessionId)) {
@@ -474,6 +474,10 @@ export class InMemoryRouteStore implements RouteStore {
   async latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined> {
     const snapshot = this.state.inventory.get(provider);
     return snapshot === undefined ? undefined : copy(snapshot);
+  }
+
+  async listProviderInventories(): Promise<ProviderInventorySnapshot[]> {
+    return [...this.state.inventory.values()].toSorted((left, right) => left.provider.localeCompare(right.provider)).map(copy);
   }
 
   async saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {

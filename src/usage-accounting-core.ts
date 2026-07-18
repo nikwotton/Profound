@@ -1,12 +1,21 @@
-import { expectEnum, expectIsoTimestamp, expectNonNegativeNumber, expectOptionalString, expectRecord, expectString } from "./decoding.js";
+import {
+  expectEnum,
+  expectIsoTimestamp,
+  expectNonEmptyString,
+  expectNonNegativeNumber,
+  expectOptionalString,
+  expectRecord,
+  expectString,
+} from "./decoding.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
+import type { ProviderId } from "./domain/routing.js";
 import type { UsageGroupBy, UsageInterval, UsageProvider, UsageRecord, UsageRollup } from "./domain/usage.js";
 
 const GIB = 1024 ** 3;
 const SLOT_MONTH_MS = (365.25 / 12) * 24 * 60 * 60_000;
 
 export interface ProviderCostTotal {
-  provider: Exclude<UsageProvider, "unresolved">;
+  provider: ProviderId;
   periodStartedAt: string;
   periodEndsAt: string;
   amountUsd: number;
@@ -34,6 +43,7 @@ export interface UsageQuery {
 }
 
 export interface ProvisionedProxySlotCapacity {
+  provider: ProviderId;
   id: string;
   proxySlotId: string;
   periodStartedAt: string;
@@ -48,7 +58,7 @@ export interface ProvisionedProxySlotCapacity {
 export function decodeProviderCostTotal(value: unknown, context = "provider cost total"): ProviderCostTotal {
   const total = expectRecord(value, context);
   const result = {
-    provider: expectEnum(total["provider"], ["bright_data", "proxidize"] as const, `${context}.provider`),
+    provider: expectNonEmptyString(total["provider"], `${context}.provider`),
     periodStartedAt: expectIsoTimestamp(total["periodStartedAt"], `${context}.periodStartedAt`),
     periodEndsAt: expectIsoTimestamp(total["periodEndsAt"], `${context}.periodEndsAt`),
     amountUsd: expectNonNegativeNumber(total["amountUsd"], `${context}.amountUsd`),
@@ -68,6 +78,7 @@ export function decodeProvisionedProxySlotCapacity(
   const country = expectOptionalString(capacity["country"], `${context}.country`);
   const city = expectOptionalString(capacity["city"], `${context}.city`);
   const result = {
+    provider: expectNonEmptyString(capacity["provider"], `${context}.provider`),
     id: expectString(capacity["id"], `${context}.id`),
     proxySlotId: expectString(capacity["proxySlotId"], `${context}.proxySlotId`),
     periodStartedAt: expectIsoTimestamp(capacity["periodStartedAt"], `${context}.periodStartedAt`),
@@ -100,7 +111,7 @@ export function provisionedProxySlotCapacityRecord(capacity: ProvisionedProxySlo
     routeId: "Unallocated",
     userId: "Unallocated",
     customerId: "Unallocated",
-    provider: "proxidize",
+    provider: capacity.provider,
     protocol: "socks5",
     outcome: "success",
     retryIndex: 0,

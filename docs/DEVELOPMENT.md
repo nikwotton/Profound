@@ -213,6 +213,8 @@ OpenAPI intentionally excludes the native HTTP proxy and SOCKS5 data planes. Doc
 
 `config/provider-sources.json` records the source documents. `config/providers/bright-data-v0.json` and `config/providers/proxidize-v0.json` pin the normalized capability, pricing, DNS, and usage contract consumed by the adapters and static checks.
 
+Core routing receives a list of `ProviderAdapter` values and treats each adapter ID as opaque. Providers with independently load-managed endpoints expose the optional normalized candidate-inventory capability; routing, affinity, inventory persistence, capacity circuits, and load claims consume that capability without branching on a vendor ID. Adding an adapter therefore requires provider-local configuration and composition-root registration, not changes to the route service, candidate ranker, storage decoders, telemetry, or accounting logic.
+
 Check source freshness with:
 
 ```sh
@@ -224,7 +226,7 @@ When provider documentation changes:
 1. verify it against the primary provider documentation;
 2. update the pinned normalized contract and source timestamp;
 3. update adapter and simulator behavior together;
-4. add contract and routing tests;
+4. add contract and routing tests, including candidate-inventory coverage when the provider exposes that capability;
 5. update consumer/operator documentation when behavior changes;
 6. keep provider capability distinct from preferred use case or routing order.
 

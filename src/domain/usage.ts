@@ -1,6 +1,7 @@
 import type { CapacityCircuitReason, CapacityCircuitStatus, DataPlaneProtocol, ProviderClass, ProviderId, SessionMode } from "./routing.js";
 
-export type UsageProvider = ProviderId | "unresolved";
+/** Usage records reserve the opaque value `unresolved` for pre-attribution failures. */
+export type UsageProvider = ProviderId;
 export type UsageOutcome = "success" | "http_error" | "retry" | "failure";
 export type UsageCostStatus = "estimated" | "reconciled";
 export type UsageInterval = "hour" | "day" | "week" | "month";

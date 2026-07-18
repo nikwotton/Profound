@@ -593,11 +593,12 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   claimActiveTunnelSlot(
+    provider: ProviderId,
     candidateEndpointIds: readonly string[],
     selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
     createTunnel: (endpointId: string) => ActiveTunnel,
   ): Promise<{ tunnel: ActiveTunnel; activeConnections: number }> {
-    return this.#runtimeState.claimActiveTunnelSlot(candidateEndpointIds, selectEndpoint, createTunnel);
+    return this.#runtimeState.claimActiveTunnelSlot(provider, candidateEndpointIds, selectEndpoint, createTunnel);
   }
 
   heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
@@ -681,6 +682,9 @@ export class DynamoRouteStore implements RouteStore {
   }
   latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined> {
     return this.#health.latestProviderInventory(provider);
+  }
+  listProviderInventories(): Promise<ProviderInventorySnapshot[]> {
+    return this.#health.listProviderInventories();
   }
   saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
     return this.#health.saveCapabilityHealth(snapshot);

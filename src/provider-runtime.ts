@@ -3,7 +3,7 @@ import { expectInteger, expectRecord, expectString, isUnknownRecord } from "./de
 import { callDynamicExport } from "./dynamic-module.js";
 import type { Logger } from "./logger.js";
 import { BrightDataAdapter, type BrightDataConfig } from "./providers/bright-data.js";
-import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
+import type { ProviderAdapter } from "./providers/provider.js";
 import { ProxidizeAdapter, type ProxidizeConfig } from "./providers/proxidize.js";
 import type { BrightDataSimulatorControl, ProxidizeSimulatorControl } from "./provider-simulator-contracts.js";
 export type { BrightDataSimulatorControl, ProxidizeSimulatorControl } from "./provider-simulator-contracts.js";
@@ -15,13 +15,12 @@ export type ProviderRuntimeConfig = Pick<
 
 export interface ProviderRuntimeDependencies {
   brightDataFactory?: (config: BrightDataConfig) => ProviderAdapter<"bright_data">;
-  mobileProviderFactory?: (config: ProxidizeConfig) => MobileProviderAdapter;
+  proxidizeFactory?: (config: ProxidizeConfig) => ProviderAdapter<"proxidize">;
   fetchImplementation?: typeof fetch;
 }
 
 export interface ProviderRuntime {
-  brightData: ProviderAdapter<"bright_data">;
-  proxidize: MobileProviderAdapter;
+  providers: readonly ProviderAdapter[];
   simulators?: {
     brightData: BrightDataSimulatorControl;
     proxidize: ProxidizeSimulatorControl;
@@ -29,7 +28,7 @@ export interface ProviderRuntime {
   stop(): Promise<void>;
 }
 
-export type ProviderCatalog = Pick<ProviderRuntime, "brightData" | "proxidize">;
+export type ProviderCatalog = Pick<ProviderRuntime, "providers">;
 
 function hasMethod(value: Record<string, unknown>, name: string): boolean {
   return typeof value[name] === "function";
@@ -95,8 +94,10 @@ export function createProviderCatalog(config: ProviderRuntimeConfig, dependencie
     ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
   };
   return {
-    brightData: dependencies.brightDataFactory?.(brightDataConfig) ?? new BrightDataAdapter(brightDataConfig),
-    proxidize: dependencies.mobileProviderFactory?.(proxidizeConfig) ?? new ProxidizeAdapter(proxidizeConfig),
+    providers: [
+      dependencies.brightDataFactory?.(brightDataConfig) ?? new BrightDataAdapter(brightDataConfig),
+      dependencies.proxidizeFactory?.(proxidizeConfig) ?? new ProxidizeAdapter(proxidizeConfig),
+    ],
   };
 }
 
@@ -133,14 +134,10 @@ export async function createProviderRuntime(
       };
     }
 
-    const { brightData, proxidize } = createProviderCatalog(
-      { ...config, brightData: brightConfig, proxidize: proxidizeConfig },
-      dependencies,
-    );
+    const { providers } = createProviderCatalog({ ...config, brightData: brightConfig, proxidize: proxidizeConfig }, dependencies);
     let stopped = false;
     return {
-      brightData,
-      proxidize,
+      providers,
       ...(simulators === undefined ? {} : { simulators }),
       stop: async () => {
         if (stopped) return;

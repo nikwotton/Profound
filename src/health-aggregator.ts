@@ -101,7 +101,9 @@ function combinedTrafficStatus(managed: CapabilityHealth["status"], stateless: C
 function isPassiveSignal(value: unknown): value is PassiveHealthSignal {
   if (!isUnknownRecord(value)) return false;
   return (
-    (value["provider"] === "bright_data" || value["provider"] === "proxidize") &&
+    typeof value["provider"] === "string" &&
+    value["provider"].length > 0 &&
+    value["provider"] !== "unresolved" &&
     (value["capability"] === "all_traffic" || value["capability"] === "managed_sessions" || value["capability"] === "stateless_traffic") &&
     (value["outcome"] === "success" || value["outcome"] === "failure") &&
     typeof value["observedAt"] === "string" &&

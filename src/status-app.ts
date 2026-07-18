@@ -13,10 +13,8 @@ import type {
   StoredRoute,
 } from "./domain/routing.js";
 import type { ListenAddress } from "./domain/network.js";
-import type { UsageGroupBy, UsageInterval, UsageProvider, UsageRollup } from "./domain/usage.js";
+import type { UsageGroupBy, UsageInterval, UsageRollup } from "./domain/usage.js";
 import { summarizeUsage, type UsageQuery } from "./usage-accounting.js";
-
-const PROXIDIZE_MONTHLY_PRICE_PER_SLOT_USD = 59;
 
 export interface StatusApplicationOptions {
   host: string;
@@ -75,6 +73,7 @@ function capacityRecommendation(
   usage: readonly UsageRollup[],
   now: number,
   provisionedSlots?: number,
+  monthlyPricePerSlotUsd = 0,
 ): { latest?: UsageRollup; recommendation?: CapacityRecommendation } {
   const latest = usage.filter((rollup) => rollup.provisionedSlots > 0).at(-1);
   if (latest === undefined) return {};
@@ -87,12 +86,18 @@ function capacityRecommendation(
         observedMbps: latest.throughputUtilization * latest.provisionedSlots * CAPACITY_POLICY.plannedMbpsPerSlot,
         prioritizedGbForecast: latest.prioritizedGbForecast,
         ...(latest.capacityConstraint === undefined ? {} : { limitingConstraint: latest.capacityConstraint }),
-        monthlyPricePerSlotUsd: PROXIDIZE_MONTHLY_PRICE_PER_SLOT_USD,
+        monthlyPricePerSlotUsd,
       },
       CAPACITY_POLICY,
       () => now,
     ),
   };
+}
+
+function mostRecentInventory(inventories: readonly ProviderInventorySnapshot[]): ProviderInventorySnapshot | undefined {
+  return [...inventories].sort(
+    (left, right) => Date.parse(right.capturedAt) - Date.parse(left.capturedAt) || left.provider.localeCompare(right.provider),
+  )[0];
 }
 
 function page(
@@ -146,7 +151,7 @@ function page(
     }),
     { operations: 0, bytes: 0, connectionMs: 0, provisionedMs: 0, unhealthyMs: 0, cost: 0 },
   );
-  const capacity = capacityRecommendation(capacityUsage, now, inventory?.slots.length);
+  const capacity = capacityRecommendation(capacityUsage, now, inventory?.slots.length, inventory?.monthlyPricePerSlotUsd);
   const latestCapacity = capacity.latest;
   const recommendation = capacity.recommendation;
   const usageStatus = usage.length > 0 && usage.every((rollup) => rollup.costStatus === "reconciled") ? "Reconciled" : "Estimated";
@@ -233,8 +238,6 @@ const USAGE_GROUPS = [
   "city",
   "outcome",
 ] as const satisfies readonly UsageGroupBy[];
-const USAGE_PROVIDERS = ["bright_data", "proxidize", "unresolved"] as const satisfies readonly UsageProvider[];
-
 type UsageQueryErrorCode =
   | "invalid_capacity_query_parameter"
   | "invalid_session_mode"
@@ -315,7 +318,7 @@ function usageQuery(url: URL, now: number): UsageQuery {
   const groupValue = url.searchParams.get("groupBy") ?? undefined;
   if (groupValue !== undefined && !includes(USAGE_GROUPS, groupValue)) throw new UsageQueryError("invalid_usage_group");
   const providerValue = url.searchParams.get("provider") ?? undefined;
-  if (providerValue !== undefined && !includes(USAGE_PROVIDERS, providerValue)) throw new UsageQueryError("invalid_usage_provider");
+  if (providerValue !== undefined && providerValue.trim().length === 0) throw new UsageQueryError("invalid_usage_provider");
   const sessionMode = url.searchParams.get("sessionMode") ?? undefined;
   if (sessionMode !== undefined && sessionMode !== "managed" && sessionMode !== "stateless") {
     throw new UsageQueryError("invalid_session_mode");
@@ -437,20 +440,26 @@ export class StatusApplicationServer {
         return;
       }
       if (request.method === "GET" && url.pathname === "/v1/capacity") {
-        assertQueryParameters(url, ["country", "city", "carrier"], "invalid_capacity_query_parameter");
+        assertQueryParameters(url, ["provider", "country", "city", "carrier"], "invalid_capacity_query_parameter");
         const to = new Date(now).toISOString();
         const from = new Date(now - 30 * 86_400_000).toISOString();
         const records = await this.store.listUsageRecords(from, to);
+        const requestedProvider = url.searchParams.get("provider")?.trim() || undefined;
+        const inventories = await this.store.listProviderInventories();
+        const inventory =
+          requestedProvider === undefined
+            ? mostRecentInventory(inventories)
+            : inventories.find((candidate) => candidate.provider === requestedProvider);
+        const provider = requestedProvider ?? inventory?.provider;
         const data = summarizeUsage(records, {
           from,
           to,
           interval: "day",
-          provider: "proxidize",
+          ...(provider === undefined ? {} : { provider }),
         });
-        const inventory = await this.store.latestProviderInventory("proxidize");
         const capacityCircuits = await this.store.listCapacityCircuits(to);
         const activeConnections = (await this.store.listAllActiveTunnels(to)).filter(
-          (connection) => connection.provider === "proxidize" && connection.endpointId !== undefined,
+          (connection) => connection.provider === provider && connection.endpointId !== undefined,
         );
         const slotLoads = new Map<string, number>();
         for (const connection of activeConnections) {
@@ -463,10 +472,11 @@ export class StatusApplicationServer {
             (slot) =>
               (url.searchParams.get("country") === null || slot.country === url.searchParams.get("country")?.toUpperCase()) &&
               (url.searchParams.get("city") === null || slot.city?.toLowerCase() === url.searchParams.get("city")?.toLowerCase()) &&
-              (url.searchParams.get("carrier") === null || slot.carrier.toLowerCase() === url.searchParams.get("carrier")?.toLowerCase()),
+              (url.searchParams.get("carrier") === null || slot.carrier?.toLowerCase() === url.searchParams.get("carrier")?.toLowerCase()),
           ) ?? [];
-        const capacity = capacityRecommendation(data, now, inventory?.slots.length);
+        const capacity = capacityRecommendation(data, now, inventory?.slots.length, inventory?.monthlyPricePerSlotUsd);
         json(response, 200, {
+          provider: provider ?? null,
           policy: CAPACITY_POLICY,
           routingPolicy: ROUTING_POLICY,
           recentCandidateScores: records
@@ -556,7 +566,13 @@ export class StatusApplicationServer {
         const storedUsage = (await this.store.listUsageRollups(from, to, "day")).filter((rollup) => Object.keys(rollup.group).length === 0);
         const records = await this.store.listUsageRecords(from, to);
         const usage = storedUsage.length > 0 ? storedUsage : summarizeUsage(records, { from, to, interval: "day" });
-        const capacityUsage = summarizeUsage(records, { from, to, interval: "day", provider: "proxidize" });
+        const inventory = mostRecentInventory(await this.store.listProviderInventories());
+        const capacityUsage = summarizeUsage(records, {
+          from,
+          to,
+          interval: "day",
+          ...(inventory === undefined ? {} : { provider: inventory.provider }),
+        });
         const profiles = await this.store.list();
         const accessGrants = (await Promise.all(profiles.map(async (profile) => this.store.listAccessGrants(profile.id)))).flat();
         const logicalSessions = (await Promise.all(accessGrants.map(async (grant) => this.store.listLogicalSessions(grant.id)))).flat();
@@ -565,7 +581,7 @@ export class StatusApplicationServer {
             await this.store.latestCapabilityHealth(),
             usage,
             capacityUsage,
-            await this.store.latestProviderInventory("proxidize"),
+            inventory,
             profiles,
             accessGrants.map((grant) => toPublicAccessGrant(grant, now)),
             logicalSessions.map(toPublicLogicalSession),

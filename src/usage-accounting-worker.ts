@@ -158,7 +158,15 @@ export class UsageAccountingWorker {
       }
     }
     for (const rollup of rollups) await this.store.saveUsageRollup(rollup);
-    for (const provider of ["bright_data", "proxidize"] as const) {
+    const pressureProviders = new Set<ProviderId>();
+    for (const record of records) {
+      if (record.kind === "capacity") pressureProviders.add(record.provider);
+      else if (record.capacityPressure === true) {
+        const provider = record.capacityPressureProvider ?? (record.provider === "unresolved" ? undefined : record.provider);
+        if (provider !== undefined) pressureProviders.add(provider);
+      }
+    }
+    for (const provider of pressureProviders) {
       const pressureRecords = records.filter((record) => {
         if (record.kind === "capacity") return record.provider === provider;
         if (record.capacityPressure !== true) return false;

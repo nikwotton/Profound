@@ -92,7 +92,7 @@ export const PublicRouteSchema = Schema.Struct({
   customerId: Schema.String,
   geography: exactOptional(Geography),
   carrier: exactOptional(Schema.String),
-  providerOverride: Schema.NullOr(Schema.Literal("bright_data", "proxidize")),
+  providerOverride: Schema.NullOr(Schema.String),
   allowConnectionRetry: Schema.Boolean,
   status: Schema.Literal("ready", "revoked"),
   createdAt: Schema.String,
