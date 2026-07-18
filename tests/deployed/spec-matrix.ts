@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHyiPKiKv8tS4u4j2qkR_rGSFooQ3FnJsmMU69Lz2lfAvOqY6bw-T_0ZlQsAz6okfftOxBVL8ycHxBHjtt3MMxQXdmOHOs9FMsQvHj0";
+  "ALtnJHzTv3RO7KvbnUJzpaT2Agif3iPkMm82Z8loqxpFhIyXUukfHAIXuhvwa3himLdSrGAV_2mDP-ALFteDFn0m4rzSptkLC-gxVWIjCfs";
 
 export interface SpecCoverage {
   id: string;
@@ -23,6 +23,19 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [],
   },
   {
+    id: "1.company-wide-access",
+    section: 1,
+    requirement: "Authorized users and services across the company can use the control API, proxy gateways, and dashboard",
+    deployed: [
+      "deployed route management rejects untrusted and malformed requests",
+      "deployed networks isolate the canary and keep status and aggregation private",
+    ],
+    offline: [
+      "control API rejects unauthorized and malformed route requests",
+      "mobile grants share scored proxy-slot capacity and credential rotation creates no affinity",
+    ],
+  },
+  {
     id: "2.protocol-preservation",
     section: 2,
     requirement: "Standard HTTP forward proxy, HTTP CONNECT, and authenticated SOCKS5 CONNECT preserve caller behavior",
@@ -33,8 +46,8 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [],
   },
   {
-    id: "2.http-buffer-limits",
-    section: 2,
+    id: "4.http-buffer-limits",
+    section: 4,
     requirement: "Plain HTTP buffers complete requests and responses behind centralized limits while CONNECT and SOCKS5 remain streamed",
     deployed: [],
     offline: [
@@ -68,7 +81,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.component-separation",
     section: 3,
     requirement:
-      "Control, data, routing, adapters, telemetry, internal dashboard, usage accounting, aggregator, and canary have defined boundaries",
+      "Control, data, routing, adapters, telemetry, company-facing dashboard, usage accounting, aggregator, and canary have defined boundaries",
     deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
     offline: ["Effect generates a complete secured OpenAPI contract from the control API"],
   },
@@ -336,10 +349,10 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "6.aws-compute",
     section: 6,
     requirement:
-      "AWS v0 uses separate ECS Fargate services, an internal proxy NLB with explicit transport settings, durable shared state, and an API Gateway/Lambda canary with packaged GeoIP",
+      "AWS v0 uses separate ECS Fargate services, a private proxy NLB with explicit transport settings, durable shared state, and an API Gateway/Lambda canary with packaged GeoIP",
     deployed: [
       "deployed ECS components are independent Fargate services with dedicated telemetry collectors",
-      "deployed networks isolate the canary and keep status and aggregation internal",
+      "deployed networks isolate the canary and keep status and aggregation private",
       "deployed DynamoDB and Axiom datasets preserve durable state and retention",
     ],
     offline: ["SST isolates AWS resources behind a provider-selected deployment module"],
@@ -385,7 +398,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "7.billing-boundary",
     section: 7,
-    requirement: "Accounting outputs are internal billing inputs and do not execute charges or customer approval",
+    requirement: "Accounting outputs are company-only billing inputs and do not execute charges or customer approval",
     deployed: [],
     offline: ["accounting worker persists hourly, daily, and customer rollups"],
   },
@@ -510,12 +523,12 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: ["capability aggregation keeps freshness separate and requires corroboration for unavailability"],
   },
   {
-    id: "8.internal-dashboard",
+    id: "8.company-dashboard",
     section: 8,
     requirement:
-      "The internal dashboard supports usage/cost controls and shows explicit profile overrides plus hard-capacity circuit state, failure class, and cooldown",
+      "The company-facing dashboard supports usage/cost controls and shows explicit profile overrides plus hard-capacity circuit state, failure class, and cooldown",
     deployed: [],
-    offline: ["internal dashboard supports usage filters and surfaces provider overrides and capacity circuits"],
+    offline: ["company-facing dashboard supports usage filters and surfaces provider overrides and capacity circuits"],
   },
   {
     id: "8.freshness",
@@ -579,7 +592,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
       "Proxy, control, status, aggregator, notification, telemetry, and canary have separate ingress, identities, scaling, and canary network isolation",
     deployed: [
       "deployed ECS components are independent Fargate services with dedicated telemetry collectors",
-      "deployed networks isolate the canary and keep status and aggregation internal",
+      "deployed networks isolate the canary and keep status and aggregation private",
     ],
     offline: [],
   },
@@ -623,52 +636,36 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     ],
   },
   {
-    id: "9.repository-policy",
+    id: "9.delivery-principles",
     section: 9,
-    requirement: "GitHub review, ownership, merge, branch cleanup, notification, and merge-queue policy is explicit",
-    deployed: [],
-    offline: ["repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates"],
-  },
-  {
-    id: "9.ci-toolchain",
-    section: 9,
-    requirement: "Formatting, type-aware lint, TypeScript 7, Vitest, Effect, fast-check, OpenAPI, test, and build gates run in CI",
-    deployed: [],
-    offline: ["repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates"],
-  },
-  {
-    id: "9.provider-contracts",
-    section: 9,
-    requirement: "Provider contracts are normalized, pinned, simulator-tested, and checked for upstream freshness",
+    requirement:
+      "GitHub Actions builds each reviewed candidate once, authenticates to AWS through OIDC, and promotes the immutable artifact unchanged",
     deployed: [],
     offline: [
+      "repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates",
+      "AWS delivery workflows build once, promote unchanged, serialize releases, and clean ephemeral stages",
+    ],
+  },
+  {
+    id: "9.validation",
+    section: 9,
+    requirement:
+      "CI validates formatting, types, OpenAPI compatibility, provider contracts, provider-neutral routing, deployable builds, and targeted live probes",
+    deployed: [],
+    offline: [
+      "repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates",
       "provider contracts are pinned and checked for freshness",
       "provider authentication, rate limiting, and unavailable peers are normalized",
     ],
   },
   {
-    id: "9.ephemeral-aws",
+    id: "9.simulation",
     section: 9,
-    requirement: "Pull requests use production-shaped isolated AWS environments with cleanup and a TTL janitor",
-    deployed: [],
-    offline: ["AWS delivery workflows build once, promote unchanged, serialize releases, and clean ephemeral stages"],
-  },
-  {
-    id: "9.developer-stages",
-    section: 9,
-    requirement: "Personal SST developer stages isolate resources and centralize necessary typed configuration differences",
+    requirement:
+      "Deterministic provider and destination simulators cover success, outage, geography, capacity, timeout, retry, failover, and pass-through behavior",
     deployed: [],
     offline: [
-      "developer stages are isolated and destination simulators preserve configurable recipient behavior",
-      "stage configuration isolates personal stages with safe provider and capacity defaults",
-    ],
-  },
-  {
-    id: "9.destination-simulators",
-    section: 9,
-    requirement: "Destination simulators vary response status, headers, payload, latency, and connection behavior",
-    deployed: [],
-    offline: [
+      "provider authentication, rate limiting, and unavailable peers are normalized",
       "developer stages are isolated and destination simulators preserve configurable recipient behavior",
       "the ephemeral CI transport origin echoes native requests, statuses, redirects, and replay counts",
     ],
@@ -676,7 +673,8 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "9.migrations",
     section: 9,
-    requirement: "Every PR declares migration impact and ordered restartable migrations are exercised through upgrade and rollback",
+    requirement:
+      "State evolves through backward-compatible expand-migrate-contract changes, restartable backfills, coexistence checks, and rollback gates",
     deployed: [],
     offline: [
       "migration policy requires one declaration and CODEOWNER confirmation for sensitive migration-none changes",
@@ -686,7 +684,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "9.promotion",
     section: 9,
-    requirement: "One immutable candidate is promoted from staging to production with serialized cumulative reconciliation",
+    requirement: "Production changes are serialized and promote one already validated immutable candidate",
     deployed: [],
     offline: [
       "AWS delivery workflows build once, promote unchanged, serialize releases, and clean ephemeral stages",
@@ -696,7 +694,8 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "9.tunnel-drain",
     section: 9,
-    requirement: "Gateway releases track retiring tunnels durably and notify, escalate, terminate, or extend on the documented timeline",
+    requirement:
+      "Gateway releases use blue/green traffic shifting and durable tunnel tracking with configurable observation, notification, escalation, termination, and extension policy",
     deployed: [],
     offline: [
       "gateway releases persist active tunnels and enforce the staged drain escalation policy",

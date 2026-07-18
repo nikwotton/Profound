@@ -6,21 +6,21 @@ This guide is the shipped-v0 runbook for deploying, configuring, monitoring, and
 
 AWS is the only deployment provider implemented in v0. The SST module deploys independent runtime and health boundaries rather than one monolith:
 
-| Component                   | Responsibility                                                | Local mode/port              | AWS placement                                        |
-| --------------------------- | ------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------- |
-| Data plane                  | HTTP/HTTPS and SOCKS5 proxy listeners                         | `data-plane`; `8080`, `1080` | ECS Fargate behind an internal Network Load Balancer |
-| Control plane               | Routes, grants, providers, readiness, OpenAPI                 | `control-plane`; `8081`      | ECS Fargate behind an internal load balancer         |
-| Health aggregator           | Provider/passive/synthetic health and alert creation          | `health-aggregator`; `8082`  | Internal ECS Fargate service                         |
-| Internal dashboard          | Capability status, usage, cost, reconciliation                | `status`; `8083`             | Internal ECS Fargate service                         |
-| Notification worker         | Signed webhook delivery                                       | `notification`; `8084`       | Internal ECS Fargate service                         |
-| Usage accounting            | Durable rollups and provider-cost reconciliation              | `usage-accounting`; `8085`   | Internal ECS Fargate service                         |
-| Public canary               | Signed source-IP/geography observation                        | `canary`; `8090`             | API Gateway and Lambda in an isolated canary VPC     |
-| Product telemetry collector | OTLP buffering/filtering/export and passive health forwarding | n/a                          | ECS Fargate in the product VPC                       |
-| Canary telemetry collector  | Isolated canary OTLP export                                   | n/a                          | ECS Fargate in the canary VPC                        |
+| Component                   | Responsibility                                                | Local mode/port              | AWS placement                                      |
+| --------------------------- | ------------------------------------------------------------- | ---------------------------- | -------------------------------------------------- |
+| Data plane                  | HTTP/HTTPS and SOCKS5 proxy listeners                         | `data-plane`; `8080`, `1080` | ECS Fargate behind a private Network Load Balancer |
+| Control plane               | Routes, grants, providers, readiness, OpenAPI                 | `control-plane`; `8081`      | ECS Fargate behind a private load balancer         |
+| Health aggregator           | Provider/passive/synthetic health and alert creation          | `health-aggregator`; `8082`  | Private ECS Fargate service                        |
+| Company-facing dashboard    | Capability status, usage, cost, reconciliation                | `status`; `8083`             | Private ECS Fargate service                        |
+| Notification worker         | Signed webhook delivery                                       | `notification`; `8084`       | Private ECS Fargate service                        |
+| Usage accounting            | Durable rollups and provider-cost reconciliation              | `usage-accounting`; `8085`   | Private ECS Fargate service                        |
+| Public canary               | Signed source-IP/geography observation                        | `canary`; `8090`             | API Gateway and Lambda in an isolated canary VPC   |
+| Product telemetry collector | OTLP buffering/filtering/export and passive health forwarding | n/a                          | ECS Fargate in the product VPC                     |
+| Canary telemetry collector  | Isolated canary OTLP export                                   | n/a                          | ECS Fargate in the canary VPC                      |
 
 `SERVICE_MODE=proxy` starts the combined local data and control planes. `integration-target` is a controlled recipient used by tests and is not a production component.
 
-The product VPC holds provider credentials, route state, and customer attribution. The public canary has no provider credentials, customer data, internal routes, or path into the product VPC. Target traffic always travels through a selected provider and never falls back to a direct connection.
+The product VPC holds provider credentials, route state, and customer attribution. The public canary has no provider credentials, customer data, company-private routes, or path into the product VPC. Target traffic always travels through a selected provider and never falls back to a direct connection.
 
 ## Local operation
 
@@ -153,7 +153,7 @@ The AWS table uses on-demand capacity and point-in-time recovery. Production rem
 - SST dependencies are installed.
 - Three Axiom datasets and a scoped ingest token exist.
 - GeoLite2 credentials are available to the deployment pipeline.
-- Internal DNS, ACM certificates, and source CIDRs are known for production.
+- Private company DNS, ACM certificates, and authorized source CIDRs are known for production.
 
 Verify the identity before every manual deployment:
 
@@ -242,7 +242,7 @@ DATA_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
 pnpm aws:deploy --stage staging
 ```
 
-Non-production uses provider simulators by default. SST prints internal proxy, control, dashboard, health, accounting, notification, canary, and telemetry metadata. Internal names resolve only from the product VPC or an SST tunnel.
+Non-production uses provider simulators by default. SST prints private proxy, control, dashboard, health, accounting, notification, canary, and telemetry metadata. Private names resolve only from an approved company network connected to the product VPC or from an SST tunnel.
 
 ### Deploy production
 
@@ -260,9 +260,9 @@ Also set the four required stage secrets described above for `production`. Then 
 
 ```sh
 PROVIDER_MODE=live \
-PROXY_DOMAIN='proxy.internal.example.com' \
+PROXY_DOMAIN='proxy.corp.example.com' \
 PROXY_CERT_ARN='arn:aws:acm:us-east-1:123456789012:certificate/REPLACE_ME' \
-CONTROL_DOMAIN='proxy-control.internal.example.com' \
+CONTROL_DOMAIN='proxy-control.corp.example.com' \
 CONTROL_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
 DATA_PLANE_ALLOWED_CIDRS='203.0.113.10/32,198.51.100.0/24' \
 MIN_TASKS=2 \
@@ -334,9 +334,9 @@ pnpm sst secret set HealthProxyPassword 'ACCESS_GRANT_TOKEN' --stage production
 
 HEALTH_SYNTHETIC_ROUTE_CONFIGURED=true \
 PROVIDER_MODE=live \
-PROXY_DOMAIN='proxy.internal.example.com' \
+PROXY_DOMAIN='proxy.corp.example.com' \
 PROXY_CERT_ARN='arn:aws:acm:us-east-1:123456789012:certificate/REPLACE_ME' \
-CONTROL_DOMAIN='proxy-control.internal.example.com' \
+CONTROL_DOMAIN='proxy-control.corp.example.com' \
 CONTROL_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
 DATA_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
 pnpm aws:deploy --stage production
@@ -344,11 +344,11 @@ pnpm aws:deploy --stage production
 
 The canary accepts only short-lived signed, non-replayable challenges. In AWS, API Gateway's `requestContext.http.sourceIp` is authoritative; caller-supplied forwarding headers are ignored.
 
-## Internal dashboard
+## Company-facing dashboard
 
 The dashboard root shows 30-day request count, transfer, active upstream connection time, current and time-weighted proxy-slot occupancy, provisioned and unhealthy paid slot capacity, peak and p95 concurrency, attributed cost, capacity recommendations, capability state, freshness, and geography evidence.
 
-Programmatic endpoints are internal and unauthenticated at the application layer; network access is the v0 boundary:
+The dashboard and its programmatic endpoints are available to authorized users and services across the company, not only the operating team. They are unauthenticated at the application layer in v0, so approved company-network access to the private service is the authorization boundary:
 
 | Endpoint                          | Purpose                                                                  |
 | --------------------------------- | ------------------------------------------------------------------------ |
@@ -376,9 +376,9 @@ curl -sS \
   'http://127.0.0.1:8083/api/usage?preset=week&interval=day&groupBy=provider'
 ```
 
-`/api/capacity` accepts optional `country`, `city`, and `carrier` filters. It returns the latest internal provider-account/slot inventory with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
+`/api/capacity` accepts optional `country`, `city`, and `carrier` filters. It returns the latest service-private provider-account/slot inventory with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
 
-It also returns the typed routing policy and the latest 100 safe candidate-score diagnostics. These diagnostics contain provider, optional provider override and internal proxy-slot identity, policy version, total score, component scores, soft pressure, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and component scores are emitted on internal selection logs, traces, and the durable attempt ledger.
+It also returns the typed routing policy and the latest 100 safe candidate-score diagnostics. These diagnostics contain provider, optional provider override and service-private proxy-slot identity, policy version, total score, component scores, soft pressure, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and component scores are emitted on restricted selection logs, traces, and the durable attempt ledger.
 
 The initial `proxy-routing-v0-2026-07-18` policy scores every eligible provider and peer, slot, or device candidate from 0–100:
 
@@ -412,7 +412,7 @@ The durable usage ledger, not OTLP, is authoritative. Every upstream attempt rec
 - Hour/day/week/month rollups retain group attribution and whether cost is `estimated` or `reconciled`.
 - Configured provider totals replace the overall authoritative spend for matching periods.
 - Idle slot capacity and unexplained reconciliation differences are posted to the synthetic `Unallocated` customer, never silently prorated to customers. Customer attribution plus `Unallocated` normalizes to reconciled provisioned-slot cost.
-- The component provides internal billing inputs only. Invoice generation, approval, adjustments, collection, and external audit are out of scope.
+- The component provides company-only billing inputs. Invoice generation, approval, adjustments, collection, and customer-facing audit are out of scope.
 
 The accounting worker can read static `PROVIDER_COST_TOTALS_JSON` and `PROVISIONED_PROXY_SLOT_CAPACITY_JSON`, or poll `USAGE_ACCOUNTING_SOURCE_URL`. The optional source returns:
 
@@ -434,7 +434,7 @@ Each reconciliation persists estimated total, reported total, variance, source v
 
 Configure these initial thresholds with `USAGE_VARIANCE_ABSOLUTE_FLOOR_USD`, `USAGE_VARIANCE_WARNING_RELATIVE`, and `USAGE_VARIANCE_ERROR_RELATIVE`. Revisit them using observed data.
 
-Usage accounting owns reconciliation-variance classification and capacity-planning recommendations derived from usage, cost, and capacity rollups. It persists idempotent warning/error events before emitting aggregate logs. Operators can inspect those non-capability events through the internal `GET /api/usage/events` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
+Usage accounting owns reconciliation-variance classification and capacity-planning recommendations derived from usage, cost, and capacity rollups. It persists idempotent warning/error events before emitting aggregate logs. Authorized dashboard users can inspect those non-capability events through the private `GET /api/usage/events` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
 
 Capacity pressure is also persisted as normalized evidence through the shared service contract and is available at `GET /api/usage/capacity-pressure-evidence`. The health aggregator reads fresh evidence (five minutes by default, configurable with `HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS`) and alone classifies the affected capability as degraded. Usage accounting does not classify capability state or emit capability alerts.
 
@@ -473,7 +473,7 @@ Never emitted:
 - control, access-grant, or provider credentials;
 - unsanitized exception text.
 
-High-cardinality route, grant, user, proxy-slot, peer, device, session, and IP identifiers stay out of metric attributes. Proxy-slot identifiers are permitted only in restricted internal logs, traces, inventory diagnostics, and connection-level usage records. Public-canary access/security events share the log dataset with `log.category=security`.
+High-cardinality route, grant, user, proxy-slot, peer, device, session, and IP identifiers stay out of metric attributes. Proxy-slot identifiers are permitted only in restricted logs, traces, inventory diagnostics, and connection-level usage records. Public-canary access/security events share the log dataset with `log.category=security`.
 
 ## Release and connection draining
 
@@ -508,11 +508,11 @@ The ECS bake window keeps the old tasks available for six hours. Routine route/g
 
 ### Provider unavailable or route creation fails
 
-1. Read the provider-neutral error and use the internal status/dashboard diagnostics for provider health and capacity.
-2. Compare the profile's geography, carrier, target-authenticated intent, and retry intent with internal capability evidence.
+1. Read the provider-neutral error and use the company-facing status/dashboard diagnostics for provider health and capacity.
+2. Compare the profile's geography, carrier, target-authenticated intent, and retry intent with restricted capability evidence.
 3. For authenticated routes, confirm an exact-city-capable provider is available.
 4. Check compatible proxy-slot inventory, health, current connection load, and capacity pressure for Proxidize.
-5. Keep provider selection and provider diagnostics out of public requests and responses; use only the internal dashboard and telemetry to explain eligibility.
+5. Keep provider selection and provider diagnostics out of public requests and responses; use only authorized company-facing dashboard and telemetry views to explain eligibility.
 
 ### Health is stale but not unavailable
 

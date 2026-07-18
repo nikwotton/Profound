@@ -396,7 +396,7 @@ test("variance thresholds enforce the absolute floor, 5% warning, 15% error, and
   }
 });
 
-test("internal dashboard supports usage filters and surfaces provider overrides and capacity circuits", async (t) => {
+test("company-facing dashboard supports usage filters and surfaces provider overrides and capacity circuits", async (t) => {
   const store = new SqliteRouteStore(":memory:");
   await store.create(
     "overridden-profile",

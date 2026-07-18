@@ -24,7 +24,7 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /socks5h:\/\/\$\{host\}:\$\{socks5Port\}/);
   assert.match(aws, /new sst\.aws\.Service\("ControlPlane"/);
   assert.match(aws, /new sst\.aws\.Service\("HealthAggregator"/);
-  assert.match(aws, /new sst\.aws\.Service\("InternalDashboard"/);
+  assert.match(aws, /new sst\.aws\.Service\("CompanyDashboard"/);
   assert.match(aws, /new sst\.aws\.Service\("UsageAccounting"/);
   assert.match(aws, /new sst\.aws\.Service\("NotificationService"/);
   assert.match(aws, /new sst\.aws\.Service\("TelemetryCollector"/);

@@ -52,7 +52,7 @@ pnpm start
 | `src/dynamo-store.ts`               | DynamoDB implementation                                 |
 | `src/health-aggregator.ts`          | Capability-health evaluation                            |
 | `src/public-canary.ts`              | Signed source/geography canary                          |
-| `src/status-app.ts`                 | Internal dashboard and status/usage APIs                |
+| `src/status-app.ts`                 | Company-facing dashboard and status/usage APIs          |
 | `src/usage-accounting.ts`           | Ledger summarization, cost attribution, reconciliation  |
 | `src/alerting.ts`                   | Durable health alerts and webhook delivery              |
 | `src/telemetry.ts`, `src/logger.ts` | OTLP instrumentation and redaction                      |
@@ -175,7 +175,7 @@ DEPLOYED_RUN_DISRUPTIVE_TESTS=1 \
 pnpm test:aws
 ```
 
-The runner discovers non-secret component metadata from `/sst/profound-proxy-router/ci-manual/deployed-integration`. It verifies the deployed AWS topology, durable persistence and restart behavior, internal services, telemetry, migration safety, and environment isolation. Public lifecycle behavior is covered independently by `pnpm test:e2e`.
+The runner discovers non-secret component metadata from `/sst/profound-proxy-router/ci-manual/deployed-integration`. It verifies the deployed AWS topology, durable persistence and restart behavior, private services, telemetry, migration safety, and environment isolation. Public lifecycle behavior is covered independently by `pnpm test:e2e`.
 
 The disruptive flag forces a proxy ECS replacement to verify DynamoDB-backed credentials and route requirements. Omit it for a non-disruptive run. Set `DEPLOYED_EXPECTED_TELEMETRY_RETENTION_DAYS` only when intentionally testing a non-default Axiom policy.
 

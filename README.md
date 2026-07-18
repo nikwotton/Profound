@@ -9,10 +9,12 @@ V0 includes:
 - versioned, capacity-aware candidate scoring, safe pre-commit retry, and atomic per-connection proxy-slot assignment;
 - local provider simulators that require no vendor account or payment;
 - SQLite for local state and DynamoDB for deployed state;
-- health aggregation, signed external canaries, alerts, usage accounting, and an internal dashboard;
+- health aggregation, signed external canaries, alerts, usage accounting, and a company-facing dashboard;
 - an AWS deployment built with SST and separate ECS Fargate services.
 
 Provider credentials and endpoints never leave the service. Target traffic never falls back to a direct Internet connection.
+
+The deployed control API, proxy gateways, and dashboard are company-wide services for authorized users and workloads. They remain on approved private company networks; they are not limited to the team that operates the router and are not exposed as public Internet applications.
 
 ## Documentation
 
@@ -108,6 +110,6 @@ Normal tests use local providers and controlled recipients. Live vendor checks a
 
 ## V0 boundaries
 
-V0 supports HTTP forwarding, HTTPS and SOCKS5 TCP tunnels, Bright Data residential service, Proxidize Per Proxy mobile service, AWS/SST deployment, and internal usage attribution. It intentionally does not include TLS interception, SOCKS5 `BIND`, SOCKS5 `UDP ASSOCIATE`, direct-connection fallback, a public dashboard, end-customer invoicing, or multi-cloud deployment.
+V0 supports HTTP forwarding, HTTPS and SOCKS5 TCP tunnels, Bright Data residential service, Proxidize Per Proxy mobile service, AWS/SST deployment, and company cost attribution. It intentionally does not include TLS interception, SOCKS5 `BIND`, SOCKS5 `UDP ASSOCIATE`, direct-connection fallback, a public-Internet dashboard, end-customer invoicing, or multi-cloud deployment.
 
 Operate the service only for authorized collection and access that complies with target-site, provider, and applicable legal requirements.

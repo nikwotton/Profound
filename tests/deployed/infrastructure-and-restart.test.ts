@@ -213,7 +213,7 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
   assert.match(canaryCollectorEnvironment.AOT_CONFIG_CONTENT ?? "", /filter\/security|filter\/operational/);
 });
 
-deployedTest("deployed networks isolate the canary and keep status and aggregation internal", async () => {
+deployedTest("deployed networks isolate the canary and keep status and aggregation private", async () => {
   const environment = await deployedEnvironment();
   const metadata = environment.metadata;
   const vpcs = await awsJson<{ Vpcs?: Array<{ VpcId?: string; State?: string }> }>(

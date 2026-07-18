@@ -113,7 +113,7 @@ The committed [OpenAPI contract](../openapi/profound-control-api.v0.6.0.json) is
 
 Unknown fields are rejected. In particular, profiles do not accept `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
 
-Authenticated targets require exact country and city targeting. They exhaust compatible device-backed candidates before residential candidates; device-backed soft saturation does not open residential fallback. Unauthenticated targets normally prefer residential candidates for cost, but residential soft saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain internal.
+Authenticated targets require exact country and city targeting. They exhaust compatible device-backed candidates before residential candidates; device-backed soft saturation does not open residential fallback. Unauthenticated targets normally prefer residential candidates for cost, but residential soft saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain service-private and appear only in authorized dashboard and telemetry views.
 
 Replace the stable requirements with `PUT /v1/profiles/{id}`. New connections use the replacement; established requests and tunnels continue under the policy with which they opened.
 
@@ -138,7 +138,7 @@ Profile, grant, and credential list/read responses never include passwords, veri
 
 ## Routing and retry behavior
 
-Provider selection and provider-specific rotation are internal implementation policy. Consumers declare stable requirements, not mechanisms.
+Provider selection and provider-specific rotation are private service implementation policy. Consumers declare stable requirements, not mechanisms.
 
 `providerOverride` is the one deliberate exception: set it to `bright_data` or `proxidize` only when a workload must constrain the vendor, or leave it `null`/omit it for ordinary provider-neutral routing. An override never bypasses protocol, geography, safety, health, hard-capacity, or circuit checks. If the named provider cannot satisfy the profile, the control plane returns `provider_override_unsatisfied`; the data plane does not fall back to another provider.
 
@@ -171,7 +171,7 @@ The Effect error discriminator `_tag` may also appear in the JSON representation
 
 - Explicit loopback, private, link-local, multicast, reserved, metadata, and special-use IP literals are rejected.
 - Domains remain intact for provider-side DNS. Local DNS is diagnostic only and cannot reroute the request.
-- Verified provider-side private resolution is rejected. Where an opaque provider supplies no resolution evidence, safety is best effort and the missing evidence is recorded internally.
+- Verified provider-side private resolution is rejected. Where an opaque provider supplies no resolution evidence, safety is best effort and the missing evidence is recorded by the service.
 - Target URL credentials and credentials in `CONNECT` authorities are rejected.
 - Target ports default to `80` and `443`; operators may deliberately allow more public TCP ports.
 - Plain-HTTP request and response bodies are buffered with the configured request and response caps. Oversized requests are rejected before upstream forwarding; oversized responses are rejected before response bytes reach the caller.
@@ -179,9 +179,9 @@ The Effect error discriminator `_tag` may also appear in the JSON representation
 
 ## Privacy and logging
 
-Operational telemetry may include timestamps, request and correlation IDs, profile/grant/customer identifiers, protocol, target hostname and port, target method and status for plain HTTP, provider class and provider identifier in internal telemetry only, normalized outcome, duration, byte counts, retry count, and sanitized assignment evidence. Internal logs and traces may carry a proxy-slot identifier for diagnosis and connection-level accounting; metrics must not use proxy-slot, device, IP, session, route, grant, or user identifiers as attributes.
+Operational telemetry may include timestamps, request and correlation IDs, profile/grant/customer identifiers, protocol, target hostname and port, target method and status for plain HTTP, provider class and provider identifier in restricted telemetry only, normalized outcome, duration, byte counts, retry count, and sanitized assignment evidence. Restricted logs and traces may carry a proxy-slot identifier for diagnosis and connection-level accounting; metrics must not use proxy-slot, device, IP, session, route, grant, or user identifiers as attributes.
 
-Logs and traces must not contain request/response bodies, full URLs or query strings, raw headers, cookies, target authorization, control bearer tokens, proxy passwords, credential verifiers, provider credentials, or raw vendor responses. Tunnel telemetry contains connection metadata only because application traffic remains encrypted. Provider, provider-override, health, cost, routing-score, soft-overflow, failure-class, and hard-capacity circuit diagnostics are restricted to internal telemetry and the internal dashboard.
+Logs and traces must not contain request/response bodies, full URLs or query strings, raw headers, cookies, target authorization, control bearer tokens, proxy passwords, credential verifiers, provider credentials, or raw vendor responses. Tunnel telemetry contains connection metadata only because application traffic remains encrypted. Provider, provider-override, health, cost, routing-score, soft-overflow, failure-class, and hard-capacity circuit diagnostics are restricted to authorized telemetry and company-facing dashboard views.
 
 ## Consumer checklist
 

@@ -1013,7 +1013,7 @@ service:
       },
     });
 
-    const status = new sst.aws.Service("InternalDashboard", {
+    const status = new sst.aws.Service("CompanyDashboard", {
       cluster,
       dev: { url: "http://127.0.0.1:8083" },
       architecture: "x86_64",
@@ -1282,6 +1282,8 @@ service:
             controlApi: controlPlane.url,
             publicCanary: canaryApi.url,
             statusApplication: status.url,
+            companyDashboard: status.url,
+            // Compatibility alias for existing deployed-test metadata readers.
             internalDashboard: status.url,
             usageAccounting: usageAccounting.url,
             healthAggregator: healthAggregator.url,
@@ -1391,6 +1393,8 @@ service:
       axiomDatasets,
       telemetryRetentionDays,
       statusApplication: status.url,
+      companyDashboard: status.url,
+      // Compatibility alias for existing stage-output consumers.
       internalDashboard: status.url,
       usageAccounting: usageAccounting.url,
       healthAggregator: healthAggregator.url,
