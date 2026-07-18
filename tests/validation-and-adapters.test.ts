@@ -59,6 +59,17 @@ test("control API token defaults only for local mock mode", () => {
   });
   assert.equal(local.adminToken, "change-me");
   assert.equal(local.proxidizeExactCity, "provider_guaranteed");
+  assert.equal(local.maxHttpRequestBodyBytes, 10 * 1024 * 1024);
+  assert.equal(local.maxHttpResponseBodyBytes, 50 * 1024 * 1024);
+
+  const bodyLimits = loadConfig({
+    PROVIDER_MODE: "mock",
+    MAX_HTTP_REQUEST_BODY_BYTES: "17",
+    MAX_HTTP_RESPONSE_BODY_BYTES: "23",
+    SQLITE_PATH: "./data/config-test.db",
+  });
+  assert.equal(bodyLimits.maxHttpRequestBodyBytes, 17);
+  assert.equal(bodyLimits.maxHttpResponseBodyBytes, 23);
 
   assert.throws(
     () =>

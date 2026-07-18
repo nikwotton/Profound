@@ -25,6 +25,8 @@ export interface AppConfig {
   operationEstablishmentTimeoutMs: number;
   streamIdleTimeoutMs: number;
   maxHeaderBytes: number;
+  maxHttpRequestBodyBytes: number;
+  maxHttpResponseBodyBytes: number;
   retryDefaults: { maxAttempts: number };
   proxidizeExactCity: "provider_guaranteed" | "verifiable" | "unsupported";
   telemetry: { serviceName: string; serviceVersion: string };
@@ -139,6 +141,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     operationEstablishmentTimeoutMs: integer(env.OPERATION_TIMEOUT_MS, 30_000, "OPERATION_TIMEOUT_MS", 1, 30_000),
     streamIdleTimeoutMs: integer(env.STREAM_IDLE_TIMEOUT_MS, 60_000, "STREAM_IDLE_TIMEOUT_MS", 1, 3_600_000),
     maxHeaderBytes: integer(env.MAX_HEADER_BYTES, 32 * 1024, "MAX_HEADER_BYTES", 1_024, 1_048_576),
+    maxHttpRequestBodyBytes: integer(env.MAX_HTTP_REQUEST_BODY_BYTES, 10 * 1024 * 1024, "MAX_HTTP_REQUEST_BODY_BYTES", 1, 1_073_741_824),
+    maxHttpResponseBodyBytes: integer(env.MAX_HTTP_RESPONSE_BODY_BYTES, 50 * 1024 * 1024, "MAX_HTTP_RESPONSE_BODY_BYTES", 1, 1_073_741_824),
     retryDefaults: {
       maxAttempts: integer(env.RETRY_MAX_ATTEMPTS, 4, "RETRY_MAX_ATTEMPTS", 1, 6),
     },

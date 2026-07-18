@@ -20,6 +20,10 @@ FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca440
 ENV NODE_ENV=production
 WORKDIR /app
 
+# The runtime invokes Node directly; omit npm and its dependency tree from the
+# final image so build-only package-manager vulnerabilities are not deployable.
+RUN npm uninstall --global npm
+
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist/src ./dist/src

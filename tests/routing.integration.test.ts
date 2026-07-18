@@ -30,6 +30,36 @@ async function readHttpHead(socket: Socket): Promise<string> {
   return buffer.toString("latin1");
 }
 
+async function requestViaProxyChunks(
+  proxyUrl: string,
+  targetUrl: string,
+  chunks: readonly string[],
+): Promise<{ status: number; body: string }> {
+  const proxy = new URL(proxyUrl);
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: proxy.hostname,
+        port: Number(proxy.port),
+        method: "POST",
+        path: targetUrl,
+        headers: {
+          "proxy-authorization": basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password)),
+          "content-type": "text/plain",
+        },
+      },
+      (response) => {
+        const responseChunks: Buffer[] = [];
+        response.on("data", (chunk) => responseChunks.push(expectBufferChunk(chunk)));
+        response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(responseChunks).toString("utf8") }));
+      },
+    );
+    request.on("error", reject);
+    for (const chunk of chunks) request.write(chunk);
+    request.end();
+  });
+}
+
 test("unauthenticated profiles use fresh residential exits per request", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
@@ -48,7 +78,7 @@ test("unauthenticated profiles use fresh residential exits per request", async (
   assert.notEqual(first.headers["x-mock-exit-ip"], second.headers["x-mock-exit-ip"]);
 });
 
-test("plain HTTP preserves method, path, headers, and streamed body", async (t) => {
+test("plain HTTP preserves method, path, headers, and buffered body", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -71,6 +101,73 @@ test("plain HTTP preserves method, path, headers, and streamed body", async (t) 
   assert.equal(received.path, "/resource?secret=query-value");
   assert.equal(received.authorization, "Bearer target-token");
   assert.equal(received.requestBody, "streamed-request-body");
+});
+
+test("plain HTTP buffers complete requests and rejects oversized bodies before forwarding", async (t) => {
+  let forwardedRequests = 0;
+  const target = await startHttpTarget({ onRequest: () => forwardedRequests++ });
+  const testApp = await startTestApp([target.port], undefined, undefined, {
+    MAX_HTTP_REQUEST_BODY_BYTES: "16",
+    MAX_HTTP_RESPONSE_BODY_BYTES: "16384",
+  });
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(testApp.application, { targeting: { country: "US" } });
+
+  const accepted = await requestViaProxy(route.proxyUrls.http, target.url, {
+    method: "POST",
+    headers: { "content-length": "16", "content-type": "text/plain" },
+    body: "0123456789abcdef",
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(forwardedRequests, 1);
+
+  const declaredOversize = await requestViaProxy(route.proxyUrls.http, target.url, {
+    method: "POST",
+    headers: { "content-length": "17", "content-type": "text/plain" },
+    body: "0123456789abcdefg",
+  });
+  assert.equal(declaredOversize.status, 413);
+  assert.equal(expectRecord(parseJson(declaredOversize.body, "proxy error"), "proxy error").code, "request_too_large");
+
+  const chunkedOversize = await requestViaProxyChunks(route.proxyUrls.http, target.url, ["0123456789abcdef", "g"]);
+  assert.equal(chunkedOversize.status, 413);
+  assert.equal(expectRecord(parseJson(chunkedOversize.body, "proxy error"), "proxy error").code, "request_too_large");
+  assert.equal(forwardedRequests, 1);
+});
+
+test("plain HTTP buffers complete responses and rejects oversized bodies before delivery", async (t) => {
+  const target = await startHttpTarget({ responseBody: "0123456789abcdefg" });
+  const testApp = await startTestApp([target.port], undefined, undefined, {
+    MAX_HTTP_REQUEST_BODY_BYTES: "16384",
+    MAX_HTTP_RESPONSE_BODY_BYTES: "16",
+  });
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(testApp.application, { targeting: { country: "US" } });
+
+  const response = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.equal(response.status, 502);
+  assert.equal(expectRecord(parseJson(response.body, "proxy error"), "proxy error").code, "response_too_large");
+  assert.equal(response.headers["content-type"], "application/problem+json");
+});
+
+test("plain HTTP body caps do not apply to opaque CONNECT or SOCKS5 tunnels", async (t) => {
+  const target = await startEchoTarget();
+  const testApp = await startTestApp([target.port], undefined, undefined, {
+    MAX_HTTP_REQUEST_BODY_BYTES: "8",
+    MAX_HTTP_RESPONSE_BODY_BYTES: "8",
+  });
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(testApp.application, { targeting: { country: "US" } });
+  const payload = "opaque-tunnel-payload-exceeds-http-body-caps";
+
+  assert.equal((await exchangeViaHttpConnect(route.proxyUrls.http, target.url, payload)).body, payload);
+  assert.equal((await exchangeViaSocks5(route.proxyUrls.socks5, "127.0.0.1", target.port, payload)).body, payload);
 });
 
 test("HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage records", async (t) => {

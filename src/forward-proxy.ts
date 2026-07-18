@@ -14,6 +14,7 @@ import {
 } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "./net-utils.js";
+import { expectBufferChunk } from "./decoding.js";
 import { RouteService } from "./route-service.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
 import type { TargetValidator } from "./target-security.js";
@@ -28,6 +29,8 @@ export interface ForwardProxyOptions {
   operationEstablishmentTimeoutMs: number;
   streamIdleTimeoutMs: number;
   maxHeaderBytes: number;
+  maxHttpRequestBodyBytes: number;
+  maxHttpResponseBodyBytes: number;
   targetValidator: TargetValidator;
   logger: Logger;
   telemetry: Telemetry;
@@ -81,11 +84,60 @@ function usageOutcome(value: string): UsageOutcome {
   return "failure";
 }
 
-function replayable(request: IncomingMessage): boolean {
+function replayable(request: IncomingMessage, bodyLength: number): boolean {
   const method = request.method ?? "";
   const safeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS" || method === "TRACE";
-  const contentLength = Number(request.headers["content-length"] ?? 0);
-  return safeMethod && contentLength === 0 && request.headers["transfer-encoding"] === undefined;
+  return safeMethod && bodyLength === 0;
+}
+
+function readBufferedBody(
+  message: IncomingMessage,
+  maximumBytes: number,
+  overflowError: () => AppError,
+  onOverflow: () => void,
+  onBytes: (bytes: number) => void = () => undefined,
+): Promise<Buffer> {
+  const contentLength = Number(first(message.headers["content-length"]));
+  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+    onOverflow();
+    return Promise.reject(overflowError());
+  }
+
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const cleanup = (): void => {
+      message.off("data", onData);
+      message.off("end", onEnd);
+      message.off("aborted", onAborted);
+      message.off("error", onError);
+    };
+    const settle = (operation: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      operation();
+    };
+    const onData = (chunk: unknown): void => {
+      const buffer = expectBufferChunk(chunk);
+      size += buffer.length;
+      onBytes(buffer.length);
+      if (size > maximumBytes) {
+        settle(() => reject(overflowError()));
+        onOverflow();
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = (): void => settle(() => resolve(Buffer.concat(chunks, size)));
+    const onAborted = (): void => settle(() => reject(new ProviderUnavailableError("HTTP body stream closed early")));
+    const onError = (error: Error): void => settle(() => reject(error));
+    message.on("data", onData);
+    message.once("end", onEnd);
+    message.once("aborted", onAborted);
+    message.once("error", onError);
+  });
 }
 
 export class ForwardProxyServer {
@@ -205,10 +257,15 @@ export class ForwardProxyServer {
       const port = target.port === "" ? 80 : Number(target.port);
       initialBudget = beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
       const targetValidation = await this.options.targetValidator(target.hostname, port, initialBudget.signal);
-      const canReplay = replayable(request);
+      const requestBody = await readBufferedBody(
+        request,
+        this.options.maxHttpRequestBodyBytes,
+        () => new AppError("Plain HTTP request body exceeds the configured limit", "request_too_large", 413),
+        () => request.resume(),
+      );
+      const canReplay = replayable(request, requestBody.length);
       const maxAttempts = route.shouldRetry && canReplay ? route.retryPolicy.maxAttempts : 1;
       const resolutionState = this.routes.createResolutionState();
-      if (canReplay) request.resume();
 
       const attempt = async (
         attemptIndex: number,
@@ -445,25 +502,39 @@ export class ForwardProxyServer {
                 finishOperation("failure", error);
                 return;
               }
-              response.writeHead(status, responseHeaders(upstreamResponse.headers));
-              response.once("finish", () => {
-                finishAttempt(status >= 500 ? "http_error" : "success", undefined, status);
-                finishOperation("success");
-              });
-              response.once("close", () => {
-                if (!response.writableFinished) {
-                  const error = new ProviderUnavailableError("Upstream response stream closed early");
+              void readBufferedBody(
+                upstreamResponse,
+                this.options.maxHttpResponseBodyBytes,
+                () => new AppError("Plain HTTP response body exceeds the configured limit", "response_too_large", 502),
+                () => upstreamResponse.destroy(),
+                (bytes) => {
+                  bytesReceived += bytes;
+                },
+              ).then(
+                (responseBody) => {
+                  response.writeHead(status, responseHeaders(upstreamResponse.headers));
+                  response.once("finish", () => {
+                    finishAttempt(status >= 500 ? "http_error" : "success", undefined, status);
+                    finishOperation("success");
+                  });
+                  response.once("close", () => {
+                    if (!response.writableFinished) {
+                      const error = new ProviderUnavailableError("Caller response stream closed early");
+                      finishAttempt("failure", error, status);
+                      finishOperation("failure", error);
+                    }
+                  });
+                  response.end(responseBody);
+                },
+                (error: unknown) => {
                   finishAttempt("failure", error, status);
+                  this.#sendError(
+                    response,
+                    error instanceof AppError ? error : new ProviderUnavailableError("Upstream response stream closed early"),
+                  );
                   finishOperation("failure", error);
-                }
-              });
-              upstreamResponse
-                .pipe(
-                  counter((bytes) => {
-                    bytesReceived += bytes;
-                  }),
-                )
-                .pipe(response);
+                },
+              );
             },
           );
           stopTracking = await this.routes.trackActiveConnection(route.id, route.accessGrantId, "http", upstream, () => {
@@ -510,17 +581,8 @@ export class ForwardProxyServer {
               finishOperation("failure", error);
             })();
           });
-          if (canReplay) {
-            upstreamRequest.end();
-          } else {
-            request
-              .pipe(
-                counter((bytes) => {
-                  bytesSent += bytes;
-                }),
-              )
-              .pipe(upstreamRequest);
-          }
+          bytesSent += requestBody.length;
+          upstreamRequest.end(requestBody);
         } catch (error) {
           budget.finish();
           await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);

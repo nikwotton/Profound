@@ -112,6 +112,8 @@ The dashboard lists non-null profile provider overrides and every current hard-c
 | `OPERATION_TIMEOUT_MS`         | `30000`                                         | Overall establishment limit; maximum 30 seconds.                                                 |
 | `STREAM_IDLE_TIMEOUT_MS`       | `60000` local                                   | Post-establishment application idle safeguard.                                                   |
 | `MAX_HEADER_BYTES`             | `32768`                                         | HTTP header and bounded handshake limit.                                                         |
+| `MAX_HTTP_REQUEST_BODY_BYTES`  | `10485760`                                      | Complete plain-HTTP request buffer cap (10 MB); tunnels are unaffected.                          |
+| `MAX_HTTP_RESPONSE_BODY_BYTES` | `52428800`                                      | Complete plain-HTTP response buffer cap (50 MB); tunnels are unaffected.                         |
 | `RETRY_MAX_ATTEMPTS`           | `4`                                             | Central default, range 1–6.                                                                      |
 | `PROXIDIZE_EXACT_CITY_SUPPORT` | mock: `provider_guaranteed`; live: `verifiable` | Live inventory evidence is revalidated; use guaranteed only with an established vendor contract. |
 

@@ -84,7 +84,7 @@ curl --proxy 'http://127.0.0.1:8080' \
   http://example.com/
 ```
 
-The client sends an absolute-form request target. Profound removes proxy-only authentication and preserves target method, path, query, headers, body, statuses, and redirects.
+The client sends an absolute-form request target. Profound removes proxy-only authentication and preserves target method, path, query, headers, body, statuses, and redirects. Plain-HTTP request and response bodies are fully buffered before forwarding or delivery, with centralized defaults of 10 MB and 50 MB respectively.
 
 SOCKS5 with provider-side DNS:
 
@@ -174,7 +174,8 @@ The Effect error discriminator `_tag` may also appear in the JSON representation
 - Verified provider-side private resolution is rejected. Where an opaque provider supplies no resolution evidence, safety is best effort and the missing evidence is recorded internally.
 - Target URL credentials and credentials in `CONNECT` authorities are rejected.
 - Target ports default to `80` and `443`; operators may deliberately allow more public TCP ports.
-- Request and response bodies stream with backpressure.
+- Plain-HTTP request and response bodies are buffered with the configured request and response caps. Oversized requests are rejected before upstream forwarding; oversized responses are rejected before response bytes reach the caller.
+- HTTP CONNECT and SOCKS5 tunnels remain opaque streams with backpressure and are not subject to application-body caps.
 
 ## Privacy and logging
 

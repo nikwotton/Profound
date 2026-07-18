@@ -94,11 +94,17 @@ function authenticatedProxyUrl(endpoint: string, username: string, password: str
   return url.toString();
 }
 
-export async function startHttpTarget(): Promise<TestTarget> {
+export async function startHttpTarget(options: { responseBody?: string | Buffer; onRequest?: () => void } = {}): Promise<TestTarget> {
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
     request.on("end", () => {
+      options.onRequest?.();
+      if (options.responseBody !== undefined) {
+        response.writeHead(200, { "content-type": "application/octet-stream", "content-length": Buffer.byteLength(options.responseBody) });
+        response.end(options.responseBody);
+        return;
+      }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({

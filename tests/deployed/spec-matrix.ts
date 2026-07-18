@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHxJUHT_UEKKiVJnVdD0kF_p9GvKO55uOSjZkzFjfO7ZKRY1eeIz6SWzlcFeFzxvatURcOD1dThZdh44IsGN3dE-Ot78b5J2FOV7TEs";
+  "ALtnJHyiPKiKv8tS4u4j2qkR_rGSFooQ3FnJsmMU69Lz2lfAvOqY6bw-T_0ZlQsAz6okfftOxBVL8ycHxBHjtt3MMxQXdmOHOs9FMsQvHj0";
 
 export interface SpecCoverage {
   id: string;
@@ -31,6 +31,17 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
       "deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic",
     ],
     offline: [],
+  },
+  {
+    id: "2.http-buffer-limits",
+    section: 2,
+    requirement: "Plain HTTP buffers complete requests and responses behind centralized limits while CONNECT and SOCKS5 remain streamed",
+    deployed: [],
+    offline: [
+      "plain HTTP buffers complete requests and rejects oversized bodies before forwarding",
+      "plain HTTP buffers complete responses and rejects oversized bodies before delivery",
+      "plain HTTP body caps do not apply to opaque CONNECT or SOCKS5 tunnels",
+    ],
   },
   {
     id: "2.no-tls-interception",
