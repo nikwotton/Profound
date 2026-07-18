@@ -11,6 +11,7 @@ import {
   type QueryCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capacity-circuit.js";
+import { DynamoUsageRepository } from "./dynamo-usage-repository.js";
 import {
   ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS,
   ASSIGNMENT_INDEX,
@@ -30,7 +31,6 @@ import {
   type ActiveTunnelItem,
   type CapabilityHealthItem,
   type CapacityCircuitItem,
-  type CapacityPressureEvidenceItem,
   type DeploymentDrainItem,
   type HealthAlertDeliveryItem,
   type HealthAlertEventItem,
@@ -38,15 +38,10 @@ import {
   type HealthItem,
   type ProviderInventoryItem,
   type RouteItem,
-  type UsageAlertEventItem,
-  type UsageReconciliationItem,
-  type UsageRecordItem,
-  type UsageRollupItem,
 } from "./dynamo-records.js";
 import { NotFoundError } from "./errors.js";
 import {
   decodeActiveTunnel,
-  decodeCapacityPressureEvidence,
   decodeCapacityCircuitState,
   decodeCapabilityHealthSnapshot,
   decodeDeploymentDrainState,
@@ -58,10 +53,6 @@ import {
   decodeStoredAccessGrant,
   decodeStoredLogicalSession,
   decodeStoredRoute,
-  decodeUsageReconciliation,
-  decodeUsageAlertEvent,
-  decodeUsageRecord,
-  decodeUsageRollup,
 } from "./storage-decoding.js";
 import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
 import type {
@@ -92,6 +83,7 @@ import type {
 
 export class DynamoRouteStore implements RouteStore {
   readonly #client: DynamoDBDocumentClient;
+  readonly #usage: DynamoUsageRepository;
 
   constructor(
     private readonly tableName: string,
@@ -102,6 +94,7 @@ export class DynamoRouteStore implements RouteStore {
       DynamoDBDocumentClient.from(new DynamoDBClient({}), {
         marshallOptions: { removeUndefinedValues: true },
       });
+    this.#usage = new DynamoUsageRepository(this.tableName, this.#client);
   }
 
   async #withCapacityCircuitLock<T>(provider: StoredRoute["provider"], candidateKey: string, action: () => Promise<T>): Promise<T> {
@@ -1210,166 +1203,45 @@ export class DynamoRouteStore implements RouteStore {
     return (result.Items ?? []).map((entry) => decodeHealthAlertEvent(itemField(entry, "event", "DynamoDB health-alert event item")));
   }
 
-  async recordUsage(record: UsageRecord): Promise<boolean> {
-    try {
-      await this.#client.send(
-        new PutCommand({
-          TableName: this.tableName,
-          Item: {
-            pk: `USAGE#${record.id}`,
-            sk: "RECORD",
-            entity: "usage_record",
-            createdAt: record.completedAt,
-            record,
-          } satisfies UsageRecordItem,
-          ConditionExpression: "attribute_not_exists(pk)",
-        }),
-      );
-      return true;
-    } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
-      throw error;
-    }
+  recordUsage(record: UsageRecord): Promise<boolean> {
+    return this.#usage.recordUsage(record);
   }
 
-  async listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
-      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
-      ExpressionAttributeValues: { ":entity": "usage_record", ":from": from, ":to": to },
-      ScanIndexForward: true,
-    });
-    return items
-      .map((item) => decodeUsageRecord(itemField(item, "record", "DynamoDB usage-record item")))
-      .filter((record) => record.completedAt >= from && record.completedAt < to);
+  listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
+    return this.#usage.listUsageRecords(from, to);
   }
 
-  async saveUsageRollup(rollup: UsageRollup): Promise<void> {
-    await this.#client.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: {
-          pk: `USAGE_ROLLUP#${rollup.interval}`,
-          sk: rollup.id,
-          entity: "usage_rollup",
-          createdAt: rollup.periodStartedAt,
-          rollup,
-        } satisfies UsageRollupItem,
-      }),
-    );
+  saveUsageRollup(rollup: UsageRollup): Promise<void> {
+    return this.#usage.saveUsageRollup(rollup);
   }
 
-  async listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      KeyConditionExpression: "pk = :pk AND sk BETWEEN :from AND :to",
-      ExpressionAttributeValues: { ":pk": `USAGE_ROLLUP#${interval}`, ":from": from, ":to": `${to}~` },
-      ScanIndexForward: true,
-    });
-    return items.map((item) => decodeUsageRollup(itemField(item, "rollup", "DynamoDB usage-rollup item")));
+  listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]> {
+    return this.#usage.listUsageRollups(from, to, interval);
   }
 
-  async saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
-    try {
-      await this.#client.send(
-        new PutCommand({
-          TableName: this.tableName,
-          Item: {
-            pk: `USAGE_RECONCILIATION#${reconciliation.id}`,
-            sk: "RECORD",
-            entity: "usage_reconciliation",
-            createdAt: reconciliation.periodStartedAt,
-            reconciliation,
-          } satisfies UsageReconciliationItem,
-          ConditionExpression: "attribute_not_exists(pk)",
-        }),
-      );
-      return true;
-    } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
-      throw error;
-    }
+  saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
+    return this.#usage.saveUsageReconciliation(reconciliation);
   }
 
-  async listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
-      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
-      ExpressionAttributeValues: { ":entity": "usage_reconciliation", ":from": from, ":to": to },
-      ScanIndexForward: true,
-    });
-    return items
-      .map((item) => decodeUsageReconciliation(itemField(item, "reconciliation", "DynamoDB usage-reconciliation item")))
-      .filter((record) => record.periodStartedAt >= from && record.periodStartedAt < to);
+  listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]> {
+    return this.#usage.listUsageReconciliations(from, to);
   }
 
-  async saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean> {
-    try {
-      await this.#client.send(
-        new PutCommand({
-          TableName: this.tableName,
-          Item: {
-            pk: `USAGE_ALERT#${event.id}`,
-            sk: "EVENT",
-            entity: "usage_alert_event",
-            createdAt: event.periodStartedAt,
-            event,
-          } satisfies UsageAlertEventItem,
-          ConditionExpression: "attribute_not_exists(pk)",
-        }),
-      );
-      return true;
-    } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
-      throw error;
-    }
+  saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean> {
+    return this.#usage.saveUsageAlertEvent(event);
   }
 
-  async listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
-      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
-      ExpressionAttributeValues: { ":entity": "usage_alert_event", ":from": from, ":to": to },
-      ScanIndexForward: true,
-    });
-    return items
-      .map((item) => decodeUsageAlertEvent(itemField(item, "event", "DynamoDB usage-alert event item")))
-      .filter((event) => event.periodStartedAt >= from && event.periodStartedAt < to);
+  listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]> {
+    return this.#usage.listUsageAlertEvents(from, to);
   }
 
-  async saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void> {
-    await this.#client.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: {
-          pk: `CAPACITY_PRESSURE#${evidence.id}`,
-          sk: "EVIDENCE",
-          entity: "capacity_pressure_evidence",
-          createdAt: evidence.observedAt,
-          evidence,
-        } satisfies CapacityPressureEvidenceItem,
-      }),
-    );
+  saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void> {
+    return this.#usage.saveCapacityPressureEvidence(evidence);
   }
 
-  async listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity AND #createdAt >= :observedAfter",
-      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
-      ExpressionAttributeValues: { ":entity": "capacity_pressure_evidence", ":observedAfter": observedAfter },
-      ScanIndexForward: true,
-    });
-    return items.map((item) => decodeCapacityPressureEvidence(itemField(item, "evidence", "DynamoDB capacity-pressure evidence item")));
+  listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]> {
+    return this.#usage.listCapacityPressureEvidence(observedAfter);
   }
-
   async close(): Promise<void> {
     this.#client.destroy();
   }
