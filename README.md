@@ -12,6 +12,18 @@ V0 includes:
 - health aggregation, signed external canaries, alerts, usage accounting, and a company-facing dashboard;
 - an AWS deployment built with SST and separate ECS Fargate services.
 
+## Delivery layers and evidence
+
+The repository deliberately separates the durable proxy product from its production operating envelope. Native proxy behavior, commitment-safe failover, provider-neutral contracts, health-aware selection, and immutable usage evidence are the center of the design; AWS topology, workers, dashboards, notifications, and release controls remain separable services around those contracts.
+
+| Layer                             | Why it exists                                                                                                        | Evidence available now                                                                                                                 | Validation still required                                                                                    |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Core routing product              | Delivers the caller-visible proxy, provider abstraction, monitoring, health, geography, and cost-accounting behavior | `pnpm demo`, offline integration and property tests, provider contract tests, and generated OpenAPI compatibility                      | Live-provider conformance for each enabled vendor capability                                                 |
+| Production operating envelope     | Makes credentials, coordination, accounting, health, alerts, and long-lived connections durable across a task fleet  | SST infrastructure, DynamoDB repositories, independently runnable services, and environment-gated deployed acceptance suites           | Installation-specific AWS, network, DNS, certificate, telemetry, alert-destination, recovery, and load tests |
+| Evidence-gated roadmap mechanisms | Lets richer scoring, reconciliation, forecasting, and automation accumulate evidence before they control traffic     | Versioned shadow diagnostics and separately classified mechanisms that preserve the v0 caller, proxy, adapter, health, and ledger APIs | Workload measurements, service objectives, provider evidence, and explicit release gates                     |
+
+Implementation is not treated as proof of production behavior. Deterministic simulators make the core reviewable without cloud or vendor accounts; deployed and live-provider checks are separately gated. Workload-dependent capacity, timeouts, service objectives, and policy thresholds remain provisional until measured. A narrower deployment may consolidate the services or defer optional automation without changing the public proxy, control, adapter, health, or usage contracts.
+
 Provider credentials and endpoints never leave the service. Target traffic never falls back to a direct Internet connection.
 
 The deployed control API, proxy gateways, and dashboard are company-wide services for authorized users and workloads. They remain on approved private company networks; they are not limited to the team that operates the router and are not exposed as public Internet applications.
