@@ -5,7 +5,13 @@ import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
 import { Schema } from "effect";
-import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema, PublicRouteSchema } from "../../src/control-contract.js";
+import {
+  CreatedProfileSchema,
+  IssuedAccessGrantSchema,
+  ProfileResponseSchema,
+  PublicAccessGrantSchema,
+  PublicRouteSchema,
+} from "../../src/control-contract.js";
 import { expectBufferChunk } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
 import type { RouteProfileInput } from "../../src/types.js";
@@ -16,7 +22,7 @@ export type IssuedAccessGrantResponse = typeof IssuedAccessGrantSchema.Type;
 
 export interface CreatedRouteResponse {
   profile: typeof PublicRouteSchema.Type;
-  accessGrant: typeof IssuedAccessGrantSchema.Type.grant;
+  accessGrant: typeof PublicAccessGrantSchema.Type;
   credential: typeof IssuedAccessGrantSchema.Type.credential;
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
@@ -92,7 +98,7 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
     controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}/grants`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionMode: "none" }),
+      body: JSON.stringify({ sessionMode: "stateless" }),
     }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) {
@@ -102,7 +108,7 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
   const issued = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await grantResponse.json());
   return {
     profile: publicProfile,
-    accessGrant: issued.grant,
+    accessGrant: { ...issued.grant, credentials: [issued.credential] },
     credential: issued.credential,
     proxyUsername: issued.credential.username,
     proxyUrls: {

@@ -63,7 +63,7 @@ deployedTest("deployed health aggregator and status application expose durable c
 
   const statusLive = await fetchInternal(environment.metadata.statusApplication, "/health/live");
   assert.equal(statusLive.status, 200);
-  const status = await fetchInternal(environment.metadata.statusApplication, "/api/status");
+  const status = await fetchInternal(environment.metadata.statusApplication, "/v1/status");
   assert.equal(status.status, 200);
   const statusBody = expectRecord(await status.json(), "status application response");
   decodeCapabilityHealthSnapshot(statusBody["snapshot"]);
@@ -71,13 +71,13 @@ deployedTest("deployed health aggregator and status application expose durable c
   expectNumber(statusBody["ageMs"], "status application response.ageMs");
   assert.equal(expectArray(statusBody["capabilityFreshness"], "status application response.capabilityFreshness").length, 4);
 
-  const history = await fetchInternal(environment.metadata.statusApplication, "/api/status/history?limit=5");
+  const history = await fetchInternal(environment.metadata.statusApplication, "/v1/status/history?limit=5");
   assert.equal(history.status, 200);
   const historyBody = expectRecord(await history.json(), "status history response");
   assert.ok(expectArray(historyBody["data"], "status history response.data").length > 0);
-  assert.equal((await fetchInternal(environment.metadata.statusApplication, "/api/status/geographies")).status, 200);
+  assert.equal((await fetchInternal(environment.metadata.statusApplication, "/v1/status/geographies")).status, 200);
 
-  const requestedValidation = await fetchInternal(environment.metadata.statusApplication, "/api/status/validate", undefined, {
+  const requestedValidation = await fetchInternal(environment.metadata.statusApplication, "/v1/status/validate", undefined, {
     method: "POST",
   });
   assert.equal(requestedValidation.status, 200);

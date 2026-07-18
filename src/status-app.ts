@@ -177,7 +177,7 @@ function page(
   const sessions = logicalSessions
     .map(
       (session) =>
-        `<tr><td>${escaped(session.sessionId)}</td><td>${escaped(session.profileId)}</td><td>${escaped(session.grantId)}</td><td>${escaped(session.sessionMode)}</td><td>${escaped(session.status)}</td><td>${escaped(session.lastUsedAt ?? "Never")}</td><td>${escaped(session.closedAt ?? "Open")}</td></tr>`,
+        `<tr><td>${escaped(session.sessionId)}</td><td>${escaped(session.profileId)}</td><td>${escaped(session.grantId)}</td><td>${escaped(session.status)}</td><td>${escaped(session.lastUsedAt ?? "Never")}</td><td>${escaped(session.closedAt ?? "Open")}</td></tr>`,
     )
     .join("");
   return `<!doctype html>
@@ -201,13 +201,13 @@ table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td
 <div class="metric"><span>Unhealthy paid slot capacity</span><strong>${(usageTotal.unhealthyMs / 3_600_000).toFixed(1)} h</strong></div>
 <div class="metric"><span>Attributed cost</span><strong>$${usageTotal.cost.toFixed(2)}</strong><small>${usageStatus}</small></div>
 <div class="metric"><span>Capacity recommendation</span><strong>${recommendation === undefined ? "No data" : `${recommendation.slotDelta >= 0 ? "+" : ""}${recommendation.slotDelta} slots`}</strong><small>${recommendation?.suppressed === true ? "suppressed by location constraint" : `operator action · ${CAPACITY_POLICY.version}`}</small></div>
-</section><p>Use <code>/api/usage</code> to change the interval, time range, grouping, or filters.</p>
+</section><p>Use <code>/v1/usage</code> to change the interval, time range, grouping, or filters.</p>
 <h2>Credential and session lifecycle</h2>
 <p>Credentials and logical sessions remain provider-neutral. No provider assignment or provider affinity is exposed here.</p>
 <h3>Credentials</h3>
 <table><thead><tr><th>Credential</th><th>Profile</th><th>Session mode</th><th>Logical session</th><th>Status</th><th>Last used</th><th>Expires</th></tr></thead><tbody>${credentials || '<tr><td colspan="7">No credentials</td></tr>'}</tbody></table>
 <h3>Managed sessions</h3>
-<table><thead><tr><th>Session</th><th>Profile</th><th>Grant</th><th>Session mode</th><th>Status</th><th>Last used</th><th>Closed</th></tr></thead><tbody>${sessions || '<tr><td colspan="7">No managed sessions</td></tr>'}</tbody></table>
+<table><thead><tr><th>Session</th><th>Profile</th><th>Grant</th><th>Status</th><th>Last used</th><th>Closed</th></tr></thead><tbody>${sessions || '<tr><td colspan="6">No managed sessions</td></tr>'}</tbody></table>
 <h2>Capability health</h2>
 <p>Validation freshness is reported separately from availability. Quiet traffic can leave validation stale without creating an outage.</p>
 <section class="grid">${cards}</section><h2>Geography validation</h2>
@@ -239,12 +239,15 @@ const USAGE_GROUPS = [
 const USAGE_PROVIDERS = ["bright_data", "proxidize", "unresolved"] as const satisfies readonly UsageProvider[];
 
 type UsageQueryErrorCode =
+  | "invalid_capacity_query_parameter"
+  | "invalid_session_mode"
+  | "invalid_status_query_parameter"
   | "invalid_usage_group"
   | "invalid_usage_interval"
   | "invalid_usage_preset"
   | "invalid_usage_provider"
-  | "invalid_usage_range"
-  | "invalid_usage_session_mode";
+  | "invalid_usage_query_parameter"
+  | "invalid_usage_time_range";
 
 class UsageQueryError extends Error {
   constructor(readonly code: UsageQueryErrorCode) {
@@ -256,22 +259,60 @@ function includes<const Values extends readonly string[]>(values: Values, value:
   return values.some((candidate) => candidate === value);
 }
 
-function usageQuery(url: URL, now: number): UsageQuery {
+const TIME_RANGE_PARAMETERS = ["preset", "from", "to"] as const;
+const USAGE_QUERY_PARAMETERS = [
+  ...TIME_RANGE_PARAMETERS,
+  "interval",
+  "groupBy",
+  "provider",
+  "sessionMode",
+  "customerId",
+  "userId",
+  "routeId",
+  "jobId",
+  "logicalOperationId",
+  "destinationDomain",
+  "destinationHost",
+  "destinationPathTemplate",
+  "country",
+  "city",
+  "outcome",
+] as const;
+
+function assertQueryParameters(url: URL, allowed: readonly string[], error: UsageQueryErrorCode): void {
+  const allowedNames = new Set(allowed);
+  for (const name of url.searchParams.keys()) {
+    if (!allowedNames.has(name)) throw new UsageQueryError(error);
+  }
+}
+
+function timeRange(url: URL, now: number): { from: string; to: string } {
   const preset = url.searchParams.get("preset");
+  const explicitFrom = url.searchParams.get("from");
+  const explicitTo = url.searchParams.get("to");
+  if (preset !== null && (explicitFrom !== null || explicitTo !== null)) throw new UsageQueryError("invalid_usage_time_range");
   const presetMs = preset === "day" ? 86_400_000 : preset === "week" ? 7 * 86_400_000 : preset === "month" ? 30 * 86_400_000 : undefined;
   if (preset !== null && presetMs === undefined) throw new UsageQueryError("invalid_usage_preset");
   let from: string;
   let to: string;
   try {
-    from = expectIsoTimestamp(
-      url.searchParams.get("from") ?? new Date(now - (presetMs ?? 30 * 86_400_000)).toISOString(),
-      "usage query from",
-    );
-    to = expectIsoTimestamp(url.searchParams.get("to") ?? new Date(now).toISOString(), "usage query to");
+    from = expectIsoTimestamp(explicitFrom ?? new Date(now - (presetMs ?? 30 * 86_400_000)).toISOString(), "usage query from");
+    to = expectIsoTimestamp(explicitTo ?? new Date(now).toISOString(), "usage query to");
   } catch {
-    throw new UsageQueryError("invalid_usage_range");
+    throw new UsageQueryError("invalid_usage_time_range");
   }
-  if (Date.parse(from) >= Date.parse(to)) throw new UsageQueryError("invalid_usage_range");
+  if (Date.parse(from) >= Date.parse(to)) throw new UsageQueryError("invalid_usage_time_range");
+  return { from, to };
+}
+
+function dateRangeQuery(url: URL, now: number): { from: string; to: string } {
+  assertQueryParameters(url, TIME_RANGE_PARAMETERS, "invalid_usage_query_parameter");
+  return timeRange(url, now);
+}
+
+function usageQuery(url: URL, now: number): UsageQuery {
+  assertQueryParameters(url, USAGE_QUERY_PARAMETERS, "invalid_usage_query_parameter");
+  const { from, to } = timeRange(url, now);
   const intervalValue = url.searchParams.get("interval") ?? "day";
   if (!includes(USAGE_INTERVALS, intervalValue)) throw new UsageQueryError("invalid_usage_interval");
   const groupValue = url.searchParams.get("groupBy") ?? undefined;
@@ -279,8 +320,8 @@ function usageQuery(url: URL, now: number): UsageQuery {
   const providerValue = url.searchParams.get("provider") ?? undefined;
   if (providerValue !== undefined && !includes(USAGE_PROVIDERS, providerValue)) throw new UsageQueryError("invalid_usage_provider");
   const sessionMode = url.searchParams.get("sessionMode") ?? undefined;
-  if (sessionMode !== undefined && sessionMode !== "managed" && sessionMode !== "none") {
-    throw new UsageQueryError("invalid_usage_session_mode");
+  if (sessionMode !== undefined && sessionMode !== "managed" && sessionMode !== "stateless") {
+    throw new UsageQueryError("invalid_session_mode");
   }
   return {
     from,
@@ -366,11 +407,11 @@ export class StatusApplicationServer {
         json(response, 200, { status: "live" });
         return;
       }
-      if (url.pathname === "/api/status") {
+      if (url.pathname === "/v1/status") {
         json(response, 200, withFreshness(await this.store.latestCapabilityHealth(), now, this.options.staleAfterMs));
         return;
       }
-      if (request.method === "GET" && url.pathname === "/api/usage") {
+      if (request.method === "GET" && url.pathname === "/v1/usage") {
         const query = usageQuery(url, now);
         const persisted = canUsePersistedRollups(query) ? await this.store.listUsageRollups(query.from, query.to, query.interval) : [];
         const data = persisted.filter((rollup) =>
@@ -382,23 +423,24 @@ export class StatusApplicationServer {
         json(response, 200, { from: query.from, to: query.to, interval: query.interval, groupBy: query.groupBy ?? null, data: rollups });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/api/usage/reconciliations") {
-        const query = usageQuery(url, now);
+      if (request.method === "GET" && url.pathname === "/v1/usage/reconciliations") {
+        const query = dateRangeQuery(url, now);
         json(response, 200, { from: query.from, to: query.to, data: await this.store.listUsageReconciliations(query.from, query.to) });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/api/usage/events") {
-        const query = usageQuery(url, now);
+      if (request.method === "GET" && url.pathname === "/v1/usage/events") {
+        const query = dateRangeQuery(url, now);
         json(response, 200, { from: query.from, to: query.to, data: await this.store.listUsageAlertEvents(query.from, query.to) });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/api/usage/capacity-pressure-evidence") {
-        const query = usageQuery(url, now);
+      if (request.method === "GET" && url.pathname === "/v1/usage/capacity-pressure-evidence") {
+        const query = dateRangeQuery(url, now);
         const data = (await this.store.listCapacityPressureEvidence(query.from)).filter((evidence) => evidence.observedAt < query.to);
         json(response, 200, { from: query.from, to: query.to, data });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/api/capacity") {
+      if (request.method === "GET" && url.pathname === "/v1/capacity") {
+        assertQueryParameters(url, ["country", "city", "carrier"], "invalid_capacity_query_parameter");
         const to = new Date(now).toISOString();
         const from = new Date(now - 30 * 86_400_000).toISOString();
         const records = await this.store.listUsageRecords(from, to);
@@ -475,18 +517,21 @@ export class StatusApplicationServer {
         });
         return;
       }
-      if (url.pathname === "/api/status/history") {
+      if (url.pathname === "/v1/status/history") {
+        assertQueryParameters(url, ["limit"], "invalid_status_query_parameter");
         const requested = Number(url.searchParams.get("limit") ?? this.options.historyLimit);
         const limit = Number.isInteger(requested) ? Math.min(Math.max(requested, 1), this.options.historyLimit) : this.options.historyLimit;
         json(response, 200, { data: await this.store.capabilityHealthHistory(limit) });
         return;
       }
-      if (url.pathname === "/api/status/geographies") {
+      if (url.pathname === "/v1/status/geographies") {
+        assertQueryParameters(url, [], "invalid_status_query_parameter");
         const snapshot = await this.store.latestCapabilityHealth();
         json(response, 200, { data: snapshot?.geographies ?? [], generatedAt: snapshot?.generatedAt });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/api/status/validate") {
+      if (request.method === "POST" && url.pathname === "/v1/status/validate") {
+        assertQueryParameters(url, [], "invalid_status_query_parameter");
         if (this.options.healthAggregatorUrl === undefined || this.options.healthAggregatorToken === undefined) {
           json(response, 503, { error: "validation_unavailable" });
           return;

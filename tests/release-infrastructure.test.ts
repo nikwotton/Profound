@@ -11,16 +11,7 @@ test("repository delivery policy encodes required CI, review, dependency, migrat
   const settings = file("docs/repository-and-release-settings.md");
   const template = file(".github/pull_request_template.md");
   assert.match(ci, /merge_group:/);
-  for (const command of [
-    "format:check",
-    "pnpm lint",
-    "pnpm check",
-    "test:unit",
-    "test:property",
-    "openapi:check",
-    "pr:policy",
-    "docker build",
-  ]) {
+  for (const command of ["format:check", "pnpm lint", "pnpm check", "test:property", "openapi:check", "pr:policy", "docker build"]) {
     assert.ok(ci.includes(command), `CI is missing ${command}`);
   }
   assert.match(settings, /at least one approval/);

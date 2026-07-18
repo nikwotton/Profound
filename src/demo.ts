@@ -204,7 +204,7 @@ async function controlRequest(application: RunningLocalApplication, path: string
 async function issueGrant(
   application: RunningLocalApplication,
   profile: Record<string, unknown>,
-  sessionMode: "managed" | "none",
+  sessionMode: "managed" | "stateless",
   jobId: string,
   writeLine: WriteLine,
 ): Promise<IssuedGrant> {
@@ -492,7 +492,7 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
         geography: { countryCode: "US" },
         allowConnectionRetry: true,
       },
-      "none",
+      "stateless",
       "job-public-catalog",
       writeLine,
     );
@@ -636,11 +636,11 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
     writeLine(`      ✓ accounting worker persisted ${persistedRollups} hourly/daily and per-customer rollups`);
 
     const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&interval=day`;
-    const overallRollups = await analyticsRequest(analyticsUrl, `/api/usage?${query}`, writeLine);
-    const providerRollups = await analyticsRequest(analyticsUrl, `/api/usage?${query}&groupBy=provider`, writeLine);
-    const customerRollups = await analyticsRequest(analyticsUrl, `/api/usage?${query}&groupBy=customer`, writeLine);
-    const jobRollups = await analyticsRequest(analyticsUrl, `/api/usage?${query}&groupBy=job`, writeLine);
-    const outcomeRollups = await analyticsRequest(analyticsUrl, `/api/usage?${query}&groupBy=outcome`, writeLine);
+    const overallRollups = await analyticsRequest(analyticsUrl, `/v1/usage?${query}`, writeLine);
+    const providerRollups = await analyticsRequest(analyticsUrl, `/v1/usage?${query}&groupBy=provider`, writeLine);
+    const customerRollups = await analyticsRequest(analyticsUrl, `/v1/usage?${query}&groupBy=customer`, writeLine);
+    const jobRollups = await analyticsRequest(analyticsUrl, `/v1/usage?${query}&groupBy=job`, writeLine);
+    const outcomeRollups = await analyticsRequest(analyticsUrl, `/v1/usage?${query}&groupBy=outcome`, writeLine);
     const overall = overallRollups[0];
     const residentialCost = providerRollups.find((rollup) => rollup.group.provider === "bright_data");
     const mobileCost = providerRollups.find((rollup) => rollup.group.provider === "proxidize");

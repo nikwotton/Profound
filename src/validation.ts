@@ -12,7 +12,7 @@ function routeProfileContractError(error: ParseResult.ParseError): ValidationErr
   const first = issues[0];
   const path = first?.path.map(String) ?? [];
   if (path.length === 1 && path[0] === "providerOverride") {
-    return new ValidationError("providerOverride must be bright_data, proxidize, or null");
+    return new ValidationError("providerOverride must be bright_data or proxidize");
   }
   if (first?._tag === "Unexpected" && path.length > 0) {
     const field = path.length === 1 ? `profile.${path[0]}` : path.join(".");
@@ -78,7 +78,7 @@ export function validateRouteProfile(value: unknown, userId: string, retryDefaul
 
   const { profile: geography, targeting } = parseGeography(input.geography);
   const carrier = optionalString(input.carrier, "carrier");
-  const providerOverride = input.providerOverride ?? undefined;
+  const providerOverride = input.providerOverride;
   if (carrier !== undefined) targeting.carrier = carrier;
 
   const allowConnectionRetry = input.allowConnectionRetry;
@@ -98,20 +98,11 @@ export function validateRouteProfile(value: unknown, userId: string, retryDefaul
   };
 }
 
-export function validateSessionMode(value: unknown): SessionMode {
-  const input = object(value, "credential issuance");
-  rejectUnknown(input, new Set(["sessionMode"]), "credential issuance");
-  if (input["sessionMode"] !== "managed" && input["sessionMode"] !== "none") {
-    throw new ValidationError("sessionMode must be managed or none");
-  }
-  return input["sessionMode"];
-}
-
 export function validateGrantIssuance(value: unknown): { sessionMode: SessionMode; jobId?: string } {
   const input = object(value, "grant issuance");
   rejectUnknown(input, new Set(["sessionMode", "jobId"]), "grant issuance");
-  if (input["sessionMode"] !== "managed" && input["sessionMode"] !== "none") {
-    throw new ValidationError("sessionMode must be managed or none");
+  if (input["sessionMode"] !== "managed" && input["sessionMode"] !== "stateless") {
+    throw new ValidationError("sessionMode must be managed or stateless");
   }
   const jobId = input["jobId"] === undefined ? undefined : string(input["jobId"], "jobId");
   return { sessionMode: input["sessionMode"], ...(jobId === undefined ? {} : { jobId }) };

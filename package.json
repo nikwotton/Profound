@@ -1,6 +1,6 @@
 {
   "name": "profound-proxy-router",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Provider-neutral HTTP, HTTPS, and SOCKS5 proxy router",
   "type": "module",
@@ -29,13 +29,11 @@
     "openapi:compat": "tsx scripts/openapi-contract.ts compatibility",
     "demo": "tsx scripts/demo.ts",
     "dev:local": "tsx src/local.ts",
-    "dev:service": "tsx watch src/index.ts",
+    "internal:dev:service": "tsx watch src/index.ts",
     "geoip:prepare": "tsx scripts/prepare-geoip.ts",
     "aws:deploy": "sst deploy",
     "aws:remove": "sst remove",
     "sst:dev": "sst dev",
-    "start": "node dist/src/index.js",
-    "test:unit": "vitest run",
     "test:property": "vitest run tests/property",
     "test:coverage": "pnpm build && node --experimental-test-coverage --test-coverage-include='dist/src/**/*.js' --test-coverage-exclude='dist/src/**/*lambda.js' --test-coverage-lines=70 --test-coverage-functions=70 --test-coverage-branches=65 --test dist/tests/*.test.js dist/tests/**/*.test.js",
     "test:release-policy": "pnpm build && node --test dist/tests/release-policy.test.js dist/tests/deployment-coordinator.test.js dist/tests/deployment-coordinator-runtime.test.js dist/tests/migration-runner.test.js",
@@ -45,7 +43,8 @@
     "migrate": "tsx scripts/run-migrations.ts",
     "test": "pnpm build && node --test dist/tests/*.test.js dist/tests/**/*.test.js",
     "test:aws": "pnpm build && RUN_AWS_ACCEPTANCE_TESTS=1 node --test --test-concurrency=1 dist/tests/*.test.js dist/tests/deployed/**/*.test.js",
-    "test:live": "pnpm build && RUN_LIVE_PROXY_TESTS=1 node --test dist/tests/live/**/*.test.js"
+    "test:live": "pnpm build && RUN_LIVE_PROXY_TESTS=1 node --test dist/tests/live/**/*.test.js",
+    "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test:property && pnpm test:coverage && pnpm openapi:check"
   },
   "devDependencies": {
     "@effect/vitest": "^0.27.0",

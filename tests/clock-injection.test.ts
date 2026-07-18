@@ -25,7 +25,7 @@ test("in-memory persistence uses its injected clock", async () => {
   assert.equal(route.createdAt, NOW_ISO);
   assert.equal(route.updatedAt, NOW_ISO);
 
-  const grant = await store.createAccessGrant("clock-grant", route.id, profile.userId, "clock-credential", "secret", "none");
+  const grant = await store.createAccessGrant("clock-grant", route.id, profile.userId, "clock-credential", "secret", "stateless");
   assert.equal(grant.createdAt, NOW_ISO);
   assert.equal(grant.credentials[0]?.createdAt, NOW_ISO);
 });
@@ -38,7 +38,7 @@ test("access-grant projections use the caller's clock", () => {
     credentials: [
       {
         id: "credential",
-        sessionMode: "none",
+        sessionMode: "stateless",
         tokenSalt: "salt",
         tokenHash: "hash",
         status: "active",

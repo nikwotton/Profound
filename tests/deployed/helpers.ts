@@ -7,7 +7,13 @@ import { promisify } from "node:util";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
 import { Schema } from "effect";
-import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema, PublicRouteSchema } from "../../src/control-contract.js";
+import {
+  CreatedProfileSchema,
+  IssuedAccessGrantSchema,
+  ProfileResponseSchema,
+  PublicAccessGrantSchema,
+  PublicRouteSchema,
+} from "../../src/control-contract.js";
 import { expectBufferChunk, parseJson } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
 import type { RouteProfileInput } from "../../src/types.js";
@@ -190,7 +196,7 @@ const DeployedMetadataSchema: Schema.Schema<DeployedMetadata> = Schema.Struct({
 
 export interface CreatedRouteResponse {
   profile: typeof PublicRouteSchema.Type & { id: string };
-  accessGrant: typeof IssuedAccessGrantSchema.Type.grant & { id: string; routeId: string };
+  accessGrant: typeof PublicAccessGrantSchema.Type & { id: string; routeId: string };
   credential: typeof IssuedAccessGrantSchema.Type.credential & { id: string };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
@@ -338,7 +344,7 @@ export async function controlRequest(path: string, init: RequestInit = {}, token
 
 export async function createRoute(
   profile: LegacyTestProfileInput,
-  sessionMode: "managed" | "none" = "none",
+  sessionMode: "managed" | "stateless" = "stateless",
 ): Promise<CreatedRouteResponse> {
   const response = await controlRequest("/v1/profiles", {
     method: "POST",
@@ -364,6 +370,7 @@ export async function createRoute(
       ...issued.grant,
       id: issued.grant.grantId,
       routeId: issued.grant.profileId,
+      credentials: [issued.credential],
     },
     credential: { ...issued.credential, id: issued.credential.credentialId },
     proxyUsername: issued.credential.username,

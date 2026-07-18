@@ -16,15 +16,15 @@ test("status usage endpoints reject malformed ranges before querying storage", a
   t.after(() => server.stop());
   const base = `http://127.0.0.1:${address.port}`;
 
-  for (const path of ["/api/usage", "/api/usage/reconciliations", "/api/usage/events", "/api/usage/capacity-pressure-evidence"]) {
+  for (const path of ["/v1/usage", "/v1/usage/reconciliations", "/v1/usage/events", "/v1/usage/capacity-pressure-evidence"]) {
     const response = await fetch(`${base}${path}?from=not-a-timestamp&to=2026-07-18T12%3A00%3A00.000Z`);
     assert.equal(response.status, 400, path);
-    assert.deepEqual(await response.json(), { error: "invalid_usage_range" });
+    assert.deepEqual(await response.json(), { error: "invalid_usage_time_range" });
   }
 
-  const reversed = await fetch(`${base}/api/usage?from=2026-07-18T12%3A00%3A00.000Z&to=2026-07-18T11%3A00%3A00.000Z`);
+  const reversed = await fetch(`${base}/v1/usage?from=2026-07-18T12%3A00%3A00.000Z&to=2026-07-18T11%3A00%3A00.000Z`);
   assert.equal(reversed.status, 400);
-  assert.deepEqual(await reversed.json(), { error: "invalid_usage_range" });
+  assert.deepEqual(await reversed.json(), { error: "invalid_usage_time_range" });
 });
 
 test("status usage endpoints classify an invalid session mode as a client error", async (t) => {
@@ -36,7 +36,7 @@ test("status usage endpoints classify an invalid session mode as a client error"
   const address = await server.start();
   t.after(() => server.stop());
 
-  const response = await fetch(`http://127.0.0.1:${address.port}/api/usage?sessionMode=unexpected`);
+  const response = await fetch(`http://127.0.0.1:${address.port}/v1/usage?sessionMode=unexpected`);
   assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: "invalid_usage_session_mode" });
+  assert.deepEqual(await response.json(), { error: "invalid_session_mode" });
 });

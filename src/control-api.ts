@@ -3,16 +3,7 @@ import { Redacted, Effect, Layer } from "effect";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { expectBufferChunk, expectOptionalString, expectRecord, parseJson } from "./decoding.js";
-import {
-  AdminAuthorization,
-  AuthenticatedUser,
-  BadRequest,
-  ControlApi,
-  InternalError,
-  RouteNotFound,
-  ServiceUnavailable,
-  Unauthorized,
-} from "./control-contract.js";
+import { AdminAuthorization, type ApiError, AuthenticatedUser, ControlApi } from "./control-contract.js";
 import { AppError, type RouteServiceError, safeErrorMessage } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { closeServer, listen } from "./net-utils.js";
@@ -31,10 +22,10 @@ export interface ControlApiOptions {
   telemetry: Telemetry;
 }
 
-type RouteReadError = RouteNotFound | InternalError;
-type RouteCreateError = BadRequest | ServiceUnavailable | InternalError;
-type RouteUpdateError = RouteCreateError | RouteNotFound;
-type AccessGrantCreateError = RouteReadError | BadRequest | ServiceUnavailable;
+type RouteReadError = ApiError;
+type RouteCreateError = ApiError;
+type RouteUpdateError = ApiError;
+type AccessGrantCreateError = ApiError;
 
 function unreachableRouteServiceError(error: never): never {
   void error;
@@ -57,7 +48,7 @@ function authenticatedUser(token: string, identities: ReadonlyMap<string, string
 function createError(error: RouteServiceError): RouteCreateError {
   switch (error.kind) {
     case "validation":
-      return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+      return { code: error.code, message: error.message, retryable: false, requestId: randomUUID() };
     case "provider_unavailable":
     case "provider_authentication":
     case "provider_rate_limit":
@@ -65,7 +56,7 @@ function createError(error: RouteServiceError): RouteCreateError {
     case "provider_capacity_limit":
     case "provider_override_unsatisfied":
     case "upstream":
-      return new ServiceUnavailable({ code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() });
+      return { code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() };
     case "authentication":
     case "not_found":
     case "internal":
@@ -78,7 +69,7 @@ function createError(error: RouteServiceError): RouteCreateError {
 function readError(error: RouteServiceError): RouteReadError {
   switch (error.kind) {
     case "not_found":
-      return new RouteNotFound({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+      return { code: error.code, message: error.message, retryable: false, requestId: randomUUID() };
     case "validation":
     case "authentication":
     case "provider_unavailable":
@@ -110,9 +101,9 @@ function accessGrantCreateError(error: RouteServiceError): AccessGrantCreateErro
     case "provider_capacity_limit":
     case "provider_override_unsatisfied":
     case "upstream":
-      return new ServiceUnavailable({ code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() });
+      return { code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() };
     case "validation":
-      return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+      return { code: error.code, message: error.message, retryable: false, requestId: randomUUID() };
     case "authentication":
     case "internal":
       return internalError();
@@ -121,8 +112,8 @@ function accessGrantCreateError(error: RouteServiceError): AccessGrantCreateErro
   }
 }
 
-function internalError(): InternalError {
-  return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
+function internalError(): ApiError {
+  return { code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() };
 }
 
 function makeHandler(routes: RouteService, options: ControlApiOptions) {
@@ -130,14 +121,12 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
     bearer: (token) => {
       const userId = authenticatedUser(Redacted.value(token), options.controlIdentities);
       return userId === undefined
-        ? Effect.fail(
-            new Unauthorized({
-              code: "unauthorized",
-              message: "Administrator bearer token required",
-              retryable: false,
-              requestId: randomUUID(),
-            }),
-          )
+        ? Effect.fail({
+            code: "unauthorized",
+            message: "Control-plane bearer token required",
+            retryable: false,
+            requestId: randomUUID(),
+          })
         : Effect.succeed({ userId });
     },
   });
@@ -147,26 +136,21 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
       .handle("live", () => Effect.succeed({ status: "live" as const }).pipe(Effect.withSpan("control.health.live")))
       .handle("ready", () =>
         routes.effects.ready().pipe(
-          Effect.mapError(
-            () =>
-              new ServiceUnavailable({
-                code: "not_ready",
-                message: "Service readiness check failed",
-                retryable: true,
-                requestId: randomUUID(),
-              }),
-          ),
+          Effect.mapError(() => ({
+            code: "not_ready",
+            message: "Service readiness check failed",
+            retryable: true,
+            requestId: randomUUID(),
+          })),
           Effect.flatMap((ready) =>
             ready
               ? Effect.succeed({ status: "ready" as const })
-              : Effect.fail(
-                  new ServiceUnavailable({
-                    code: "not_ready",
-                    message: "The proxy service is not ready",
-                    retryable: true,
-                    requestId: randomUUID(),
-                  }),
-                ),
+              : Effect.fail({
+                  code: "not_ready",
+                  message: "The proxy service is not ready",
+                  retryable: true,
+                  requestId: randomUUID(),
+                }),
           ),
           Effect.withSpan("control.health.ready"),
         ),
@@ -247,9 +231,9 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
           Effect.withSpan("control.access_grants.emergency_rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } }),
         ),
       )
-      .handle("createStatelessCredential", ({ path, payload }) =>
+      .handle("createStatelessCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          routes.effects.createStatelessCredential(path.grantId, identity.userId, payload).pipe(Effect.mapError(accessGrantCreateError)),
+          routes.effects.createStatelessCredential(path.grantId, identity.userId).pipe(Effect.mapError(accessGrantCreateError)),
         ),
       )
       .handle("createLogicalSession", ({ path }) =>

@@ -25,7 +25,7 @@ The deployed control API, proxy gateways, and dashboard are company-wide service
 | Platform operators and on-call engineers   | [Operations guide](docs/OPERATIONS.md)                                     |
 | Contributors and maintainers               | [Development guide](docs/DEVELOPMENT.md)                                   |
 | Repository administrators                  | [Repository and release settings](docs/repository-and-release-settings.md) |
-| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.7.0.json)           |
+| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.8.0.json)           |
 | Configuration and secret sources           | [Configuration audit](docs/CONFIGURATION.md)                               |
 
 The OpenAPI contract covers management operations. Forwarding remains native HTTP proxy and SOCKS5 protocol traffic, so consumers do not wrap requests in a Profound-specific envelope.
@@ -108,10 +108,10 @@ The response is `{ "profileId": "..." }`. Issue an independently revocable acces
 curl -sS -X POST http://127.0.0.1:8081/v1/profiles/PROFILE_ID/grants \
   -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
-  -d '{ "sessionMode": "none" }'
+  -d '{ "sessionMode": "stateless" }'
 ```
 
-Use `sessionMode: "none"` for a stateless credential or `sessionMode: "managed"` for a managed logical session. Save the returned `credential.username` and one-time `credential.password`; the password cannot be retrieved later. `endpoints` contains credential-free gateway addresses. Use them with an existing proxy-aware client:
+Use `sessionMode: "stateless"` for a stateless credential or `sessionMode: "managed"` for a managed logical session. Save the returned `credential.username` and one-time `credential.password`; the password cannot be retrieved later. `endpoints` contains credential-free gateway addresses. Use them with an existing proxy-aware client:
 
 ```sh
 curl --proxy 'http://127.0.0.1:8080' \
@@ -124,12 +124,7 @@ See [docs/USAGE.md](docs/USAGE.md) before integrating. It documents credential h
 ## Verify
 
 ```sh
-pnpm format:check
-pnpm check
-pnpm lint
-pnpm openapi:check
-pnpm test
-pnpm build
+pnpm verify
 ```
 
 Normal tests use local providers and controlled recipients. Live vendor checks and deployed AWS checks are explicitly gated; see the [development guide](docs/DEVELOPMENT.md#test-suites).

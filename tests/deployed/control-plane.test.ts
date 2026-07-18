@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Schema } from "effect";
-import { IssuedAccessGrantSchema, ProfileResponseSchema } from "../../src/control-contract.js";
+import { IssuedAccessGrantSchema, ProfileResponseSchema, PublicAccessGrantSchema } from "../../src/control-contract.js";
 import { expectOptionalString, expectRecord } from "../../src/decoding.js";
 import {
   awsJson,
@@ -170,7 +170,7 @@ deployedTest(
     const secondResponse = await controlRequest(`/v1/profiles/${route.profile.id}/grants`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionMode: "none" }),
+      body: JSON.stringify({ sessionMode: "stateless" }),
     });
     assert.equal(secondResponse.status, 201);
     const second = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await secondResponse.json());
@@ -183,7 +183,11 @@ deployedTest(
     });
     assert.equal(rotationResponse.status, 200);
     const rotated = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await rotationResponse.json());
-    assert.equal(rotated.grant.credentials[0]?.status, "overlap");
+    const rotatedGrantResponse = await controlRequest(`/v1/grants/${route.accessGrant.id}`);
+    const rotatedGrant = Schema.decodeUnknownSync(Schema.Struct({ grant: PublicAccessGrantSchema }))(
+      await rotatedGrantResponse.json(),
+    ).grant;
+    assert.equal(rotatedGrant.credentials.find((credential) => credential.credentialId === route.credential.id)?.status, "overlap");
     assert.equal((await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 200);
     const rotatedProxy = proxyWithCredentials(rotated.endpoints.http, rotated.credential.username, rotated.credential.password);
     assert.equal((await requestViaHttpProxy(rotatedProxy, new URL("/lifecycle", target.url).toString())).status, 200);

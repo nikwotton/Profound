@@ -248,8 +248,8 @@ test("profile validation accepts only stable requirements and derives routing be
 
   const overridden = validate({ providerOverride: "bright_data" });
   assert.equal(overridden.providerOverride, "bright_data");
-  assert.equal(validate({ providerOverride: null }).providerOverride, undefined);
-  assert.throws(() => validate({ providerOverride: "unknown" }), /providerOverride must be bright_data, proxidize, or null/);
+  assert.throws(() => validate({ providerOverride: null }), /providerOverride must be bright_data or proxidize/);
+  assert.throws(() => validate({ providerOverride: "unknown" }), /providerOverride must be bright_data or proxidize/);
 });
 
 test("profile validation enforces geography hierarchy and rejects every non-canonical field", () => {
@@ -409,8 +409,11 @@ test("Effect generates a complete secured OpenAPI contract from the control API"
   assert.equal(paths["/v1/providers"], undefined);
   assert.equal(paths["/v1/providers/health"], undefined);
   assert.equal(specification.info.title, "Profound Proxy Router Control API");
-  assert.equal(specification.info.version, "0.7.0");
+  assert.equal(specification.info.version, "0.8.0");
   assert.match(JSON.stringify(specification.components.securitySchemes), /bearer/i);
+  assert.doesNotMatch(JSON.stringify(specification), /HttpApiDecodeError|"_tag"/);
+  assert.match(JSON.stringify(specification.components.schemas), /ApiError/);
+  assert.equal(paths["/v1/grants/{grantId}/credentials"]?.post?.requestBody, undefined);
   assert.equal(paths["/health/live"]?.get?.security?.length, 0);
   assert.ok((paths["/v1/profiles"]?.post?.security?.length ?? 0) > 0);
 });

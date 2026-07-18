@@ -96,7 +96,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.2.grant-session-model",
     section: 3,
     requirement:
-      "Grant creation requires managed or none, supports immutable job attribution, creates best-effort managed affinity or an explicitly stateless credential, and never owns caller application-session state",
+      "Grant creation requires managed or stateless, supports immutable job attribution, creates best-effort managed affinity or an explicitly stateless credential, and never owns caller application-session state",
     deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
     offline: [
       "logical-session APIs require an explicit mode and support rotation, close, and force-close lifecycle",

@@ -202,8 +202,8 @@ test("route profiles contain no credential verifier and access grants rotate and
   try {
     const route = await store.create("shared-route", profile, "proxidize");
     assert.doesNotMatch(JSON.stringify(route), /tokenSalt|tokenHash/);
-    const first = await store.createAccessGrant("grant-one", route.id, "user-one", "credential-one", "first-token", "none");
-    const second = await store.createAccessGrant("grant-two", route.id, "user-two", "credential-two", "second-token", "none");
+    const first = await store.createAccessGrant("grant-one", route.id, "user-one", "credential-one", "first-token", "stateless");
+    const second = await store.createAccessGrant("grant-two", route.id, "user-two", "credential-two", "second-token", "stateless");
     assert.equal((await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.grant.principalId, "user-one");
     assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.grant.principalId, "user-two");
 
@@ -254,7 +254,7 @@ test("credential metadata enforces expiration and overlap revocation deadlines w
     credentials: [
       {
         id: "expired",
-        sessionMode: "none",
+        sessionMode: "stateless",
         tokenSalt: "salt-one",
         tokenHash: "hash-one",
         status: "active",
@@ -264,7 +264,7 @@ test("credential metadata enforces expiration and overlap revocation deadlines w
       },
       {
         id: "overlap-ended",
-        sessionMode: "none",
+        sessionMode: "stateless",
         tokenSalt: "salt-two",
         tokenHash: "hash-two",
         status: "overlap",

@@ -36,7 +36,7 @@ test("the fixed local runtime adds no standalone environment configuration contr
   assert.equal(packageJson.scripts?.["dev"], undefined);
   assert.equal(packageJson.scripts?.["dev:local"], "tsx src/local.ts");
   assert.equal(packageJson.scripts?.["demo"], "tsx scripts/demo.ts");
-  assert.equal(packageJson.scripts?.["dev:service"], "tsx watch src/index.ts");
+  assert.equal(packageJson.scripts?.["internal:dev:service"], "tsx watch src/index.ts");
 
   const runtime = ["src/app.ts", "src/config.ts", "src/index.ts", "src/local-runtime.ts", "src/runtime-services.ts"]
     .map((path) => readFileSync(path, "utf8"))
@@ -55,7 +55,7 @@ test("the fixed local runtime adds no standalone environment configuration contr
 
   const infrastructure = readFileSync("infra/providers/aws.ts", "utf8");
   assert.doesNotMatch(infrastructure, /PERSISTENCE_BACKEND|command: "pnpm dev"/);
-  assert.match(infrastructure, /command: "pnpm dev:service"/);
+  assert.match(infrastructure, /command: "pnpm internal:dev:service"/);
 });
 
 test("SST secrets have an audited exclusive source and development placeholders", () => {

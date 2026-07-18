@@ -4,7 +4,13 @@ import { connect, createServer as createNetServer, isIP, type Socket } from "nod
 import { Schema } from "effect";
 import { startStandaloneApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
-import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema, PublicRouteSchema } from "../src/control-contract.js";
+import {
+  CreatedProfileSchema,
+  IssuedAccessGrantSchema,
+  ProfileResponseSchema,
+  PublicAccessGrantSchema,
+  PublicRouteSchema,
+} from "../src/control-contract.js";
 import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
@@ -25,7 +31,7 @@ export interface TestApp {
 
 export interface CreatedRouteResponse {
   profile: typeof PublicRouteSchema.Type & { id: string };
-  accessGrant: typeof IssuedAccessGrantSchema.Type.grant & { id: string; routeId: string };
+  accessGrant: typeof PublicAccessGrantSchema.Type & { id: string; routeId: string };
   credential: typeof IssuedAccessGrantSchema.Type.credential & { id: string };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
@@ -39,7 +45,7 @@ export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiRespons
       ...issued.grant,
       id: issued.grant.grantId,
       routeId: issued.grant.profileId,
-      credentials: issued.grant.credentials.map((credential) => ({ ...credential, id: credential.credentialId })),
+      credentials: [issued.credential],
     },
     credential: { ...issued.credential, id: issued.credential.credentialId },
     proxyUsername: issued.credential.username,
@@ -57,7 +63,7 @@ type TestProfileInput = Partial<RouteProfileInput> & {
   session?: unknown;
   allowedProtocols?: unknown;
   retryPolicy?: unknown;
-  sessionMode?: "managed" | "none";
+  sessionMode?: "managed" | "stateless";
   shouldRetry?: boolean;
 };
 
@@ -196,7 +202,7 @@ export async function controlRequest(
 export async function createRoute(
   app: RunningApplication,
   profile: TestProfileInput,
-  explicitSessionMode?: "managed" | "none",
+  explicitSessionMode?: "managed" | "stateless",
 ): Promise<CreatedRouteResponse> {
   const response = await controlRequest(app, "/v1/profiles", {
     method: "POST",
@@ -211,7 +217,7 @@ export async function createRoute(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        sessionMode: explicitSessionMode ?? profile.sessionMode ?? "none",
+        sessionMode: explicitSessionMode ?? profile.sessionMode ?? "stateless",
       }),
     }),
   ]);

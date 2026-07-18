@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Schema } from "effect";
-import { IssuedAccessGrantSchema } from "../../src/control-contract.js";
+import { IssuedAccessGrantSchema, PublicAccessGrantSchema } from "../../src/control-contract.js";
 import {
   bestEffortDeleteProfile,
   controlRequest,
@@ -93,10 +93,9 @@ e2eTest("a grant credential can be rotated and independently revoked", async (t)
   assert.equal(rotationResponse.status, 200);
   const rotated = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await rotationResponse.json());
   const rotatedUrl = issuedProxyEndpoint(rotated, "http");
-  assert.equal(
-    rotated.grant.credentials.find((credential) => credential.credentialId === route.credential.credentialId)?.status,
-    "overlap",
-  );
+  const grantResponse = await controlRequest(`/v1/grants/${route.accessGrant.grantId}`);
+  const grant = Schema.decodeUnknownSync(Schema.Struct({ grant: PublicAccessGrantSchema }))(await grantResponse.json()).grant;
+  assert.equal(grant.credentials.find((credential) => credential.credentialId === route.credential.credentialId)?.status, "overlap");
   assert.equal(rotated.credential.status, "active");
   assert.equal((await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl)).status, environment.expectedTargetStatus);
   assert.equal((await requestViaHttpProxy(rotatedUrl, environment.targetUrl)).status, environment.expectedTargetStatus);
