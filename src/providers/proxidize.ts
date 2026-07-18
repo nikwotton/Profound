@@ -14,9 +14,9 @@ import {
   expectOptionalString,
   expectRecord,
 } from "../decoding.js";
-import type { MobileProviderAdapter, ResolveOptions } from "./provider.js";
-import type { MobileEndpoint, StoredRoute, Targeting, UpstreamEndpoint } from "../domain/routing.js";
+import type { ProviderAdapter, ProviderCandidate, ResolveOptions } from "./provider.js";
 import type { ProviderHealth } from "../domain/health.js";
+import type { ProviderInventorySlot, StoredRoute, Targeting, UpstreamEndpoint } from "../domain/routing.js";
 
 export interface ProxidizeConfig {
   apiBaseUrl: string;
@@ -50,8 +50,48 @@ function normalized(value: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
-export class ProxidizeAdapter implements MobileProviderAdapter {
+interface ProxidizeEndpoint {
+  id: string;
+  username: string;
+  password: string;
+  host: string;
+  port: number;
+  country: string;
+  region: string;
+  city?: string;
+  carrier: string;
+  publicKey: string;
+  deviceId?: string;
+  healthy: boolean;
+  egressIp?: string;
+}
+
+export class ProxidizeAdapter implements ProviderAdapter<"proxidize"> {
   readonly descriptor;
+  readonly candidates = {
+    providerAccountId: (): string => this.providerAccountId,
+    list: async (refresh = false, signal?: AbortSignal): Promise<ProviderCandidate[]> =>
+      (await this.listEndpoints(refresh, signal)).map((endpoint) => ({
+        id: endpoint.id,
+        healthy: endpoint.healthy,
+        inventory: {
+          proxySlotId: endpoint.id,
+          ...(endpoint.deviceId === undefined ? {} : { deviceId: endpoint.deviceId }),
+          country: endpoint.country,
+          region: endpoint.region,
+          ...(endpoint.city === undefined ? {} : { city: endpoint.city }),
+          carrier: endpoint.carrier,
+          healthy: endpoint.healthy,
+          ...(endpoint.egressIp === undefined ? {} : { egressIp: endpoint.egressIp }),
+        },
+      })),
+    matches: (candidate: ProviderCandidate, route: StoredRoute | { targeting: StoredRoute["targeting"] }): boolean =>
+      this.matches(candidate.inventory, route),
+    prepare: async (candidateId: string) => {
+      await this.setRotationInterval(candidateId, undefined);
+      return { providerManagedReassignmentDisabled: true };
+    },
+  };
 
   constructor(private readonly config: ProxidizeConfig) {
     this.descriptor = {
@@ -101,9 +141,9 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
       costRank: 2,
     };
   }
-  #cachedEndpoints: MobileEndpoint[] = [];
+  #cachedEndpoints: ProxidizeEndpoint[] = [];
   #cacheExpiresAt = 0;
-  #endpointRefresh: Promise<MobileEndpoint[]> | undefined;
+  #endpointRefresh: Promise<ProxidizeEndpoint[]> | undefined;
 
   get providerAccountId(): string {
     return this.config.providerAccountId ?? "proxidize-primary";
@@ -155,7 +195,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
     }
   }
 
-  async listEndpoints(refresh = false, signal?: AbortSignal): Promise<MobileEndpoint[]> {
+  async listEndpoints(refresh = false, signal?: AbortSignal): Promise<ProxidizeEndpoint[]> {
     if (!refresh && Date.now() < this.#cacheExpiresAt) return this.#cachedEndpoints;
     this.#endpointRefresh ??= this.#loadEndpoints(signal).finally(() => {
       this.#endpointRefresh = undefined;
@@ -163,7 +203,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
     return this.#endpointRefresh;
   }
 
-  async #loadEndpoints(signal?: AbortSignal): Promise<MobileEndpoint[]> {
+  async #loadEndpoints(signal?: AbortSignal): Promise<ProxidizeEndpoint[]> {
     try {
       const subscriptions = expectRecord(
         await this.#request("/api/v1/subscription?type=per_proxy", signal === undefined ? undefined : { signal }),
@@ -183,7 +223,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
         ),
         "Proxidize proxies response",
       );
-      const endpoints = expectArray(response["data"], "Proxidize proxies response.data").map((value, index): MobileEndpoint => {
+      const endpoints = expectArray(response["data"], "Proxidize proxies response.data").map((value, index): ProxidizeEndpoint => {
         const record = expectRecord(value, `Proxidize proxy record ${index}`);
         const currentIp = expectOptionalNonEmptyString(record["current_ip"], `Proxidize proxy record ${index}.current_ip`);
         const ip = expectOptionalNonEmptyString(record["ip"], `Proxidize proxy record ${index}.ip`);
@@ -230,10 +270,12 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
   async resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint> {
     const endpoints = await this.listEndpoints(false, options.signal);
     const assigned =
-      options.selectedEndpointId === undefined ? undefined : endpoints.find((candidate) => candidate.id === options.selectedEndpointId);
+      options.selectedCandidateId === undefined ? undefined : endpoints.find((candidate) => candidate.id === options.selectedCandidateId);
     const endpoint =
       assigned ??
-      endpoints.find((candidate) => candidate.healthy && !options.excludedEndpointIds?.has(candidate.id) && this.matches(candidate, route));
+      endpoints.find(
+        (candidate) => candidate.healthy && !options.excludedCandidateIds?.has(candidate.id) && this.matches(candidate, route),
+      );
     if (endpoint === undefined || !endpoint.healthy) {
       throw providerError(new ProviderUnavailableError("No healthy Proxidize proxy slot matches the route policy"));
     }
@@ -270,7 +312,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
     };
   }
 
-  async setRotationInterval(endpointId: string, intervalSeconds?: number): Promise<void> {
+  private async setRotationInterval(endpointId: string, intervalSeconds?: number): Promise<void> {
     const endpoint = (await this.listEndpoints(false)).find((candidate) => candidate.id === endpointId);
     if (endpoint === undefined) throw providerError(new ProviderUnavailableError("Mobile endpoint was not found"));
     await this.#request("/api/v1/perproxy/set-rotation-interval", {
@@ -284,14 +326,21 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
     });
   }
 
-  matches(endpoint: MobileEndpoint, route: StoredRoute | { targeting: StoredRoute["targeting"] }): boolean {
+  private matches(
+    endpoint: Pick<ProviderInventorySlot, "country" | "region" | "city" | "carrier">,
+    route: StoredRoute | { targeting: StoredRoute["targeting"] },
+  ): boolean {
     const target = route.targeting;
     if (target.country !== undefined && endpoint.country !== target.country) return false;
-    if (target.region !== undefined && normalized(endpoint.region) !== normalized(target.region)) return false;
+    if (target.region !== undefined && (endpoint.region === undefined || normalized(endpoint.region) !== normalized(target.region))) {
+      return false;
+    }
     if (target.city !== undefined && (endpoint.city === undefined || normalized(endpoint.city) !== normalized(target.city))) {
       return false;
     }
-    if (target.carrier !== undefined && normalized(endpoint.carrier) !== normalized(target.carrier)) return false;
+    if (target.carrier !== undefined && (endpoint.carrier === undefined || normalized(endpoint.carrier) !== normalized(target.carrier))) {
+      return false;
+    }
     return true;
   }
 

@@ -1,4 +1,5 @@
-export type ProviderId = "bright_data" | "proxidize";
+/** Stable adapter-owned identifier. Core routing treats provider IDs as opaque data. */
+export type ProviderId = string;
 export type ProviderClass = "residential" | "device_backed";
 export type DataPlaneProtocol = "http" | "https" | "socks5";
 export type UpstreamProxyProtocol = "http" | "socks5";
@@ -193,35 +194,22 @@ export interface PublicRoute {
   updatedAt: string;
 }
 
-export interface MobileEndpoint {
-  id: string;
-  username: string;
-  password: string;
-  host: string;
-  port: number;
-  country: string;
-  region: string;
-  city?: string;
-  carrier: string;
-  publicKey: string;
+export interface ProviderInventorySlot {
+  proxySlotId: string;
   deviceId?: string;
+  country?: string;
+  region?: string;
+  city?: string;
+  carrier?: string;
   healthy: boolean;
   egressIp?: string;
 }
 
 export interface ProviderInventorySnapshot {
-  provider: "proxidize";
+  provider: ProviderId;
   providerAccountId: string;
-  slots: Array<{
-    proxySlotId: string;
-    deviceId?: string;
-    country: string;
-    region: string;
-    city?: string;
-    carrier: string;
-    healthy: boolean;
-    egressIp?: string;
-  }>;
+  monthlyPricePerSlotUsd?: number;
+  slots: ProviderInventorySlot[];
   capturedAt: string;
 }
 
@@ -268,7 +256,7 @@ export interface UpstreamEndpoint {
   port: number;
   username: string;
   password: string;
-  /** Internal Proxidize inventory identity. Never returned through caller-facing APIs. */
+  /** Internal provider inventory identity. Never returned through caller-facing APIs. */
   proxySlotId?: string;
   upstreamConnectionId?: string;
   upstreamConnectionStartedAt?: string;

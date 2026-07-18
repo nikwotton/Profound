@@ -12,7 +12,7 @@ function routeProfileContractError(error: ParseResult.ParseError): ValidationErr
   const first = issues[0];
   const path = first?.path.map(String) ?? [];
   if (path.length === 1 && path[0] === "providerOverride") {
-    return new ValidationError("providerOverride must be bright_data or proxidize");
+    return new ValidationError("providerOverride must be a provider ID");
   }
   if (first?._tag === "Unexpected" && path.length > 0) {
     const field = path.length === 1 ? `profile.${path[0]}` : path.join(".");
@@ -78,7 +78,7 @@ export function validateRouteProfile(value: unknown, userId: string, retryDefaul
 
   const { profile: geography, targeting } = parseGeography(input.geography);
   const carrier = optionalString(input.carrier, "carrier");
-  const providerOverride = input.providerOverride;
+  const providerOverride = optionalString(input.providerOverride, "providerOverride");
   if (carrier !== undefined) targeting.carrier = carrier;
 
   const allowConnectionRetry = input.allowConnectionRetry;

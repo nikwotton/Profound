@@ -95,6 +95,19 @@ export class DynamoHealthRepository implements ProviderHealthRepository, Capabil
       : decodeProviderInventorySnapshot(itemField(result.Item, "snapshot", "DynamoDB provider-inventory item"));
   }
 
+  async listProviderInventories(): Promise<ProviderInventorySnapshot[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity",
+      ExpressionAttributeNames: { "#entity": "entity" },
+      ExpressionAttributeValues: { ":entity": "provider_inventory" },
+    });
+    return items
+      .map((item) => decodeProviderInventorySnapshot(itemField(item, "snapshot", "DynamoDB provider-inventory item")))
+      .toSorted((left, right) => left.provider.localeCompare(right.provider));
+  }
+
   async saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
     const item: CapabilityHealthItem = {
       pk: "CAPABILITY_HEALTH#GLOBAL",

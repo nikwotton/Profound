@@ -113,13 +113,14 @@ export class DynamoRuntimeStateRepository implements ActiveTunnelRepository, Cap
   }
 
   async claimActiveTunnelSlot(
+    provider: ProviderId,
     candidateEndpointIds: readonly string[],
     selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
     createTunnel: (endpointId: string) => ActiveTunnel,
   ): Promise<{ tunnel: ActiveTunnel; activeConnections: number }> {
     if (candidateEndpointIds.length === 0) throw new Error("no_slot_candidates");
     const candidates = new Set(candidateEndpointIds);
-    const loads = (await this.getActiveConnectionCounts([], candidateEndpointIds, [])).endpoints;
+    const loads = (await this.getActiveConnectionCounts([provider], candidateEndpointIds, [])).endpoints;
     const endpointId = selectEndpoint(loads);
     if (!candidates.has(endpointId)) throw new Error("invalid_slot_selection");
     const tunnel = createTunnel(endpointId);
@@ -192,7 +193,7 @@ export class DynamoRuntimeStateRepository implements ActiveTunnelRepository, Cap
   #activeLoadLeaseKeys(tunnel: ActiveTunnel): Array<{ pk: string; sk: string }> {
     return [
       { pk: `ACTIVE_LOAD#PROVIDER#${tunnel.provider}`, sk: tunnel.id },
-      ...(tunnel.endpointId === undefined ? [] : [{ pk: `ACTIVE_LOAD#ENDPOINT#${tunnel.endpointId}`, sk: tunnel.id }]),
+      ...(tunnel.endpointId === undefined ? [] : [{ pk: `ACTIVE_LOAD#ENDPOINT#${tunnel.provider}#${tunnel.endpointId}`, sk: tunnel.id }]),
       ...(tunnel.sessionId === undefined ? [] : [{ pk: `ACTIVE_LOAD#SESSION#${tunnel.sessionId}`, sk: tunnel.id }]),
     ];
   }
@@ -230,8 +231,20 @@ export class DynamoRuntimeStateRepository implements ActiveTunnelRepository, Cap
     const providerCounts = await Promise.all(
       providers.map(async (provider) => [provider, await this.#countActiveLoad(`ACTIVE_LOAD#PROVIDER#${provider}`, now)] as const),
     );
+    const endpointProvider = providers.length === 1 ? providers[0] : undefined;
     const endpointCounts = await Promise.all(
-      endpointIds.map(async (endpointId) => [endpointId, await this.#countActiveLoad(`ACTIVE_LOAD#ENDPOINT#${endpointId}`, now)] as const),
+      endpointIds.map(
+        async (endpointId) =>
+          [
+            endpointId,
+            await this.#countActiveLoad(
+              endpointProvider === undefined
+                ? `ACTIVE_LOAD#ENDPOINT#${endpointId}`
+                : `ACTIVE_LOAD#ENDPOINT#${endpointProvider}#${endpointId}`,
+              now,
+            ),
+          ] as const,
+      ),
     );
     const sessionCounts = await Promise.all(
       sessionIds.map(async (sessionId) => [sessionId, await this.#countActiveLoad(`ACTIVE_LOAD#SESSION#${sessionId}`, now)] as const),

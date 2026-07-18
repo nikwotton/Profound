@@ -185,6 +185,7 @@ test("provider accounting decoders require complete finite payloads", () => {
   );
   assert.throws(() =>
     decodeProvisionedProxySlotCapacity({
+      provider: "proxidize",
       id: "capacity-1",
       proxySlotId: "slot-1",
       periodStartedAt: "2026-07-01T00:00:00.000Z",

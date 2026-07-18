@@ -62,7 +62,7 @@ const StoredLogicalSessionSchema: Schema.Schema<StoredLogicalSession> = Schema.S
   bindingVersion: NonNegativeInteger,
   affinity: exactOptional(
     Schema.Struct({
-      provider: Schema.Literal("bright_data", "proxidize"),
+      provider: Schema.String,
       providerClass: Schema.Literal("residential", "device_backed"),
       candidateId: Schema.String,
       affinityHandle: Schema.String,
@@ -108,7 +108,7 @@ const StoredRouteSchema: Schema.Schema<StoredRoute> = Schema.Struct({
     }),
   ),
   carrier: exactOptional(Schema.String),
-  providerOverride: exactOptional(Schema.Literal("bright_data", "proxidize")),
+  providerOverride: exactOptional(Schema.String),
   allowConnectionRetry: Schema.Boolean,
   userId: Schema.String,
   shouldRetry: Schema.Boolean,
@@ -126,7 +126,7 @@ const ActiveTunnelSchema: Schema.Schema<ActiveTunnel> = Schema.Struct({
   accessGrantId: Schema.String,
   sessionId: exactOptional(Schema.String),
   protocol: Schema.Literal("http", "https", "socks5"),
-  provider: Schema.Literal("bright_data", "proxidize"),
+  provider: Schema.String,
   endpointId: exactOptional(Schema.String),
   routingPolicyVersion: exactOptional(Schema.String),
   routingScore: exactOptional(NonNegativeNumber),
@@ -136,7 +136,7 @@ const ActiveTunnelSchema: Schema.Schema<ActiveTunnel> = Schema.Struct({
 });
 
 const CapacityCircuitStateSchema: Schema.Schema<CapacityCircuitState> = Schema.Struct({
-  provider: Schema.Literal("bright_data", "proxidize"),
+  provider: Schema.String,
   candidateKey: Schema.String,
   status: Schema.Literal("closed", "open", "half_open"),
   consecutiveFailures: NonNegativeInteger,
@@ -158,23 +158,24 @@ const DeploymentDrainStateSchema: Schema.Schema<DeploymentDrainState> = Schema.S
 });
 
 const ProviderHealthSchema: Schema.Schema<ProviderHealth> = Schema.Struct({
-  provider: Schema.Literal("bright_data", "proxidize"),
+  provider: Schema.String,
   state: Schema.Literal("healthy", "degraded", "unhealthy"),
   checkedAt: IsoTimestamp,
   message: exactOptional(Schema.String),
 });
 
 const ProviderInventorySnapshotSchema: Schema.Schema<ProviderInventorySnapshot> = Schema.Struct({
-  provider: Schema.Literal("proxidize"),
+  provider: Schema.String,
   providerAccountId: Schema.String,
+  monthlyPricePerSlotUsd: exactOptional(NonNegativeNumber),
   slots: mutableArray(
     Schema.Struct({
       proxySlotId: Schema.String,
       deviceId: exactOptional(Schema.String),
-      country: Schema.String,
-      region: Schema.String,
+      country: exactOptional(Schema.String),
+      region: exactOptional(Schema.String),
       city: exactOptional(Schema.String),
-      carrier: Schema.String,
+      carrier: exactOptional(Schema.String),
       healthy: Schema.Boolean,
       egressIp: exactOptional(Schema.String),
     }),
@@ -253,7 +254,7 @@ const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
   routeId: Schema.String,
   userId: Schema.String,
   customerId: Schema.String,
-  provider: Schema.Literal("bright_data", "proxidize", "unresolved"),
+  provider: Schema.String,
   protocol: Schema.Literal("http", "https", "socks5"),
   outcome: Schema.Literal("success", "http_error", "retry", "failure"),
   retryIndex: NonNegativeInteger,
@@ -275,11 +276,11 @@ const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
   connectionEndedAt: exactOptional(IsoTimestamp),
   selectedSlotLoad: exactOptional(NonNegativeInteger),
   capacityPressure: exactOptional(Schema.Boolean),
-  capacityPressureProvider: exactOptional(Schema.Literal("bright_data", "proxidize")),
+  capacityPressureProvider: exactOptional(Schema.String),
   capacityConstraint: exactOptional(Schema.Literal("slot_exhaustion", "geography", "carrier", "hard_limit", "capacity_circuit")),
   establishmentWaitMs: exactOptional(NonNegativeNumber),
   capacityPolicyVersion: exactOptional(Schema.String),
-  providerOverride: exactOptional(Schema.Literal("bright_data", "proxidize")),
+  providerOverride: exactOptional(Schema.String),
   capacityCircuitState: exactOptional(Schema.Literal("closed", "open", "half_open")),
   capacityCircuitReason: exactOptional(Schema.Literal("provider_hard_limit", "capacity_failure", "establishment_failure", "timeout")),
   capacityCircuitCooldownUntil: exactOptional(IsoTimestamp),
@@ -352,7 +353,7 @@ const UsageRollupSchema: Schema.Schema<UsageRollup> = Schema.Struct({
 const UsageReconciliationSchema: Schema.Schema<UsageReconciliation> = Schema.Struct({
   kind: Schema.Literal("provider_usage_adjustment"),
   id: Schema.String,
-  provider: Schema.Literal("bright_data", "proxidize"),
+  provider: Schema.String,
   periodStartedAt: IsoTimestamp,
   periodEndsAt: IsoTimestamp,
   estimatedTotalUsd: NonNegativeNumber,
@@ -369,7 +370,7 @@ const UsageAlertEventSchema: Schema.Schema<UsageAlertEvent> = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literal("capacity_recommendation", "reconciliation_variance"),
   severity: Schema.Literal("warning", "error"),
-  provider: Schema.Literal("bright_data", "proxidize"),
+  provider: Schema.String,
   periodStartedAt: IsoTimestamp,
   periodEndsAt: IsoTimestamp,
   relatedRecordId: Schema.String,
@@ -385,7 +386,7 @@ const UsageAlertEventSchema: Schema.Schema<UsageAlertEvent> = Schema.Struct({
 
 const CapacityPressureEvidenceSchema: Schema.Schema<CapacityPressureEvidence> = Schema.Struct({
   id: Schema.String,
-  provider: Schema.Literal("bright_data", "proxidize"),
+  provider: Schema.String,
   periodStartedAt: IsoTimestamp,
   periodEndsAt: IsoTimestamp,
   relatedRollupId: Schema.String,

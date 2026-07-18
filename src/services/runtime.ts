@@ -4,7 +4,7 @@ import { callDynamicExport } from "../dynamic-module.js";
 import { DynamoRouteStore } from "../dynamo-store.js";
 import type { Logger } from "../logger.js";
 import type { BrightDataConfig } from "../providers/bright-data.js";
-import type { MobileProviderAdapter, ProviderAdapter } from "../providers/provider.js";
+import type { ProviderAdapter } from "../providers/provider.js";
 import type { ProxidizeConfig } from "../providers/proxidize.js";
 import { createProviderRuntime } from "../provider-runtime.js";
 import type { RouteStore } from "../store.js";
@@ -32,7 +32,7 @@ export interface RuntimePersistenceConfig {
 export interface RuntimeServiceDependencies {
   storeFactory?: (config: RuntimePersistenceConfig) => RouteStore;
   brightDataFactory?: (config: BrightDataConfig) => ProviderAdapter<"bright_data">;
-  mobileProviderFactory?: (config: ProxidizeConfig) => MobileProviderAdapter;
+  proxidizeFactory?: (config: ProxidizeConfig) => ProviderAdapter<"proxidize">;
   fetchImplementation?: typeof fetch;
 }
 
@@ -73,7 +73,7 @@ export async function createHealthProviders(
 ): Promise<{ providers: ProviderAdapter[]; stop(): Promise<void> }> {
   const runtime = await createProviderRuntime(config, logger, dependencies);
   return {
-    providers: [runtime.brightData, runtime.proxidize],
+    providers: [...runtime.providers],
     stop: () => runtime.stop(),
   };
 }

@@ -73,6 +73,7 @@ test("concurrent proxy-slot claims atomically include earlier claims in candidat
   try {
     const claim = () =>
       store.claimActiveTunnelSlot(
+        "proxidize",
         ["slot-a", "slot-b"],
         (loads) =>
           (["slot-a", "slot-b"] as const).toSorted(

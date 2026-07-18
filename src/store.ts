@@ -181,6 +181,7 @@ export interface LogicalSessionRepository {
 export interface ActiveTunnelRepository {
   registerActiveTunnel(tunnel: ActiveTunnel): Promise<void>;
   claimActiveTunnelSlot(
+    provider: ProviderId,
     candidateEndpointIds: readonly string[],
     selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
     createTunnel: (endpointId: string) => ActiveTunnel,
@@ -190,6 +191,7 @@ export interface ActiveTunnelRepository {
   listActiveTunnels(deploymentId: string, now?: string): Promise<ActiveTunnel[]>;
   listAllActiveTunnels(now?: string): Promise<ActiveTunnel[]>;
   getActiveConnectionCounts(
+    /** A single provider scopes endpoint counts to that provider's candidate IDs. */
     providers: readonly ProviderId[],
     endpointIds: readonly string[],
     sessionIds: readonly string[],
@@ -229,6 +231,7 @@ export interface ProviderHealthRepository {
   listHealth(): Promise<ProviderHealth[]>;
   saveProviderInventory(snapshot: ProviderInventorySnapshot): Promise<void>;
   latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined>;
+  listProviderInventories(): Promise<ProviderInventorySnapshot[]>;
 }
 
 export interface CapabilityHealthRepository {

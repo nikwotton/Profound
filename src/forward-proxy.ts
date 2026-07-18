@@ -331,7 +331,7 @@ export class ForwardProxyServer {
           }
         };
         const retry = async (error?: unknown): Promise<void> => {
-          if (upstream !== undefined) resolutionState.excludedEndpointIds.add(upstream.endpointId);
+          if (upstream !== undefined) resolutionState.excludedCandidateIds.add(upstream.endpointId);
           budget.finish();
           finishAttempt("retry", error);
           await attempt(attemptIndex + 1);

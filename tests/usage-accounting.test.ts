@@ -65,6 +65,7 @@ test("usage-priced traffic is estimated from billable bytes and historical price
 
 test("device-priced slot cost is allocated by customer connection-seconds", () => {
   const capacity = provisionedProxySlotCapacityRecord({
+    provider: "proxidize",
     id: "slot-1-day",
     proxySlotId: "slot-1",
     periodStartedAt: "2026-07-15T10:00:00.000Z",
@@ -131,6 +132,7 @@ test("preallocated capacity reports time-weighted and current utilization with u
     connectionEndedAt: "2026-07-15T10:30:00.000Z",
   });
   const healthy = provisionedProxySlotCapacityRecord({
+    provider: "proxidize",
     id: "idle",
     proxySlotId: "slot-1",
     periodStartedAt: "2026-07-15T10:00:00.000Z",
@@ -139,6 +141,7 @@ test("preallocated capacity reports time-weighted and current utilization with u
     pricingVersion: "prox-2026-07",
   });
   const unhealthy = provisionedProxySlotCapacityRecord({
+    provider: "proxidize",
     id: "unhealthy",
     proxySlotId: "slot-2",
     periodStartedAt: "2026-07-15T10:00:00.000Z",
@@ -178,6 +181,7 @@ test("provider totals reconcile authoritative spend while grouped attribution st
 
 test("idle proxy-slot capacity is attributed to the synthetic Unallocated customer", () => {
   const capacity = provisionedProxySlotCapacityRecord({
+    provider: "proxidize",
     id: "slot-1-2026-07-15",
     proxySlotId: "slot-1",
     periodStartedAt: "2026-07-15T00:00:00.000Z",
@@ -314,6 +318,7 @@ test("capacity pressure publishes provider-attributed health evidence and one id
   try {
     await store.recordUsage(
       provisionedProxySlotCapacityRecord({
+        provider: "proxidize",
         id: "pressure-slot",
         proxySlotId: "slot-pressure",
         periodStartedAt: from,

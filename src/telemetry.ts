@@ -146,7 +146,7 @@ export class Telemetry {
     this.#attempts.add(1, metricAttributes);
     this.#attemptDuration.record(Date.now() - startedAt, metricAttributes);
     const provider = attributes["provider"];
-    if ((provider === "bright_data" || provider === "proxidize") && passive !== undefined) {
+    if (typeof provider === "string" && provider.length > 0 && provider !== "unresolved" && passive !== undefined) {
       const attemptOutcome = attributes["outcome"];
       this.recordPassiveHealthSignal({
         provider,

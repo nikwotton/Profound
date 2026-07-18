@@ -5,7 +5,7 @@ import { createDataPlaneRuntime } from "./data-plane-runtime.js";
 import { DynamoRouteStore } from "./dynamo-store.js";
 import type { Logger } from "./logger.js";
 import type { BrightDataConfig } from "./providers/bright-data.js";
-import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
+import type { ProviderAdapter } from "./providers/provider.js";
 import type { ProxidizeConfig } from "./providers/proxidize.js";
 import {
   createProviderCatalog,
@@ -51,7 +51,7 @@ export interface ApplicationDependencies {
   telemetry?: Telemetry;
   storeFactory?: (config: AppConfig) => RouteStore;
   brightDataFactory?: (config: BrightDataConfig) => ProviderAdapter<"bright_data">;
-  mobileProviderFactory?: (config: ProxidizeConfig) => MobileProviderAdapter;
+  proxidizeFactory?: (config: ProxidizeConfig) => ProviderAdapter<"proxidize">;
   fetchImplementation?: typeof fetch;
 }
 
@@ -79,10 +79,7 @@ async function createUnmanagedRoutingRuntime(
   logger: Logger,
   telemetry: Telemetry,
   proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress },
-  dependencies: Pick<
-    ApplicationDependencies,
-    "now" | "storeFactory" | "brightDataFactory" | "mobileProviderFactory" | "fetchImplementation"
-  >,
+  dependencies: Pick<ApplicationDependencies, "now" | "storeFactory" | "brightDataFactory" | "proxidizeFactory" | "fetchImplementation">,
 ): Promise<RoutingRuntime> {
   let store: RouteStore;
   if (dependencies.storeFactory !== undefined) store = dependencies.storeFactory(config);
@@ -93,8 +90,7 @@ async function createUnmanagedRoutingRuntime(
     providerRuntime = await createProviderRuntime(config, logger, dependencies);
     const routes = new RouteService({
       store,
-      brightData: providerRuntime.brightData,
-      proxidize: providerRuntime.proxidize,
+      providers: providerRuntime.providers,
       proxyAddresses,
       advertisedProxyHost: config.advertisedProxyHost,
       advertisedHttpProxyProtocol: config.advertisedHttpProxyProtocol,
@@ -124,10 +120,7 @@ async function createRoutingRuntime(
   logger: Logger,
   telemetry: Telemetry,
   proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress },
-  dependencies: Pick<
-    ApplicationDependencies,
-    "now" | "storeFactory" | "brightDataFactory" | "mobileProviderFactory" | "fetchImplementation"
-  >,
+  dependencies: Pick<ApplicationDependencies, "now" | "storeFactory" | "brightDataFactory" | "proxidizeFactory" | "fetchImplementation">,
 ): Promise<RoutingRuntime> {
   const managed = ManagedRuntime.make(
     Layer.scoped(
@@ -294,7 +287,7 @@ export async function startControlPlaneApplication(
   const providers = createProviderCatalog(config, dependencies);
   const routes = new RouteAdministrationService({
     store,
-    providers: [providers.brightData, providers.proxidize],
+    providers: providers.providers,
     proxyAddresses: () => ({
       http: { host: config.advertisedProxyHost, port: config.forwardPort },
       socks5: { host: config.advertisedProxyHost, port: config.socks5Port },

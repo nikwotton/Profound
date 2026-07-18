@@ -1,9 +1,9 @@
 import type {
   DataPlaneProtocol,
-  MobileEndpoint,
   ProxyTarget,
   ProviderDescriptor,
   ProviderId,
+  ProviderInventorySlot,
   StoredRoute,
   UpstreamEndpoint,
 } from "../domain/routing.js";
@@ -17,8 +17,30 @@ export interface ResolveOptions {
   affinityHandle?: string;
   candidateIndex: number;
   signal: AbortSignal;
-  excludedEndpointIds?: ReadonlySet<string>;
-  selectedEndpointId?: string;
+  excludedCandidateIds?: ReadonlySet<string>;
+  selectedCandidateId?: string;
+}
+
+export interface ProviderCandidate {
+  id: string;
+  healthy: boolean;
+  inventory: ProviderInventorySlot;
+}
+
+export interface PreparedProviderCandidate {
+  providerManagedReassignmentDisabled: boolean;
+}
+
+/**
+ * Optional capability for providers whose independently selectable candidates
+ * have inventory, load, and capacity semantics. The core routes against this
+ * normalized shape without knowing which adapter supplies it.
+ */
+export interface ProviderCandidateSource {
+  providerAccountId(): string;
+  list(refresh?: boolean, signal?: AbortSignal): Promise<ProviderCandidate[]>;
+  matches(candidate: ProviderCandidate, route: StoredRoute | { targeting: StoredRoute["targeting"] }): boolean;
+  prepare?(candidateId: string): Promise<PreparedProviderCandidate>;
 }
 
 /**
@@ -29,13 +51,7 @@ export interface ResolveOptions {
  */
 export interface ProviderAdapter<Id extends ProviderId = ProviderId> {
   readonly descriptor: ProviderDescriptor & { id: Id };
+  readonly candidates?: ProviderCandidateSource;
   resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint>;
   health(signal?: AbortSignal): Promise<ProviderHealth>;
-}
-
-export interface MobileProviderAdapter extends ProviderAdapter<"proxidize"> {
-  readonly providerAccountId: string;
-  listEndpoints(refresh?: boolean, signal?: AbortSignal): Promise<MobileEndpoint[]>;
-  setRotationInterval(endpointId: string, intervalSeconds?: number): Promise<void>;
-  matches(endpoint: MobileEndpoint, route: StoredRoute | { targeting: StoredRoute["targeting"] }): boolean;
 }

@@ -53,7 +53,7 @@ test("managed access-grant credentials, logical sessions, affinity, and route re
 test("managed session routing emits provider-neutral affinity, rebind, degradation, and failback telemetry", () => {
   const state: ResolutionState = {
     attemptsByProvider: new Map(),
-    excludedEndpointIds: new Set(),
+    excludedCandidateIds: new Set(),
     establishmentWaitMs: 0,
     sessionRebindRetries: 0,
     sessionAffinityHit: true,
