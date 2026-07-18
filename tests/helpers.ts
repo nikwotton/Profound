@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { request as httpRequest, createServer, type IncomingHttpHeaders } from "node:http";
-import { connect, createServer as createNetServer, isIP, type Socket } from "node:net";
+import { connect, createServer as createNetServer, isIP } from "node:net";
 import { Schema } from "effect";
 import { startStandaloneApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
@@ -16,6 +16,7 @@ import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
 import type { RouteProfileInput } from "../src/types.js";
 import { InMemoryRouteStore, InMemoryRouteStoreState } from "../src/in-memory-route-store.js";
+import { proxyWithCredentials, readExactly } from "./proxy-client-support.js";
 
 export interface TestTarget {
   url: string;
@@ -50,8 +51,8 @@ export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiRespons
     credential: { ...issued.credential, id: issued.credential.credentialId },
     proxyUsername: issued.credential.username,
     proxyUrls: {
-      http: authenticatedProxyUrl(issued.endpoints.http, issued.credential.username, issued.credential.password),
-      socks5: authenticatedProxyUrl(issued.endpoints.socks5, issued.credential.username, issued.credential.password),
+      http: proxyWithCredentials(issued.endpoints.http, issued.credential.username, issued.credential.password),
+      socks5: proxyWithCredentials(issued.endpoints.socks5, issued.credential.username, issued.credential.password),
     },
   };
 }
@@ -87,13 +88,6 @@ function canonicalTestProfile(input: TestProfileInput): RouteProfileInput {
     ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
     allowConnectionRetry: profile.allowConnectionRetry ?? shouldRetry ?? false,
   };
-}
-
-function authenticatedProxyUrl(endpoint: string, username: string, password: string): string {
-  const url = new URL(endpoint);
-  url.username = username;
-  url.password = password;
-  return url.toString();
 }
 
 export async function startHttpTarget(
@@ -291,50 +285,6 @@ export async function exchangeViaHttpConnect(
   } finally {
     socket.destroy();
   }
-}
-
-async function readExactly(socket: Socket, length: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let remaining = length;
-  while (remaining > 0) {
-    const value: unknown = socket.read(remaining);
-    if (value !== null) {
-      const chunk = expectBufferChunk(value, "proxy response chunk");
-      chunks.push(chunk);
-      remaining -= chunk.length;
-    } else {
-      if (socket.readableEnded || socket.destroyed) throw new Error("Socket ended before the expected response arrived");
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = (): void => {
-          socket.off("readable", onReadable);
-          socket.off("end", onEnd);
-          socket.off("close", onClose);
-          socket.off("error", onError);
-        };
-        const onReadable = (): void => {
-          cleanup();
-          resolve();
-        };
-        const onEnd = (): void => {
-          cleanup();
-          reject(new Error("Socket ended before the expected response arrived"));
-        };
-        const onClose = (): void => {
-          cleanup();
-          reject(new Error("Socket closed before the expected response arrived"));
-        };
-        const onError = (error: Error): void => {
-          cleanup();
-          reject(error);
-        };
-        socket.once("readable", onReadable);
-        socket.once("end", onEnd);
-        socket.once("close", onClose);
-        socket.once("error", onError);
-      });
-    }
-  }
-  return Buffer.concat(chunks, length);
 }
 
 export async function exchangeViaSocks5(

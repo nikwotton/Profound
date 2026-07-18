@@ -6,6 +6,7 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   const root = readFileSync("sst.config.ts", "utf8");
   const aws = readFileSync("infra/providers/aws.ts", "utf8");
   const awsPolicy = readFileSync("infra/providers/aws-policy.ts", "utf8");
+  const awsTelemetry = readFileSync("infra/providers/aws-telemetry-config.ts", "utf8");
 
   assert.doesNotMatch(root, /DEPLOYMENT_PROVIDER|process\.env/);
   assert.match(root, /infra\/providers\/aws\.js/);
@@ -66,21 +67,21 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.doesNotMatch(aws, /iam::aws:policy\/service-role\/AmazonECSInfrastructureRolePolicyForLoadBalancers/);
   assert.match(awsPolicy, /geoIpDatabaseSource: "\.sst\/geoip\/GeoLite2-City\.mmdb"/);
   assert.match(aws, /copyFiles: geoIpBundleConfigured/);
-  assert.match(aws, /otlp_http\/axiom_logs/);
-  assert.match(aws, /otlp_http\/axiom_traces/);
-  assert.match(aws, /otlp_http\/axiom_metrics/);
-  assert.match(aws, /x-axiom-dataset/);
-  assert.match(aws, /x-axiom-metrics-dataset/);
-  assert.match(aws, /sending_queue/);
-  assert.match(aws, /retry_on_failure/);
-  assert.match(aws, /logs\/operational/);
-  assert.match(aws, /logs\/security/);
-  assert.match(aws, /log\.category/);
+  assert.match(awsTelemetry, /otlp_http\/axiom_logs/);
+  assert.match(awsTelemetry, /otlp_http\/axiom_traces/);
+  assert.match(awsTelemetry, /otlp_http\/axiom_metrics/);
+  assert.match(awsTelemetry, /x-axiom-dataset/);
+  assert.match(awsTelemetry, /x-axiom-metrics-dataset/);
+  assert.match(awsTelemetry, /sending_queue/);
+  assert.match(awsTelemetry, /retry_on_failure/);
+  assert.match(awsTelemetry, /logs\/operational/);
+  assert.match(awsTelemetry, /logs\/security/);
+  assert.match(awsTelemetry, /log\.category/);
   assert.ok(
-    aws.split("x-axiom-dataset: \\${env:AXIOM_LOGS_DATASET}").length - 1 >= 3,
+    awsTelemetry.split("x-axiom-dataset: \\${env:AXIOM_LOGS_DATASET}").length - 1 >= 3,
     "operational, security, and general log exporters must share the log dataset",
   );
-  assert.doesNotMatch(aws, /AXIOM_SECURITY_LOGS_DATASET|SECURITY_LOG_RETENTION_DAYS/);
-  assert.match(aws, /endpoint: 0\.0\.0\.0:4318/);
-  assert.doesNotMatch(aws, /sigv4auth|x-aws-log-group|monitoring\.\$\{region\}\.amazonaws\.com/);
+  assert.doesNotMatch(awsTelemetry, /AXIOM_SECURITY_LOGS_DATASET|SECURITY_LOG_RETENTION_DAYS/);
+  assert.match(awsTelemetry, /endpoint: 0\.0\.0\.0:4318/);
+  assert.doesNotMatch(awsTelemetry, /sigv4auth|x-aws-log-group|monitoring\.\$\{region\}\.amazonaws\.com/);
 });

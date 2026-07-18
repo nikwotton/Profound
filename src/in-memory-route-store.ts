@@ -1,6 +1,7 @@
 import { scryptSync, timingSafeEqual } from "node:crypto";
 import { claimCapacityCircuitProbe, recordCapacityCircuitFailure as nextCapacityCircuitFailure } from "./capacity-circuit.js";
 import { NotFoundError } from "./errors.js";
+import { InMemoryUsageRepository } from "./in-memory-usage-repository.js";
 import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
 import type {
   ActiveTunnel,
@@ -65,10 +66,14 @@ export class InMemoryRouteStoreState {
 
 /** Ephemeral persistence for local development and tests. Deployed services use DynamoRouteStore. */
 export class InMemoryRouteStore implements RouteStore {
+  readonly #usage: InMemoryUsageRepository;
+
   constructor(
     readonly state = new InMemoryRouteStoreState(),
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    this.#usage = new InMemoryUsageRepository(state);
+  }
 
   #nowIso(): string {
     return new Date(this.now()).toISOString();
@@ -549,67 +554,45 @@ export class InMemoryRouteStore implements RouteStore {
       .map(copy);
   }
 
-  async recordUsage(record: UsageRecord): Promise<boolean> {
-    if (this.state.usageRecords.has(record.id)) return false;
-    this.state.usageRecords.set(record.id, copy(record));
-    return true;
+  recordUsage(record: UsageRecord): Promise<boolean> {
+    return this.#usage.recordUsage(record);
   }
 
-  async listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
-    return [...this.state.usageRecords.values()]
-      .filter((record) => record.completedAt >= from && record.completedAt < to)
-      .toSorted((left, right) => left.completedAt.localeCompare(right.completedAt))
-      .map(copy);
+  listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
+    return this.#usage.listUsageRecords(from, to);
   }
 
-  async saveUsageRollup(rollup: UsageRollup): Promise<void> {
-    this.state.usageRollups.set(rollup.id, copy(rollup));
+  saveUsageRollup(rollup: UsageRollup): Promise<void> {
+    return this.#usage.saveUsageRollup(rollup);
   }
 
-  async listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]> {
-    return [...this.state.usageRollups.values()]
-      .filter((rollup) => rollup.interval === interval && rollup.periodStartedAt >= from && rollup.periodStartedAt < to)
-      .toSorted((left, right) => left.periodStartedAt.localeCompare(right.periodStartedAt))
-      .map(copy);
+  listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]> {
+    return this.#usage.listUsageRollups(from, to, interval);
   }
 
-  async saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
-    if (this.state.usageReconciliations.has(reconciliation.id)) return false;
-    this.state.usageReconciliations.set(reconciliation.id, copy(reconciliation));
-    return true;
+  saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean> {
+    return this.#usage.saveUsageReconciliation(reconciliation);
   }
 
-  async listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]> {
-    return [...this.state.usageReconciliations.values()]
-      .filter((value) => value.periodStartedAt >= from && value.periodStartedAt < to)
-      .toSorted((left, right) => left.periodStartedAt.localeCompare(right.periodStartedAt))
-      .map(copy);
+  listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]> {
+    return this.#usage.listUsageReconciliations(from, to);
   }
 
-  async saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean> {
-    if (this.state.usageAlertEvents.has(event.id)) return false;
-    this.state.usageAlertEvents.set(event.id, copy(event));
-    return true;
+  saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean> {
+    return this.#usage.saveUsageAlertEvent(event);
   }
 
-  async listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]> {
-    return [...this.state.usageAlertEvents.values()]
-      .filter((event) => event.periodStartedAt >= from && event.periodStartedAt < to)
-      .toSorted((left, right) => left.periodStartedAt.localeCompare(right.periodStartedAt))
-      .map(copy);
+  listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]> {
+    return this.#usage.listUsageAlertEvents(from, to);
   }
 
-  async saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void> {
-    this.state.capacityPressureEvidence.set(evidence.id, copy(evidence));
+  saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void> {
+    return this.#usage.saveCapacityPressureEvidence(evidence);
   }
 
-  async listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]> {
-    return [...this.state.capacityPressureEvidence.values()]
-      .filter((evidence) => evidence.observedAt >= observedAfter)
-      .toSorted((left, right) => left.observedAt.localeCompare(right.observedAt))
-      .map(copy);
+  listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]> {
+    return this.#usage.listCapacityPressureEvidence(observedAfter);
   }
-
   async close(): Promise<void> {
     // State lifetime is controlled explicitly by the test that owns it.
   }
