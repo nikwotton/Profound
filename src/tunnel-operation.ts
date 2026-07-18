@@ -207,7 +207,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
             protocol,
             outcome,
             "proxy.commitment_state": commitmentState,
-            "proxy.failover": activeUpstream.provider !== route.provider,
+            "proxy.failover": resolutionState.primaryProvider !== undefined && activeUpstream.provider !== resolutionState.primaryProvider,
             "proxy.bytes_sent": bytesSent,
             "proxy.bytes_received": bytesReceived,
             "proxy.endpoint.id": activeUpstream.endpointId,
@@ -228,7 +228,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
           ...assignmentLogContext(activeUpstream.assignment),
           dataPlaneProtocol: protocol,
           retryIndex: attemptIndex,
-          failover: activeUpstream.provider !== route.provider,
+          failover: resolutionState.primaryProvider !== undefined && activeUpstream.provider !== resolutionState.primaryProvider,
           targetHost: target.host,
           targetPort: target.port,
           outcome,
@@ -309,7 +309,10 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
           protocol,
           outcome,
           "proxy.commitment_state": commitmentState,
-          "proxy.failover": attemptedProvider !== undefined && attemptedProvider !== route.provider,
+          "proxy.failover":
+            attemptedProvider !== undefined &&
+            resolutionState.primaryProvider !== undefined &&
+            attemptedProvider !== resolutionState.primaryProvider,
           "proxy.bytes_sent": 0,
           "proxy.bytes_received": 0,
         },
@@ -332,7 +335,10 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         outcome,
         commitmentState,
         retryIndex: attemptIndex,
-        failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
+        failover:
+          attemptedProvider !== undefined &&
+          resolutionState.primaryProvider !== undefined &&
+          attemptedProvider !== resolutionState.primaryProvider,
       });
       const completedAt = new Date().toISOString();
       void options.routes

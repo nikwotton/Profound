@@ -18,13 +18,18 @@ export interface ResolveOptions {
   candidateIndex: number;
   signal: AbortSignal;
   excludedEndpointIds?: ReadonlySet<string>;
+  selectedEndpointId?: string;
 }
 
-/** Generic provider boundary used by routing; vendor details stay adapter-local. */
+/**
+ * Normalized provider boundary. `resolve` performs adapter-local candidate
+ * discovery/selection and materializes the upstream proxy connection details;
+ * the gateway owns protocol transport. Health may be provider-backed or
+ * configuration-backed, but vendor APIs and credentials stay adapter-local.
+ */
 export interface ProviderAdapter<Id extends ProviderId = ProviderId> {
   readonly descriptor: ProviderDescriptor & { id: Id };
   resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint>;
-  rotate(route: StoredRoute, signal?: AbortSignal): Promise<void>;
   health(signal?: AbortSignal): Promise<ProviderHealth>;
 }
 

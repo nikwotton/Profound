@@ -185,7 +185,6 @@ export class Socks5ProxyServer {
       operationSpan.setAttributes({
         "proxy.route.id": route.id,
         "proxy.access_grant.id": route.accessGrantId,
-        "proxy.provider.primary": route.provider,
         "enduser.id": route.userId,
         "customer.id": route.customerId,
         "server.address": targetHost,

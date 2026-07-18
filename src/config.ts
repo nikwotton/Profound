@@ -1,8 +1,7 @@
 import { isIP } from "node:net";
 import { isUnknownRecord } from "./decoding.js";
 import { ValidationError } from "./errors.js";
-import { ROUTING_POLICY } from "./routing-policy.js";
-import { TRANSPORT_POLICY } from "./service-policies.js";
+import { TRANSPORT_POLICY, V0_POLICY } from "./service-policies.js";
 
 export interface AppConfig {
   providerMode: "mock" | "live";
@@ -147,17 +146,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     allowedTargetPorts: targetPorts(env["ALLOWED_TARGET_PORTS"]),
     attemptEstablishmentTimeoutMs: integer(
       env["CONNECT_TIMEOUT_MS"],
-      ROUTING_POLICY.attemptEstablishmentTimeoutMs,
+      V0_POLICY.establishmentBudget.attemptTimeoutMs,
       "CONNECT_TIMEOUT_MS",
       1,
-      ROUTING_POLICY.attemptEstablishmentTimeoutMs,
+      V0_POLICY.establishmentBudget.attemptTimeoutMs,
     ),
     operationEstablishmentTimeoutMs: integer(
       env["OPERATION_TIMEOUT_MS"],
-      ROUTING_POLICY.operationEstablishmentTimeoutMs,
+      V0_POLICY.establishmentBudget.operationTimeoutMs,
       "OPERATION_TIMEOUT_MS",
       1,
-      ROUTING_POLICY.operationEstablishmentTimeoutMs,
+      V0_POLICY.establishmentBudget.operationTimeoutMs,
     ),
     streamIdleTimeoutMs: integer(env["STREAM_IDLE_TIMEOUT_MS"], 60_000, "STREAM_IDLE_TIMEOUT_MS", 1, 3_600_000),
     streamBufferBytes: integer(env["STREAM_BUFFER_BYTES"], TRANSPORT_POLICY.streamBufferBytes, "STREAM_BUFFER_BYTES", 1_024, 1_048_576),
@@ -166,10 +165,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     retryDefaults: {
       maxAttempts: integer(
         env["RETRY_MAX_ATTEMPTS"],
-        ROUTING_POLICY.maxProvidersPerOperation * ROUTING_POLICY.maxCandidatesPerProvider,
+        V0_POLICY.establishmentBudget.providersPerOperation * V0_POLICY.establishmentBudget.candidatesPerProvider,
         "RETRY_MAX_ATTEMPTS",
         1,
-        ROUTING_POLICY.maxProvidersPerOperation * ROUTING_POLICY.maxExactCityCandidatesPerProvider,
+        V0_POLICY.establishmentBudget.providersPerOperation * V0_POLICY.establishmentBudget.candidatesPerProvider,
       ),
     },
     proxidizeExactCity,

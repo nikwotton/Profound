@@ -12,6 +12,7 @@ import type {
   HealthAlertEvent,
   HealthAlertState,
   ProviderHealth,
+  ProviderId,
   ProviderInventorySnapshot,
   RouteStatus,
   StoredAccessGrant,
@@ -221,7 +222,7 @@ export function credentialLookupKey(username: string): { pk: string; sk: "LOOKUP
   return { pk: `CREDENTIAL#${username}`, sk: "LOOKUP" };
 }
 
-export function capacityCircuitKey(provider: StoredRoute["provider"], candidateKey: string): { pk: string; sk: "STATE" } {
+export function capacityCircuitKey(provider: ProviderId, candidateKey: string): { pk: string; sk: "STATE" } {
   return { pk: `CAPACITY_CIRCUIT#${provider}#${candidateKey}`, sk: "STATE" };
 }
 

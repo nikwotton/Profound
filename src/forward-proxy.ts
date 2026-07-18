@@ -216,7 +216,6 @@ export class ForwardProxyServer {
       operationSpan.setAttributes({
         "proxy.route.id": route.id,
         "proxy.access_grant.id": route.accessGrantId,
-        "proxy.provider.primary": route.provider,
         "enduser.id": route.userId,
         "customer.id": route.customerId,
       });
@@ -270,7 +269,8 @@ export class ForwardProxyServer {
               protocol: "http",
               outcome,
               "proxy.commitment_state": commitmentState,
-              "proxy.failover": provider !== "unresolved" && provider !== route?.provider,
+              "proxy.failover":
+                provider !== "unresolved" && resolutionState.primaryProvider !== undefined && provider !== resolutionState.primaryProvider,
               "proxy.bytes_sent": bytesSent,
               "proxy.bytes_received": bytesReceived,
               ...(status === undefined ? {} : { "http.response.status_code": status }),
@@ -298,7 +298,8 @@ export class ForwardProxyServer {
             outcome,
             commitmentState,
             retryIndex: attemptIndex,
-            failover: provider !== "unresolved" && provider !== route?.provider,
+            failover:
+              provider !== "unresolved" && resolutionState.primaryProvider !== undefined && provider !== resolutionState.primaryProvider,
             latencyMs: Date.now() - attemptStartedAt,
             bytesSent,
             bytesReceived,

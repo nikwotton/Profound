@@ -107,18 +107,18 @@ Normal tests must stay offline. A new vendor call belongs only in an environment
 
 ### Black-box behavioral E2E suite
 
-`pnpm test:e2e` exercises only the caller-visible contract. It creates route profiles and access grants through the control API, sends traffic through the issued HTTP and SOCKS5 endpoints, replaces profile requirements, rotates and revokes credentials, removes profiles, and verifies that invalidated credentials stop working. Cleanup uses the same public APIs.
+`pnpm test:e2e` exercises only the caller-visible contract. It creates route profiles and access grants through the control API, sends traffic through the issued HTTP and SOCKS5 endpoints, replaces profile requirements, rotates and revokes credentials, removes profiles, and verifies that invalidated credentials stop working. Cleanup uses the same public APIs. With no E2E variables, the runner owns an ephemeral local mock service and controlled loopback recipient; the default path is offline and self-contained.
 
-The suite has no AWS, SSM, SST-stage, datastore, or telemetry dependency. Point it at any compatible mock-mode environment:
+The suite has no AWS, SSM, SST-stage, external datastore, or telemetry dependency. To point it at an already-running compatible environment, set both its control API and a controlled recipient:
 
 ```sh
 E2E_CONTROL_API_URL='http://127.0.0.1:8081' \
 E2E_CONTROL_API_TOKEN='change-me' \
-E2E_TARGET_URL='https://example.com/' \
+E2E_TARGET_URL='http://127.0.0.1:9090/resource' \
 pnpm test:e2e
 ```
 
-`E2E_CONTROL_API_URL`, `E2E_CONTROL_API_TOKEN`, and `E2E_TARGET_URL` default to the local values and `https://example.com/` shown above, so `pnpm test:e2e` needs no extra configuration for the basic smoke path. Override the target with a controlled recipient for stronger assertions. With an HTTP recipient, mock-provider headers additionally verify exit rotation, exact-city routing, and per-connection proxy-slot selection. With HTTPS, the suite respects TLS opacity and verifies lifecycle operations plus successful traffic before and after rotation. `E2E_EXPECTED_TARGET_STATUS` defaults to `200`.
+External mode is enabled only by `E2E_CONTROL_API_URL`, and then `E2E_TARGET_URL` is required. `E2E_CONTROL_API_TOKEN` defaults to `change-me`; `E2E_EXPECTED_TARGET_STATUS` defaults to `200`. With an HTTP recipient, mock-provider headers additionally verify exit rotation, exact-city routing, and per-connection proxy-slot selection. With HTTPS, the suite respects TLS opacity and verifies lifecycle operations plus successful traffic before and after rotation.
 
 ### Controlled recipient
 
@@ -185,7 +185,7 @@ pnpm test:aws
 
 The runner discovers non-secret component metadata from `/sst/profound-proxy-router/ci-manual/deployed-integration`. It verifies the deployed AWS topology, durable persistence and restart behavior, private services, telemetry, migration safety, and environment isolation. Public lifecycle behavior is covered independently by `pnpm test:e2e`.
 
-The disruptive flag forces a proxy ECS replacement to verify DynamoDB-backed credentials and route requirements. Omit it for a non-disruptive run. The suite verifies the fixed v0 30-day telemetry-retention expectation.
+The disruptive flag forces a proxy ECS replacement to verify DynamoDB-backed credentials and route requirements. Omit it for a non-disruptive run. The suite also verifies that external telemetry datasets match the stage's current implementation configuration; telemetry retention is not an authoritative v0 design value.
 
 Remove the stage when finished:
 
@@ -195,7 +195,7 @@ pnpm aws:remove --stage ci-manual
 
 ## OpenAPI workflow
 
-The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.8.0.json) is committed for client generation.
+The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.9.0.json) is committed for client generation.
 
 After any control schema or endpoint change:
 

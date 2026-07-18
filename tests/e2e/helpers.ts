@@ -103,7 +103,7 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
     controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}/grants`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionMode: "stateless" }),
+      body: JSON.stringify({ sessionMode: "none" }),
     }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) {

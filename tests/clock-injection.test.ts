@@ -21,7 +21,7 @@ const profile: RouteProfile = {
 
 test("in-memory persistence uses its injected clock", async () => {
   const store = new InMemoryRouteStore(undefined, () => NOW);
-  const route = await store.create("clock-route", profile, "bright_data");
+  const route = await store.create("clock-route", profile);
   assert.equal(route.createdAt, NOW_ISO);
   assert.equal(route.updatedAt, NOW_ISO);
 

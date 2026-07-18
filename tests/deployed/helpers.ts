@@ -350,7 +350,7 @@ export async function controlRequest(path: string, init: RequestInit = {}, token
 
 export async function createRoute(
   profile: LegacyTestProfileInput,
-  sessionMode: "managed" | "stateless" = "stateless",
+  sessionMode: "managed" | "none" = "none",
 ): Promise<CreatedRouteResponse> {
   const response = await controlRequest("/v1/profiles", {
     method: "POST",

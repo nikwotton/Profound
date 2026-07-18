@@ -204,7 +204,7 @@ async function controlRequest(application: RunningLocalApplication, path: string
 async function issueGrant(
   application: RunningLocalApplication,
   profile: Record<string, unknown>,
-  sessionMode: "managed" | "stateless",
+  sessionMode: "managed" | "none",
   jobId: string,
   writeLine: WriteLine,
 ): Promise<IssuedGrant> {
@@ -492,7 +492,7 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
         geography: { countryCode: "US" },
         allowConnectionRetry: true,
       },
-      "stateless",
+      "none",
       "job-public-catalog",
       writeLine,
     );

@@ -100,7 +100,7 @@ V0 supports authenticated SOCKS5 TCP `CONNECT`; it rejects unauthenticated negot
 
 ## Route profile contract
 
-The committed [OpenAPI contract](../openapi/profound-control-api.v0.8.0.json) is authoritative.
+The committed [OpenAPI contract](../openapi/profound-control-api.v0.9.0.json) is authoritative.
 
 | Field                   | Required    | Behavior                                                                                                       |
 | ----------------------- | ----------- | -------------------------------------------------------------------------------------------------------------- |
@@ -151,11 +151,12 @@ Provider selection and provider-specific rotation are private service implementa
 Within the applicable provider-preference tier, v0 selects the least-loaded eligible candidate using a stable identifier as the tie-breaker. A candidate at its soft capacity limit remains an overflow option rather than being rejected. Managed sessions prefer device-backed providers and remain within that class through soft saturation. Stateless traffic prefers residential providers, but residential soft saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow. The weighted reliability, headroom, performance, cost, and stability score is emitted only as a shadow roadmap diagnostic; it does not control v0 selection.
 
 - `sessionMode` controls provider-class preference; target authentication never does. Managed sessions prefer device-backed providers and stateless traffic prefers residential providers.
-- `sessionMode: "stateless"` has no cross-connection affinity. Managed sessions first try their eligible recorded binding and preserve it through soft saturation; new sessions and stateless connections use normal least-loaded placement.
+- `sessionMode: "none"` has no cross-connection affinity. Managed sessions first try their eligible recorded binding and preserve it through soft saturation; new sessions and no-session connections use normal least-loaded placement.
 - A managed binding may rebind atomically after ineligibility, effective hard capacity, an open circuit, a pre-commit failure, or an incompatible profile update. Concurrent connections converge on the winning binding instead of deliberately splitting identities.
-- A managed cross-class fallback remains marked degraded. The next real connection probes the preferred class only after five minutes of continuous health and 30 seconds with no active connection; success rebinds atomically and failure restarts stabilization.
+- A managed cross-class fallback remains marked degraded. A later real connection may probe the preferred class after policy-controlled health-stability and quiescence windows; success rebinds atomically and failure restarts stabilization.
 - Bright Data remains eligible for managed sessions when it satisfies all constraints; Proxidize remains eligible for stateless traffic and subject to inventory and capacity.
-- Repeated proxy-controlled pre-commit establishment/capacity failures and provider-reported hard limits open a shared capacity circuit. The initial cooldown is 60 seconds, repeated openings back off, and one half-open probe closes the circuit after success.
+- Repeated proxy-controlled pre-commit establishment/capacity failures and provider-reported hard limits may open a shared capacity circuit. Cooldown, backoff, and half-open probing are implementation policy rather than v0 API guarantees.
+- The authoritative v0 establishment budget considers at most two candidates per provider and three providers per logical operation. Each attempt has 10 seconds and the operation has 30 seconds overall.
 - `allowConnectionRetry` only permits another upstream establishment attempt before commitment. Plain HTTP commits when its first application-request byte is written upstream; CONNECT and SOCKS5 commit when tunnel establishment is acknowledged to the caller or a tunneled byte is relayed.
 - Target HTTP responses, provider-authentication failures, and failures after commit are not hidden by failover.
 - No request ever falls back to the router's direct Internet connection.

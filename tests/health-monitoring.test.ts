@@ -17,7 +17,7 @@ import { SignedCanaryProbe } from "../src/signed-canary-probe.js";
 import { v0TraceSampler } from "../src/telemetry.js";
 import { createRoute, startTestApp } from "./helpers.js";
 
-test("v0 trace sampling records every trace", () => {
+test("the current experimental observability default records every trace", () => {
   const result = v0TraceSampler.shouldSample();
   assert.equal(result.decision, SamplingDecision.RECORD_AND_SAMPLED);
 });

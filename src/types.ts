@@ -27,6 +27,7 @@ export interface RetryPolicy {
 }
 
 export type SessionMode = "managed" | "stateless";
+export type PublicSessionMode = "managed" | "none";
 
 export interface RouteProfileInput {
   customerId: string;
@@ -57,18 +58,13 @@ export interface RouteProfile {
   retryPolicy: RetryPolicy;
 }
 
-export type RouteStatus = "ready" | "rotating" | "failed" | "revoked";
+export type RouteStatus = "ready" | "revoked";
 
 export interface StoredRoute extends RouteProfile {
   id: string;
-  provider: ProviderId;
-  endpointId?: string;
   status: RouteStatus;
   /** Set only by an explicit emergency revocation; routine revocation leaves active connections alone. */
   terminateActive: boolean;
-  lastError?: string;
-  rotationEpoch: number;
-  lastRotationAt: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,7 +91,7 @@ export interface StoredAccessGrantCredential {
 export interface PublicAccessGrantCredential {
   credentialId: string;
   username: string;
-  sessionMode: SessionMode;
+  sessionMode: PublicSessionMode;
   sessionId?: string;
   status: PublicAccessGrantCredentialStatus;
   createdAt: string;

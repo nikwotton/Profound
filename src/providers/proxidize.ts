@@ -220,7 +220,8 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
 
   async resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint> {
     const endpoints = await this.listEndpoints(true, options.signal);
-    const assigned = route.endpointId === undefined ? undefined : endpoints.find((candidate) => candidate.id === route.endpointId);
+    const assigned =
+      options.selectedEndpointId === undefined ? undefined : endpoints.find((candidate) => candidate.id === options.selectedEndpointId);
     const endpoint =
       assigned ??
       endpoints.find((candidate) => candidate.healthy && !options.excludedEndpointIds?.has(candidate.id) && this.matches(candidate, route));
@@ -258,21 +259,6 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
             : {}),
       },
     };
-  }
-
-  async rotate(route: StoredRoute, signal?: AbortSignal): Promise<void> {
-    if (route.endpointId === undefined) {
-      throw providerError(new ProviderUnavailableError("Mobile route has no assigned endpoint"));
-    }
-    const endpoint = (await this.listEndpoints(true, signal)).find((candidate) => candidate.id === route.endpointId);
-    if (endpoint === undefined || !endpoint.healthy) {
-      throw providerError(new ProviderUnavailableError("The mobile route's assigned device is unhealthy"));
-    }
-    await this.#request(
-      `/api/v1/perproxy/rotate-url/${encodeURIComponent(endpoint.publicKey)}/`,
-      signal === undefined ? undefined : { signal },
-    );
-    this.#cacheExpiresAt = 0;
   }
 
   async setRotationInterval(endpointId: string, intervalSeconds?: number): Promise<void> {

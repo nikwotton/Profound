@@ -21,8 +21,8 @@ import type { Logger } from "./logger.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import { preferredProviderClass, providerCompatible, selectCompatibleProvider } from "./provider-selection.js";
 import { MAX_PEERS_PER_PROVIDER, MAX_VERIFICATION_CANDIDATES_PER_PROVIDER, RoutingCandidateRanker } from "./routing-candidate-ranker.js";
-import { RotationCoordinator, type RotationContext } from "./route-rotation.js";
 import { ROUTING_POLICY, type RoutingScoreComponents, type ScoredRoutingCandidate } from "./routing-policy.js";
+import { V0_POLICY } from "./service-policies.js";
 import { toPublicRoute, type RoutingStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import type {
@@ -57,6 +57,7 @@ export interface ResolutionState {
   readonly excludedEndpointIds: Set<string>;
   previousCandidateId?: string;
   previousProvider?: ProviderId;
+  primaryProvider?: ProviderId;
   capacityDrivenFallback?: boolean;
   capacityPressureProvider?: ProviderId;
   capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
@@ -145,9 +146,12 @@ export interface RouteServiceEffects {
   closeLogicalSession(grantId: string, sessionId: string, principalId: string, force?: boolean): Effect.Effect<void, RouteServiceError>;
 }
 
-const MAX_PROVIDERS_PER_OPERATION = 3;
+const MAX_PROVIDERS_PER_OPERATION = V0_POLICY.establishmentBudget.providersPerOperation;
 
-export type ResolutionContext = RotationContext;
+export interface ResolutionContext {
+  logicalOperationId: string;
+  signal: AbortSignal;
+}
 
 function canonicalCity(value: string): string {
   return value
@@ -160,7 +164,6 @@ function profileBindingFingerprint(route: StoredRoute): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        provider: route.provider,
         providerOverride: route.providerOverride ?? null,
         allowedProtocols: [...route.allowedProtocols].sort(),
         targeting: {
@@ -194,12 +197,10 @@ export class RouteService {
   private readonly store: RoutingStore;
   private readonly proxidize: MobileProviderAdapter;
   private readonly logger: Logger;
-  private readonly telemetry: Telemetry;
   private readonly retryDefaults: RetryPolicy;
   private readonly deploymentId: string;
   private readonly now: () => number;
   private readonly accessGrants: AccessGrantService;
-  private readonly rotations: RotationCoordinator;
   private readonly connections: ActiveConnectionTracker;
   private readonly candidateRanker: RoutingCandidateRanker;
 
@@ -207,7 +208,6 @@ export class RouteService {
     this.store = dependencies.store;
     this.proxidize = dependencies.proxidize;
     this.logger = dependencies.logger;
-    this.telemetry = dependencies.telemetry;
     this.retryDefaults = dependencies.retryDefaults;
     this.deploymentId = dependencies.deploymentId;
     this.now = dependencies.now ?? Date.now;
@@ -229,14 +229,6 @@ export class RouteService {
       },
       this.logger,
     );
-    this.rotations = new RotationCoordinator({
-      store: this.store,
-      providers: this.#providers,
-      proxidize: this.proxidize,
-      logger: this.logger,
-      telemetry: this.telemetry,
-      now: this.now,
-    });
     const attempt = <A>(operation: () => Promise<A>): Effect.Effect<A, RouteServiceError> =>
       Effect.tryPromise({
         try: operation,
@@ -305,10 +297,8 @@ export class RouteService {
     grant: { id: string; principalId: string; jobId?: string },
     credential: { id: string; sessionMode: SessionMode; sessionId?: string },
   ): AuthenticatedRoute {
-    const { endpointId: _routeEndpointId, ...profile } = route;
-    void _routeEndpointId;
     return {
-      ...profile,
+      ...route,
       userId: grant.principalId,
       accessGrantId: grant.id,
       credentialId: credential.id,
@@ -464,13 +454,12 @@ export class RouteService {
       if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
       throw new ProviderUnavailableError("No configured provider is compatible with the proxy policy");
     }
-    const provider = providerAdapter.descriptor.id;
-    const stored = await this.store.create(id, profile, provider);
+    const stored = await this.store.create(id, profile);
     this.logger.info("Route created", {
       routeId: id,
       userId,
       customerId: profile.customerId,
-      provider,
+      eligibleProvider: providerAdapter.descriptor.id,
       ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
     });
     return toPublicRoute(stored);
@@ -479,18 +468,18 @@ export class RouteService {
   async update(id: string, input: unknown, userId: string): Promise<PublicRoute> {
     const existing = await this.#ownedRoute(id, userId);
     const profile = validateRouteProfile(input, existing.userId, this.retryDefaults);
-    const provider = selectCompatibleProvider(this.#providers.values(), profile, existing.provider)?.descriptor.id;
+    const provider = selectCompatibleProvider(this.#providers.values(), profile)?.descriptor.id;
     if (provider === undefined) {
       if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
       throw new ProviderUnavailableError("No configured provider is compatible with the profile policy");
     }
 
-    const updated = await this.store.update(id, profile, provider);
+    const updated = await this.store.update(id, profile);
     this.logger.info("Route profile updated", {
       routeId: id,
       customerId: profile.customerId,
       userId: existing.userId,
-      provider,
+      eligibleProvider: provider,
       ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
     });
     return toPublicRoute(updated);
@@ -662,13 +651,8 @@ export class RouteService {
     const grant = await this.store.getAccessGrant(route.accessGrantId);
     const credential = grant.credentials.find((candidate) => candidate.id === route.credentialId);
     if (credential === undefined) throw new AuthenticationError();
-    let current = this.#routeForCredential(await this.store.get(route.id), grant, credential);
+    const current = this.#routeForCredential(await this.store.get(route.id), grant, credential);
     if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
-    current = this.#routeForCredential(
-      await this.rotations.applyScheduled(current, context),
-      await this.store.getAccessGrant(route.accessGrantId),
-      credential,
-    );
     this.assertProtocolAllowed(current, protocol);
     const recentTo = new Date(this.now()).toISOString();
     const recentFrom = new Date(this.now() - ROUTING_POLICY.evidenceWindowMs).toISOString();
@@ -777,6 +761,7 @@ export class RouteService {
       throw new ProviderUnavailableError("No compatible provider is available");
     }
     for (const provider of compatibleProviders) {
+      state.primaryProvider ??= provider.descriptor.id;
       const attempts = state.attemptsByProvider.get(provider.descriptor.id) ?? 0;
       const attemptLimit =
         current.targeting.city !== undefined && provider.descriptor.capabilities.exactCity === "verifiable"
@@ -790,7 +775,6 @@ export class RouteService {
         continue;
       }
       state.attemptsByProvider.set(provider.descriptor.id, attempts + 1);
-      let providerRoute: StoredRoute = current;
       let slotSelection:
         | {
             endpointId: string;
@@ -810,7 +794,6 @@ export class RouteService {
         } finally {
           state.establishmentWaitMs += Math.max(0, this.now() - selectionStartedAt);
         }
-        providerRoute = { ...current, endpointId: slotSelection.endpointId };
         if (slotSelection.capacityPressure) {
           this.logger.info("Proxy-slot selection exceeded the soft capacity limit", {
             logicalOperationId: context.logicalOperationId,
@@ -825,7 +808,7 @@ export class RouteService {
       }
       let endpoint: UpstreamEndpoint;
       try {
-        endpoint = await provider.resolve(providerRoute, {
+        endpoint = await provider.resolve(current, {
           dataPlaneProtocol: protocol,
           target,
           logicalOperationId: context.logicalOperationId,
@@ -834,6 +817,7 @@ export class RouteService {
           candidateIndex: attempts,
           signal: context.signal,
           excludedEndpointIds: state.excludedEndpointIds,
+          ...(slotSelection === undefined ? {} : { selectedEndpointId: slotSelection.endpointId }),
         });
       } catch (error) {
         if (slotSelection !== undefined) await this.store.removeActiveTunnel(slotSelection.activeLoadClaimId).catch(() => undefined);
@@ -1030,9 +1014,6 @@ export class RouteService {
     });
   }
 
-  async rotate(id: string, principalId: string): Promise<PublicRoute> {
-    return this.rotations.request(id, principalId);
-  }
   async refreshHealth(): Promise<ProviderHealth[]> {
     const health = await Promise.all([...this.#providers.values()].map((provider) => provider.health()));
     await Promise.all(health.map((item) => this.store.saveHealth(item)));

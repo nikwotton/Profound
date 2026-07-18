@@ -17,8 +17,8 @@ import type {
   HealthAlertState,
   ProviderHealth,
   ProviderInventorySnapshot,
+  ProviderId,
   RouteProfile,
-  RouteStatus,
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredLogicalSession,
@@ -39,7 +39,7 @@ function credentialUsable(credential: StoredAccessGrantCredential, nowMs: number
   );
 }
 
-function circuitKey(provider: StoredRoute["provider"], candidateKey: string): string {
+function circuitKey(provider: ProviderId, candidateKey: string): string {
   return `${provider}:${candidateKey}`;
 }
 
@@ -79,18 +79,14 @@ export class InMemoryRouteStore implements RouteStore {
     return new Date(this.now()).toISOString();
   }
 
-  async create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute> {
+  async create(id: string, profile: RouteProfile): Promise<StoredRoute> {
     if (this.state.routes.has(id)) throw new Error("duplicate_route");
     const now = this.#nowIso();
     const route: StoredRoute = {
       ...copy(profile),
       id,
-      provider,
-      ...(endpointId === undefined ? {} : { endpointId }),
       status: "ready",
       terminateActive: false,
-      rotationEpoch: 0,
-      lastRotationAt: now,
       createdAt: now,
       updatedAt: now,
     };
@@ -98,17 +94,14 @@ export class InMemoryRouteStore implements RouteStore {
     return copy(route);
   }
 
-  async update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute> {
+  async update(id: string, profile: RouteProfile): Promise<StoredRoute> {
     const previous = await this.get(id);
     const route: StoredRoute = {
       ...previous,
       ...copy(profile),
-      provider,
       status: "ready",
       updatedAt: this.#nowIso(),
     };
-    delete route.endpointId;
-    delete route.lastError;
     this.state.routes.set(id, route);
     return copy(route);
   }
@@ -362,11 +355,7 @@ export class InMemoryRouteStore implements RouteStore {
       .map(copy);
   }
 
-  async getCapacityCircuit(
-    provider: StoredRoute["provider"],
-    candidateKey: string,
-    now = this.#nowIso(),
-  ): Promise<CapacityCircuitState | undefined> {
+  async getCapacityCircuit(provider: ProviderId, candidateKey: string, now = this.#nowIso()): Promise<CapacityCircuitState | undefined> {
     const key = circuitKey(provider, candidateKey);
     const state = this.state.circuits.get(key);
     if (state !== undefined && state.expiresAt <= now) {
@@ -377,7 +366,7 @@ export class InMemoryRouteStore implements RouteStore {
   }
 
   async claimCapacityCircuit(
-    provider: StoredRoute["provider"],
+    provider: ProviderId,
     candidateKey: string,
     now: string,
   ): Promise<{ allowed: boolean; state?: CapacityCircuitState }> {
@@ -389,7 +378,7 @@ export class InMemoryRouteStore implements RouteStore {
   }
 
   async recordCapacityCircuitFailure(
-    provider: StoredRoute["provider"],
+    provider: ProviderId,
     candidateKey: string,
     reason: CapacityCircuitReason,
     now: string,
@@ -400,7 +389,7 @@ export class InMemoryRouteStore implements RouteStore {
     return copy(state);
   }
 
-  async resetCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string): Promise<void> {
+  async resetCapacityCircuit(provider: ProviderId, candidateKey: string): Promise<void> {
     this.state.circuits.delete(circuitKey(provider, candidateKey));
   }
 
@@ -422,53 +411,6 @@ export class InMemoryRouteStore implements RouteStore {
 
   async shouldTerminateDeployment(deploymentId: string): Promise<boolean> {
     return this.state.drains.get(deploymentId)?.terminateRemaining === true;
-  }
-
-  async setEndpoint(id: string, endpointId?: string): Promise<StoredRoute> {
-    const route = this.state.routes.get(id);
-    if (route === undefined || route.status === "revoked") throw new NotFoundError();
-    if (endpointId === undefined) delete route.endpointId;
-    else route.endpointId = endpointId;
-    route.updatedAt = this.#nowIso();
-    return copy(route);
-  }
-
-  async setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute> {
-    const route = this.state.routes.get(id);
-    if (route === undefined || route.status === "revoked") throw new NotFoundError();
-    route.status = status;
-    if (lastError === undefined) delete route.lastError;
-    else route.lastError = lastError;
-    route.updatedAt = this.#nowIso();
-    return copy(route);
-  }
-
-  async claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined> {
-    const route = this.state.routes.get(id);
-    if (route === undefined || route.status !== "ready" || route.lastRotationAt > dueBefore) return undefined;
-    route.status = "rotating";
-    delete route.lastError;
-    route.updatedAt = this.#nowIso();
-    return copy(route);
-  }
-
-  async completeRotation(id: string): Promise<StoredRoute> {
-    const route = this.state.routes.get(id);
-    if (route === undefined || route.status !== "rotating") throw new NotFoundError();
-    const now = this.#nowIso();
-    route.status = "ready";
-    delete route.lastError;
-    route.lastRotationAt = now;
-    route.updatedAt = now;
-    return copy(route);
-  }
-
-  async incrementRotationEpoch(id: string): Promise<StoredRoute> {
-    const route = this.state.routes.get(id);
-    if (route === undefined || route.status === "revoked") throw new NotFoundError();
-    route.rotationEpoch += 1;
-    route.updatedAt = this.#nowIso();
-    return copy(route);
   }
 
   async saveHealth(health: ProviderHealth): Promise<void> {

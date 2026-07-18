@@ -105,7 +105,7 @@ test("concurrent proxy-slot claims atomically include earlier claims in candidat
 test("logical-session affinity rebinding uses compare-and-swap so concurrent writers cannot split identity", async () => {
   const store = new InMemoryRouteStore();
   try {
-    await store.create("route", profile, "proxidize");
+    await store.create("route", profile);
     await store.createAccessGrant("grant", "route", "user", "credential", "token", "managed", "session");
     await store.createLogicalSession({
       id: "session",
@@ -182,11 +182,11 @@ test("shared capacity circuits open, back off, half-open exactly one probe, and 
 test("routine revocation preserves active work and emergency revocation raises the kill switch", async () => {
   const store = new InMemoryRouteStore();
   try {
-    await store.create("routine", profile, "proxidize");
+    await store.create("routine", profile);
     await store.revoke("routine", false);
     assert.equal(await store.shouldTerminateActive("routine"), false);
 
-    await store.create("emergency", profile, "proxidize");
+    await store.create("emergency", profile);
     await store.revoke("emergency", true);
     assert.equal(await store.shouldTerminateActive("emergency"), true);
 
@@ -200,7 +200,7 @@ test("routine revocation preserves active work and emergency revocation raises t
 test("route profiles contain no credential verifier and access grants rotate and revoke independently", async () => {
   const store = new InMemoryRouteStore();
   try {
-    const route = await store.create("shared-route", profile, "proxidize");
+    const route = await store.create("shared-route", profile);
     assert.doesNotMatch(JSON.stringify(route), /tokenSalt|tokenHash/);
     const first = await store.createAccessGrant("grant-one", route.id, "user-one", "credential-one", "first-token", "stateless");
     const second = await store.createAccessGrant("grant-two", route.id, "user-two", "credential-two", "second-token", "stateless");

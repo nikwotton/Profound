@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHxufQkYM3pOsBB4xcbFLpsxBElB4_zkt9aXWHvHhOOTXMxcxWtpKeRd5MZs5MygnOXnn_QEGV7fw1QgYQf85mk13op1oDZ1sVu4Fw4";
+  "ALtnJHyFq-4oFDTRX2n2ZWVGRloBWdjqBee6-H0XNDOfq-q-n7yz6087V5ZdlKd5kV0Qtj3r-xBQ7-IAl7mLhdoMtF7m5MfcRAiSqL07dDo";
 
 export interface SpecCoverage {
   id: string;
@@ -62,7 +62,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.1.explicit-boundaries",
     section: 3,
     requirement:
-      "Control plane, gateways, routing, adapters, and operational-plane responsibilities communicate through versioned proxy, OpenAPI, adapter, read-model, and OTLP contracts rather than private implementation details",
+      "Control, gateway, routing, adapter, accounting, health, analytics, and notification responsibilities retain explicit ownership across versioned proxy, OpenAPI, adapter, durable-schema, and OTLP boundaries even when deployment or physical storage is shared",
     deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
     offline: [
       "versioned OpenAPI artifact stays synchronized with Effect schemas and excludes data-plane protocols",
@@ -70,10 +70,22 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     ],
   },
   {
+    id: "3.2.state-ownership",
+    section: 3,
+    requirement:
+      "Durable profiles own routing intent without a chosen provider, managed-session bindings own last-known candidate affinity, retry execution stays operation-scoped, and accounting owns immutable attempt records",
+    deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
+    offline: [
+      "profile updates apply to new connections without replacing access-grant credentials or exposing providers",
+      "managed-session concurrency converges on one binding and ignores soft saturation after placement",
+      "HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage records",
+    ],
+  },
+  {
     id: "3.2.control-contract",
     section: 3,
     requirement:
-      "Effect schemas generate the authoritative OpenAPI for profile, grant, managed-session, stateless-credential, and credential lifecycle operations",
+      "Effect schemas generate the authoritative OpenAPI for profile, grant, managed-session, no-session credential, and credential lifecycle operations",
     deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: [
       "Effect generates a complete secured OpenAPI contract from the control API",
@@ -96,7 +108,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.2.grant-session-model",
     section: 3,
     requirement:
-      "Grant creation requires managed or stateless, supports immutable job attribution, creates best-effort managed affinity or an explicitly stateless credential, and never owns caller application-session state",
+      "Grant creation requires managed or none, supports immutable job attribution, creates best-effort managed affinity or an explicitly no-session credential, and never owns caller application-session state",
     deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
     offline: [
       "logical-session APIs require an explicit mode and support rotation, close, and force-close lifecycle",
@@ -178,11 +190,11 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.4.bounded-failover",
     section: 3,
     requirement:
-      "Pre-commit failover exhausts same-provider candidates before compatible providers and classes while preserving hard geography and the provisional two-candidate, three-provider, ten-second, thirty-second budget",
+      "Pre-commit failover exhausts same-provider candidates before compatible providers and classes while preserving hard geography and the two-candidate, three-provider, ten-second, thirty-second v0 budget",
     deployed: ["deployed Proxidize connections share slot capacity and preserve the exact city"],
     offline: [
       "managed CONNECT failover preserves the route's exact city",
-      "candidate establishment enforces per-attempt and overall deadlines without backoff",
+      "candidate establishment enforces per-attempt and overall deadlines",
       "stateless CONNECT exhausts residential peers without an incompatible device fallback",
     ],
   },
@@ -195,6 +207,17 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [
       "managed sessions rebind opaque provider affinity after an incompatible profile update",
       "active proxy-slot loads are shared across callers, durable, and released with each connection",
+    ],
+  },
+  {
+    id: "3.4.provider-contract",
+    section: 3,
+    requirement:
+      "The provider boundary requires candidate discovery and proxy-connection materialization while normalized health, capacity, pricing, usage, assignment evidence, and provisioning capabilities may be provider-backed or configuration-backed",
+    deployed: [],
+    offline: [
+      "every adapter satisfies the normalized provider capability contract and its pinned specification",
+      "provider contracts are pinned and checked for freshness",
     ],
   },
   {
@@ -363,18 +386,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     deferred: true,
   },
   {
-    id: "5.1.provider-extensibility",
-    section: 5,
-    requirement:
-      "The v0 adapter contract declares normalized protocol, geography, continuity, assignment, capacity, DNS, safety, pricing, usage, health, and optional provisioning capabilities for future providers",
-    deployed: [],
-    offline: [
-      "every adapter satisfies the normalized provider capability contract and its pinned specification",
-      "provider contracts are pinned and checked for freshness",
-    ],
-  },
-  {
-    id: "5.2.foundational-unknowns",
+    id: "5.1.foundational-unknowns",
     section: 5,
     requirement:
       "Workload, SLO, freshness, accounting-guarantee, and deployment-footprint values remain explicitly unknown until evidence and stakeholder expectations justify architecture commitments",
@@ -383,25 +395,15 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     deferred: true,
   },
   {
-    id: "5.3.v0-policy-hypotheses",
+    id: "5.2.v0-policy",
     section: 5,
     requirement:
-      "Typed versioned policies centralize provisional 30-day credential lifecycle, two-candidate and three-provider establishment budget, full initial trace export, 30-day log retention, and five-minute degraded alert delay",
+      "One typed versioned v0 policy centralizes only the 30-day credential lifecycle and the two-candidate, three-provider, ten-second, thirty-second establishment budget; all other tunable values remain unanswered as design commitments",
     deployed: [],
     offline: [
       "credential metadata enforces expiration and overlap revocation deadlines without exposing verifiers",
-      "candidate establishment enforces per-attempt and overall deadlines without backoff",
-      "v0 trace sampling records every trace",
-      "provisional operational values are typed, versioned policies",
+      "candidate establishment enforces per-attempt and overall deadlines",
+      "authoritative v0 values live in one typed, versioned policy",
     ],
-  },
-  {
-    id: "5.3.roadmap-policy-hypotheses",
-    section: 5,
-    requirement:
-      "Scoring, verification, reconciliation, and mobile-capacity numeric hypotheses remain typed roadmap inputs rather than v0 release behavior",
-    deployed: [],
-    offline: [],
-    deferred: true,
   },
 ];

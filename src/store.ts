@@ -1,5 +1,5 @@
 import { randomBytes, scryptSync } from "node:crypto";
-import { CREDENTIAL_LIFECYCLE_POLICY } from "./service-policies.js";
+import { V0_POLICY } from "./service-policies.js";
 import type {
   ActiveTunnel,
   AuthenticatedAccessGrant,
@@ -13,12 +13,12 @@ import type {
   HealthAlertEvent,
   HealthAlertState,
   ProviderHealth,
+  ProviderId,
   ProviderInventorySnapshot,
   PublicAccessGrant,
   PublicLogicalSession,
   PublicRoute,
   RouteProfile,
-  RouteStatus,
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredLogicalSession,
@@ -29,9 +29,9 @@ import type {
   UsageRollup,
 } from "./types.js";
 
-export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = CREDENTIAL_LIFECYCLE_POLICY.lifetimeMs;
-export const ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS = CREDENTIAL_LIFECYCLE_POLICY.renewalWindowMs;
-export const ACCESS_GRANT_CREDENTIAL_OVERLAP_MS = CREDENTIAL_LIFECYCLE_POLICY.overlapMs;
+export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = V0_POLICY.credentialLifecycle.lifetimeMs;
+export const ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS = V0_POLICY.credentialLifecycle.renewalWindowMs;
+export const ACCESS_GRANT_CREDENTIAL_OVERLAP_MS = V0_POLICY.credentialLifecycle.overlapMs;
 
 function credentialDates(createdAt: string): { renewalDueAt: string; expiresAt: string } {
   const createdAtMs = Date.parse(createdAt);
@@ -74,7 +74,7 @@ export function toPublicAccessGrant(grant: StoredAccessGrant, nowMs = Date.now()
     credentials: grant.credentials.map((credential) => ({
       credentialId: credential.id,
       username: credentialUsername(credential.id),
-      sessionMode: credential.sessionMode,
+      sessionMode: credential.sessionMode === "managed" ? "managed" : "none",
       ...(credential.sessionId === undefined ? {} : { sessionId: credential.sessionId }),
       status:
         grant.status === "revoked" ||
@@ -124,14 +124,12 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
 }
 
 export interface RouteRepository {
-  create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute>;
-  update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute>;
+  create(id: string, profile: RouteProfile): Promise<StoredRoute>;
+  update(id: string, profile: RouteProfile): Promise<StoredRoute>;
   get(id: string, includeRevoked?: boolean): Promise<StoredRoute>;
   list(): Promise<StoredRoute[]>;
   revoke(id: string, terminateActive?: boolean): Promise<void>;
   shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean>;
-  setEndpoint(id: string, endpointId?: string): Promise<StoredRoute>;
-  setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute>;
 }
 
 export interface AccessGrantRepository {
@@ -189,19 +187,19 @@ export interface ActiveTunnelRepository {
 }
 
 export interface CapacityCircuitRepository {
-  getCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string, now?: string): Promise<CapacityCircuitState | undefined>;
+  getCapacityCircuit(provider: ProviderId, candidateKey: string, now?: string): Promise<CapacityCircuitState | undefined>;
   claimCapacityCircuit(
-    provider: StoredRoute["provider"],
+    provider: ProviderId,
     candidateKey: string,
     now: string,
   ): Promise<{ allowed: boolean; state?: CapacityCircuitState }>;
   recordCapacityCircuitFailure(
-    provider: StoredRoute["provider"],
+    provider: ProviderId,
     candidateKey: string,
     reason: CapacityCircuitReason,
     now: string,
   ): Promise<CapacityCircuitState>;
-  resetCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string): Promise<void>;
+  resetCapacityCircuit(provider: ProviderId, candidateKey: string): Promise<void>;
   listCapacityCircuits(now?: string): Promise<CapacityCircuitState[]>;
 }
 
@@ -209,12 +207,6 @@ export interface DeploymentRepository {
   getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined>;
   saveDeploymentDrain(state: DeploymentDrainState): Promise<void>;
   shouldTerminateDeployment(deploymentId: string): Promise<boolean>;
-}
-
-export interface RotationRepository {
-  claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined>;
-  completeRotation(id: string): Promise<StoredRoute>;
-  incrementRotationEpoch(id: string): Promise<StoredRoute>;
 }
 
 export interface ProviderHealthRepository {
@@ -260,7 +252,6 @@ export interface RouteStore
     ActiveTunnelRepository,
     CapacityCircuitRepository,
     DeploymentRepository,
-    RotationRepository,
     ProviderHealthRepository,
     CapabilityHealthRepository,
     HealthAlertRepository,
@@ -276,6 +267,5 @@ export interface RoutingStore
     ActiveTunnelRepository,
     CapacityCircuitRepository,
     DeploymentRepository,
-    RotationRepository,
     ProviderHealthRepository,
     UsageRepository {}

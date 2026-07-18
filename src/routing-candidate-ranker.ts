@@ -4,12 +4,13 @@ import type { Logger } from "./logger.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import { preferredProviderClass } from "./provider-selection.js";
 import { historicalRoutingEvidence, ROUTING_POLICY, scoreRoutingCandidate, type ScoredRoutingCandidate } from "./routing-policy.js";
+import { V0_POLICY } from "./service-policies.js";
 import type { ResolutionState } from "./route-service.js";
 import type { RoutingStore } from "./store.js";
 import type { ActiveTunnel, AuthenticatedRoute, ProviderId, UsageRecord } from "./types.js";
 
-export const MAX_PEERS_PER_PROVIDER = 2;
-export const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = 3;
+export const MAX_PEERS_PER_PROVIDER = V0_POLICY.establishmentBudget.candidatesPerProvider;
+export const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = V0_POLICY.establishmentBudget.candidatesPerProvider;
 const SLOT_MONTH_SECONDS = (365.25 / 12) * 24 * 60 * 60;
 
 export class RoutingCandidateRanker {
@@ -126,7 +127,17 @@ export class RoutingCandidateRanker {
         });
       }
     }
+    const byLoadThenId = (
+      left: ScoredRoutingCandidate<ProviderAdapter> & { activeConnections: number },
+      right: ScoredRoutingCandidate<ProviderAdapter> & { activeConnections: number },
+    ): number =>
+      left.activeConnections - right.activeConnections || left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id);
     const previous = scored.find(({ candidate }) => candidate.descriptor.id === state.previousProvider);
+    const baseline =
+      previous ??
+      [...scored].filter(({ candidate }) => candidate.descriptor.providerClass === preferredClass).sort(byLoadThenId)[0] ??
+      [...scored].sort(byLoadThenId)[0];
+    if (state.primaryProvider === undefined && baseline !== undefined) state.primaryProvider = baseline.candidate.descriptor.id;
     if (previous !== undefined) {
       const attempts = state.attemptsByProvider.get(previous.candidate.descriptor.id) ?? 0;
       const limit =
@@ -138,11 +149,7 @@ export class RoutingCandidateRanker {
           previous.candidate,
           ...scored
             .filter((candidate) => candidate !== previous)
-            .sort(
-              (left, right) =>
-                left.activeConnections - right.activeConnections ||
-                left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
-            )
+            .sort(byLoadThenId)
             .map(({ candidate }) => candidate),
         ];
       }

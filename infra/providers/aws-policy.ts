@@ -1,4 +1,4 @@
-import { TRANSPORT_POLICY } from "../../src/service-policies.js";
+import { TRANSPORT_POLICY, V0_POLICY } from "../../src/service-policies.js";
 
 export const v0Policy = {
   loadBalancer: {
@@ -10,9 +10,9 @@ export const v0Policy = {
     blockedTargetHostnames: TRANSPORT_POLICY.blockedTargetHostnames.join(","),
     streamBufferBytes: String(TRANSPORT_POLICY.streamBufferBytes),
     maxHeaderBytes: String(TRANSPORT_POLICY.maxHeaderBytes),
-    connectTimeoutMs: "10000",
-    operationTimeoutMs: "30000",
-    retryMaxAttempts: "4",
+    connectTimeoutMs: String(V0_POLICY.establishmentBudget.attemptTimeoutMs),
+    operationTimeoutMs: String(V0_POLICY.establishmentBudget.operationTimeoutMs),
+    retryMaxAttempts: String(V0_POLICY.establishmentBudget.providersPerOperation * V0_POLICY.establishmentBudget.candidatesPerProvider),
   },
   telemetry: {
     axiomEndpoint: "https://api.axiom.co",

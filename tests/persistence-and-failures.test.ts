@@ -164,7 +164,7 @@ test("data-plane attempt logs include attribution and byte counts without reques
   const route = await createRoute(testApp.application, {
     name: "telemetry",
     targeting: { country: "US" },
-    sessionMode: "stateless",
+    sessionMode: "none",
     shouldRetry: false,
   });
   const response = await requestViaProxy(route.proxyUrls.http, target.url, {

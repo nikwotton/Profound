@@ -1,6 +1,6 @@
 export interface CapacityPolicy {
   readonly version: string;
-  readonly lastValidatedAt: string;
+  readonly definedAt: string;
   readonly headroomPercent: number;
   readonly plannedMbpsPerSlot: number;
   readonly assumedMbpsPerActiveConnection: number;
@@ -8,9 +8,10 @@ export interface CapacityPolicy {
   readonly prioritizedGbPerSlotPerBillingPeriod: number;
 }
 
+/** Experimental operator-planning defaults; not an authoritative v0 contract. */
 export const CAPACITY_POLICY: CapacityPolicy = Object.freeze({
-  version: "proxidize-capacity-roadmap-2026-07-18",
-  lastValidatedAt: "2026-07-18",
+  version: "experimental-proxidize-capacity-defaults-2026-07-18",
+  definedAt: "2026-07-18",
   headroomPercent: 20,
   plannedMbpsPerSlot: 8,
   assumedMbpsPerActiveConnection: 0.5,

@@ -37,7 +37,7 @@ export function attemptUsageRecord(
     protocol: input.protocol,
     outcome: input.outcome,
     retryIndex: input.attemptIndex,
-    failover: input.provider !== "unresolved" && input.provider !== route.provider,
+    failover: input.provider !== "unresolved" && state.primaryProvider !== undefined && input.provider !== state.primaryProvider,
     bytesSent: input.bytesSent,
     bytesReceived: input.bytesReceived,
     latencyMs: Math.max(0, Date.parse(input.completedAt) - input.attemptStartedAt),

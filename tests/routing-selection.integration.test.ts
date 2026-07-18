@@ -288,7 +288,7 @@ test("managed CONNECT failover preserves the route's exact city", async (t) => {
   assert.equal(testApp.application.simulators?.brightData.lastIdentity()?.city, "newyork");
 });
 
-test("candidate establishment enforces per-attempt and overall deadlines without backoff", async (t) => {
+test("candidate establishment enforces per-attempt and overall deadlines", async (t) => {
   const echo = await startEchoTarget();
   const testApp = await startTestApp([echo.port], undefined, undefined, {
     CONNECT_TIMEOUT_MS: "80",
@@ -477,7 +477,7 @@ test("stateless mobile credentials share least-loaded proxy-slot capacity withou
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionMode: "stateless" }),
+        body: JSON.stringify({ sessionMode: "none" }),
       },
       true,
     );

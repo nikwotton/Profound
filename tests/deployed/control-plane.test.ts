@@ -170,7 +170,7 @@ deployedTest(
     const secondResponse = await controlRequest(`/v1/profiles/${route.profile.id}/grants`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionMode: "stateless" }),
+      body: JSON.stringify({ sessionMode: "none" }),
     });
     assert.equal(secondResponse.status, 201);
     const second = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await secondResponse.json());

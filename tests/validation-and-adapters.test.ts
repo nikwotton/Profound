@@ -6,17 +6,10 @@ import { ControlApi } from "../src/control-contract.js";
 import { assertSafeProviderResolution, destinationSafetyClassification } from "../src/destination-resolution.js";
 import { parseHostPort } from "../src/net-utils.js";
 import { BrightDataAdapter, buildBrightDataUsername } from "../src/providers/bright-data.js";
-import { ROUTING_POLICY } from "../src/routing-policy.js";
-import {
-  ACCOUNTING_POLICY,
-  CREDENTIAL_LIFECYCLE_POLICY,
-  HEALTH_POLICY,
-  OBSERVABILITY_POLICY,
-  TRANSPORT_POLICY,
-} from "../src/service-policies.js";
+import { V0_POLICY } from "../src/service-policies.js";
 import { createTargetValidator, isPublicAddress } from "../src/target-security.js";
 import type { StoredRoute } from "../src/types.js";
-import { validateRouteProfile } from "../src/validation.js";
+import { validateGrantIssuance, validateRouteProfile } from "../src/validation.js";
 
 function route(overrides: Partial<StoredRoute> = {}): StoredRoute {
   return {
@@ -32,10 +25,7 @@ function route(overrides: Partial<StoredRoute> = {}): StoredRoute {
     userId: "user",
     shouldRetry: false,
     retryPolicy: { maxAttempts: 2 },
-    provider: "bright_data",
     status: "ready",
-    rotationEpoch: 0,
-    lastRotationAt: "2026-01-01T00:00:00.000Z",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -159,53 +149,30 @@ test("control API token defaults only for local mock mode", () => {
   assert.equal(identities.controlIdentities.get("tokenTwo"), "user-two");
 });
 
-test("provisional operational values are typed, versioned policies", () => {
-  for (const policy of [
-    ROUTING_POLICY,
-    ACCOUNTING_POLICY,
-    CREDENTIAL_LIFECYCLE_POLICY,
-    HEALTH_POLICY,
-    OBSERVABILITY_POLICY,
-    TRANSPORT_POLICY,
-  ]) {
-    assert.match(policy.version, /v0|hypotheses|roadmap/);
-    assert.equal(policy.lastValidatedAt, "2026-07-18");
-  }
-  assert.deepEqual(
-    {
-      candidates: ROUTING_POLICY.maxCandidatesPerProvider,
-      exactCityCandidates: ROUTING_POLICY.maxExactCityCandidatesPerProvider,
-      providers: ROUTING_POLICY.maxProvidersPerOperation,
-      attemptMs: ROUTING_POLICY.attemptEstablishmentTimeoutMs,
-      operationMs: ROUTING_POLICY.operationEstablishmentTimeoutMs,
-      circuitMs: ROUTING_POLICY.capacityCircuitBaseCooldownMs,
-      stabilizationMs: ROUTING_POLICY.preferredClassStabilizationMs,
-      quiescenceMs: ROUTING_POLICY.sessionQuiescenceMs,
-    },
-    {
-      candidates: 2,
-      exactCityCandidates: 3,
-      providers: 3,
-      attemptMs: 10_000,
-      operationMs: 30_000,
-      circuitMs: 60_000,
-      stabilizationMs: 300_000,
-      quiescenceMs: 30_000,
-    },
-  );
-  assert.equal(CREDENTIAL_LIFECYCLE_POLICY.lifetimeMs, 30 * 24 * 60 * 60_000);
-  assert.equal(CREDENTIAL_LIFECYCLE_POLICY.renewalWindowMs, 7 * 24 * 60 * 60_000);
-  assert.equal(CREDENTIAL_LIFECYCLE_POLICY.overlapMs, 72 * 60 * 60_000);
-  assert.equal(ACCOUNTING_POLICY.reconciliationCadence, "daily");
-  assert.equal(ACCOUNTING_POLICY.varianceWarningRelative, 0.05);
-  assert.equal(ACCOUNTING_POLICY.varianceErrorRelative, 0.15);
-  assert.equal(OBSERVABILITY_POLICY.traceSampling, "all");
-  assert.equal(OBSERVABILITY_POLICY.logRetentionDays, 30);
-  assert.equal(HEALTH_POLICY.syntheticCooldownMs, 300_000);
-  assert.equal(HEALTH_POLICY.geoIpRefreshIntervalMs, 302_400_000);
-  assert.equal(HEALTH_POLICY.degradedPersistenceMs, 300_000);
-  assert.equal(TRANSPORT_POLICY.streamBufferBytes, 64 * 1024);
-  assert.equal(TRANSPORT_POLICY.maxHeaderBytes, 32 * 1024);
+test("authoritative v0 values live in one typed, versioned policy", () => {
+  assert.equal(V0_POLICY.version, "proxy-v0-policy-2026-07-18");
+  assert.equal(V0_POLICY.definedAt, "2026-07-18");
+  assert.deepEqual(V0_POLICY.credentialLifecycle, {
+    lifetimeMs: 30 * 24 * 60 * 60_000,
+    renewalWindowMs: 7 * 24 * 60 * 60_000,
+    overlapMs: 72 * 60 * 60_000,
+  });
+  assert.deepEqual(V0_POLICY.establishmentBudget, {
+    candidatesPerProvider: 2,
+    providersPerOperation: 3,
+    attemptTimeoutMs: 10_000,
+    operationTimeoutMs: 30_000,
+  });
+});
+
+test("grant issuance requires the public managed-or-none session contract", () => {
+  assert.deepEqual(validateGrantIssuance({ sessionMode: "managed", jobId: "job-1" }), {
+    sessionMode: "managed",
+    jobId: "job-1",
+  });
+  assert.deepEqual(validateGrantIssuance({ sessionMode: "none" }), { sessionMode: "stateless" });
+  assert.throws(() => validateGrantIssuance({}), /sessionMode must be managed or none/);
+  assert.throws(() => validateGrantIssuance({ sessionMode: "stateless" }), /sessionMode must be managed or none/);
 });
 
 test("SST runtime configuration requires its DynamoDB table", () => {
@@ -409,7 +376,7 @@ test("Effect generates a complete secured OpenAPI contract from the control API"
   assert.equal(paths["/v1/providers"], undefined);
   assert.equal(paths["/v1/providers/health"], undefined);
   assert.equal(specification.info.title, "Profound Proxy Router Control API");
-  assert.equal(specification.info.version, "0.8.0");
+  assert.equal(specification.info.version, "0.9.0");
   assert.match(JSON.stringify(specification.components.securitySchemes), /bearer/i);
   assert.doesNotMatch(JSON.stringify(specification), /HttpApiDecodeError|"_tag"/);
   assert.match(JSON.stringify(specification.components.schemas), /ApiError/);

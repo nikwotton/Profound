@@ -1,6 +1,6 @@
 {
   "name": "profound-proxy-router",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Provider-neutral HTTP, HTTPS, and SOCKS5 proxy router",
   "type": "module",
@@ -37,7 +37,7 @@
     "test:property": "vitest run tests/property",
     "test:coverage": "pnpm build && node --experimental-test-coverage --test-coverage-include='dist/src/**/*.js' --test-coverage-exclude='dist/src/**/*lambda.js' --test-coverage-lines=70 --test-coverage-functions=70 --test-coverage-branches=65 --test dist/tests/*.test.js dist/tests/**/*.test.js",
     "test:release-policy": "pnpm build && node --test dist/tests/release-policy.test.js dist/tests/deployment-coordinator.test.js dist/tests/deployment-coordinator-runtime.test.js dist/tests/migration-runner.test.js",
-    "test:e2e": "pnpm build && RUN_PROXY_E2E_TESTS=1 node --test --test-concurrency=1 dist/tests/e2e/*.test.js",
+    "test:e2e": "pnpm build && tsx scripts/run-e2e.ts",
     "pr:policy": "tsx scripts/validate-pr-policy.ts",
     "provider:freshness": "tsx scripts/provider-freshness.ts",
     "migrate": "tsx scripts/run-migrations.ts",

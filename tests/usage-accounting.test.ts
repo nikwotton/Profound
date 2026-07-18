@@ -401,22 +401,18 @@ test("variance thresholds enforce the absolute floor, 5% warning, 15% error, and
 
 test("company-facing dashboard supports usage filters and provider-neutral credential and session lifecycle views", async (t) => {
   const store = new InMemoryRouteStore();
-  await store.create(
-    "overridden-profile",
-    {
-      name: "overridden-profile",
-      customerId: "customer-override",
-      providerOverride: "bright_data",
-      allowConnectionRetry: false,
-      userId: "user-override",
-      allowedProtocols: ["http", "https", "socks5"],
-      targeting: { country: "US" },
-      rotation: { mode: "per_request" },
-      shouldRetry: false,
-      retryPolicy: { maxAttempts: 1 },
-    },
-    "bright_data",
-  );
+  await store.create("overridden-profile", {
+    name: "overridden-profile",
+    customerId: "customer-override",
+    providerOverride: "bright_data",
+    allowConnectionRetry: false,
+    userId: "user-override",
+    allowedProtocols: ["http", "https", "socks5"],
+    targeting: { country: "US" },
+    rotation: { mode: "per_request" },
+    shouldRetry: false,
+    retryPolicy: { maxAttempts: 1 },
+  });
   await store.createAccessGrant(
     "dashboard-grant",
     "overridden-profile",

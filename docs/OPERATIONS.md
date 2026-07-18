@@ -9,7 +9,7 @@ AWS is the only deployment provider implemented in v0. The SST module deploys in
 | Component                   | Responsibility                                                | Local mode/port              | AWS placement                                      |
 | --------------------------- | ------------------------------------------------------------- | ---------------------------- | -------------------------------------------------- |
 | Data plane                  | HTTP/HTTPS and SOCKS5 proxy listeners                         | `data-plane`; `8080`, `1080` | ECS Fargate behind a private Network Load Balancer |
-| Control plane               | Routes, grants, providers, readiness, OpenAPI                 | `control-plane`; `8081`      | ECS Fargate behind a private load balancer         |
+| Control plane               | Profiles, grants, sessions, bindings, readiness, OpenAPI      | `control-plane`; `8081`      | ECS Fargate behind a private load balancer         |
 | Health aggregator           | Provider/passive/synthetic health and alert creation          | `health-aggregator`; `8082`  | Private ECS Fargate service                        |
 | Company-facing dashboard    | Capability status, usage, cost, reconciliation                | `status`; `8083`             | Private ECS Fargate service                        |
 | Notification worker         | Signed webhook delivery                                       | `notification`; `8084`       | Private ECS Fargate service                        |
@@ -79,7 +79,7 @@ SST uses the reviewed v0 endpoints and reads provider credentials only from SST 
 
 ### Persistence
 
-DynamoDB is the application system of record for:
+DynamoDB is the shared physical persistence service. Logical ownership remains explicit: the control plane owns profiles, grants, credentials, sessions, and bindings; usage accounting owns the immutable attempt ledger and rollups; health owns capability and candidate state. The table stores:
 
 - route profiles and access-grant verifier hashes;
 - provider-account and proxy-slot inventory snapshots, active connection loads, and deployment drain state;
@@ -127,7 +127,7 @@ Create three Axiom datasets before deployment:
 - `<app>-<stage>-traces`: Logs + Traces event dataset;
 - `<app>-<stage>-metrics`: Metrics dataset.
 
-All three use a reviewed 30-day retention expectation. SST fixes the Axiom endpoint and derives dataset names from the application and stage; configure matching external datasets and retention in Axiom.
+The current stage implementation reports 30-day retention for all three datasets. That value is an experimental deployment default, not an authoritative v0 design decision. SST fixes the Axiom endpoint and derives dataset names from the application and stage; configure the external datasets to match the deployed stage metadata.
 
 Store a token scoped only to ingest into those datasets:
 
@@ -168,7 +168,7 @@ The map replaces the single-token identity set. Include every principal that mus
 
 ### GeoIP bundle
 
-The canary uses a versioned MaxMind GeoLite2 City MMDB. Prepare it before deployment and at least twice weekly in automation:
+The canary uses a versioned MaxMind GeoLite2 City MMDB. Prepare it before deployment. The current experimental automation default refreshes it at least twice weekly; that cadence is not an authoritative v0 design value:
 
 ```sh
 MAXMIND_ACCOUNT_ID='MAXMIND_ACCOUNT_ID' \
@@ -231,10 +231,13 @@ Application modes with a dev command run locally; SST prints their addresses. Th
 
 SST's VPC tunnel reserves local port `1080`, so `sst dev` runs and advertises the local SOCKS5 listener on `127.0.0.1:1081`. The deployed ECS service uses port `1080`.
 
-In another terminal, copy the printed `integrationTarget` URL and run the black-box lifecycle suite against the local services. It does not read the SST stage or AWS metadata:
+In another terminal, copy the printed control URL and `integrationTarget` URL and run the black-box lifecycle suite against those local services. It does not read the SST stage or AWS metadata:
 
 ```sh
-E2E_TARGET_URL='COPY_THE_PRINTED_INTEGRATION_TARGET_URL' pnpm test:e2e
+E2E_CONTROL_API_URL='COPY_THE_PRINTED_CONTROL_URL' \
+E2E_CONTROL_API_TOKEN='change-me' \
+E2E_TARGET_URL='COPY_THE_PRINTED_INTEGRATION_TARGET_URL' \
+pnpm test:e2e
 ```
 
 ```sh
@@ -317,7 +320,7 @@ curl -sS \
 
 It also returns the typed routing policy and the latest 100 safe routing diagnostics. These diagnostics contain provider, optional provider override and service-private proxy-slot identity, policy version, active-load and soft-pressure evidence, shadow roadmap score components, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and diagnostic components are emitted on restricted selection logs, traces, and the durable attempt ledger.
 
-The initial `proxy-routing-policy-hypotheses-2026-07-18` object holds both the v0 establishment budget and a shadow roadmap scoring hypothesis. V0 selection uses the least active connections within the applicable provider-preference tier and a stable candidate identifier as the tie-breaker. It does not use probabilistic or weighted score selection.
+The authoritative `proxy-v0-policy-2026-07-18` object contains only credential lifecycle and the establishment budget: two candidates per provider, at most three providers, 10 seconds per attempt, and 30 seconds overall. Separately, `experimental-routing-defaults-2026-07-18` holds shadow scoring and recovery defaults. V0 selection uses the least active connections within the applicable provider-preference tier and a stable candidate identifier as the tie-breaker. It does not use probabilistic or weighted score selection.
 
 For evidence collection only, the roadmap hypothesis computes a 0–100 score:
 
@@ -332,7 +335,7 @@ For evidence collection only, the roadmap hypothesis computes a 0–100 score:
 
 Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options. Managed sessions exhaust the eligible device-backed class despite soft saturation. For stateless traffic, residential soft saturation promotes compatible unsaturated device-backed capacity ahead of saturated residential overflow. Revalidate and version the roadmap policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent before allowing it to control production traffic.
 
-The implemented roadmap hypothesis `proxidize-capacity-roadmap-2026-07-18` is centralized in code and carried on durable records and rollups. It does not control v0 least-loaded selection:
+The implemented roadmap hypothesis `experimental-proxidize-capacity-defaults-2026-07-18` is centralized in code and carried on durable records and rollups. Its numeric values are experimental implementation defaults, not current v0 design decisions, and it does not control v0 least-loaded selection:
 
 - 20% headroom;
 - 8 planned Mbps per slot, derived from the documented 10 Mbps lower bound at 80%;
@@ -364,22 +367,22 @@ The initial v0 policy uses empty provider-total and provisioned-capacity inputs.
 
 Protect it with the `UsageAccountingSourceToken` SST secret when enabled.
 
-Each reconciliation persists estimated total, reported total, variance, source version, and `Unallocated` attribution. Default policy:
+Each reconciliation persists estimated total, reported total, variance, source version, and `Unallocated` attribution. The current experimental implementation defaults are:
 
 - ignore relative thresholds until the absolute variance exceeds `$1`;
 - warning above `5%`;
 - error above `15%`;
 - escalate repeated warnings to error.
 
-These thresholds are versioned v0 policy constants. Revisit them through code review using observed data.
+These thresholds are not authoritative v0 design values. Revisit and version them through code review using observed data before treating them as release commitments.
 
 Usage accounting owns reconciliation-variance classification and capacity-planning recommendations derived from usage, cost, and capacity rollups. It persists idempotent warning/error events before emitting aggregate logs. Authorized dashboard users can inspect those non-capability events through the private `GET /v1/usage/events` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
 
-Capacity pressure is also persisted as normalized evidence through the shared service contract and is available at `GET /v1/usage/capacity-pressure-evidence`. The health aggregator reads fresh evidence (five minutes by default, configurable with `HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS`) and alone classifies the affected capability as degraded. Usage accounting does not classify capability state or emit capability alerts.
+Capacity pressure is also persisted as normalized evidence through the shared service contract and is available at `GET /v1/usage/capacity-pressure-evidence`. The health aggregator alone classifies the affected capability as degraded. Its current experimental implementation default treats evidence as fresh for five minutes through `HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS`; that duration is not a v0 design guarantee. Usage accounting does not classify capability state or emit capability alerts.
 
 ## Alerting
 
-The health aggregator owns capability-state classification, capability alerts, and recovery events in v0, including `degraded` states supported by fresh capacity-pressure evidence. `unavailable` alerts are immediate. `degraded` alerts wait five minutes by default. An alerted capability emits one recovery when it returns to `operational`. Geography is context on global events, not a separate subscription.
+The health aggregator owns capability-state classification, capability alerts, and recovery events in v0, including `degraded` states supported by fresh capacity-pressure evidence. `unavailable` alerts are immediate. The current experimental implementation default delays `degraded` alerts for five minutes; this is not an authoritative v0 design value. An alerted capability emits one recovery when it returns to `operational`. Geography is context on global events, not a separate subscription.
 
 Signed HTTPS webhooks are disabled in the initial v0 stage policy. To enable them, make a reviewed change to `stage.features.healthAlerting` and configure one versioned secret:
 
@@ -399,7 +402,7 @@ Capability alert ownership cannot be transferred in v0. Axiom monitors may own s
 
 Applications send backend-neutral OTLP to task-local pinned ADOT collectors. Collectors batch, queue, retry, filter, and export logs, traces, and metrics to their dedicated Axiom datasets. The data-plane collector forwards only passive-health log records to the health aggregator. Stderr is an error-only bootstrap/exporter fallback, not the canonical telemetry path.
 
-V0 samples every trace and every usage record. Per-attempt spans/logs include provider, operation/attempt IDs, outcome, latency, retry context, bytes, normalized candidate evidence, expected/observed city, and DNS-resolution evidence. Plain HTTP may include target method, hostname, and status. Tunnel telemetry contains only protocol, target host/port, establishment result, duration, and bytes.
+Every usage record is written directly and unsampled to the authoritative ledger. The current productionization configuration also exports every trace, but trace sampling is an experimental observability default rather than an authoritative v0 design value. Per-attempt spans/logs include provider, operation/attempt IDs, outcome, latency, retry context, bytes, normalized candidate evidence, expected/observed city, and DNS-resolution evidence. Plain HTTP may include target method, hostname, and status. Tunnel telemetry contains only protocol, target host/port, establishment result, duration, and bytes.
 
 Never emitted:
 
@@ -415,14 +418,14 @@ High-cardinality route, grant, user, proxy-slot, peer, device, session, and IP i
 
 GitHub Actions builds an immutable image once and promotes the same digest through environments. The proxy uses ECS native blue/green target groups. Established HTTP requests and HTTPS/SOCKS5 tunnels write durable active-connection records so a retiring deployment can drain safely and slot load remains shared across tasks.
 
-After traffic shift:
+After traffic shift, the current experimental deployment defaults:
 
 - check retiring tunnels every 15 minutes;
 - notify users hourly after one hour;
 - escalate to operations after three hours;
 - terminate remaining tunnels after six hours unless a time-bounded extension exists.
 
-The ECS bake window keeps the old tasks available for six hours. Routine route/grant revocation also preserves established traffic; emergency revocation is the explicit kill switch.
+The ECS bake window currently keeps the old tasks available for six hours. These timings are implementation defaults rather than authoritative v0 design values. Routine route/grant revocation also preserves established traffic; emergency revocation is the explicit kill switch.
 
 ## Operational runbook
 
@@ -499,8 +502,8 @@ After recovery or an ECS replacement, verify route authentication, access-grant 
 - Private proxy/control DNS and ACM certificates are valid.
 - Data- and control-plane source CIDRs are least privilege.
 - SOCKS5 is reachable only through the trusted private network.
-- Axiom datasets have the intended kind and 30-day default retention.
-- GeoIP bundle preparation runs at least twice weekly.
+- Axiom datasets have the intended kind and match the stage metadata's configured retention.
+- GeoIP bundle preparation has an explicit monitored cadence; the current experimental default is at least twice weekly.
 - Control identities, rotation ownership, and emergency procedures are documented.
 - Synthetic route and signed canary validate the normal proxy path.
 - Alert webhook signatures and recovery delivery are tested.

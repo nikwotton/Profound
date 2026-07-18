@@ -64,7 +64,7 @@ type TestProfileInput = Partial<RouteProfileInput> & {
   session?: unknown;
   allowedProtocols?: unknown;
   retryPolicy?: unknown;
-  sessionMode?: "managed" | "stateless";
+  sessionMode?: "managed" | "none";
   shouldRetry?: boolean;
 };
 
@@ -196,7 +196,7 @@ export async function controlRequest(
 export async function createRoute(
   app: RunningApplication,
   profile: TestProfileInput,
-  explicitSessionMode?: "managed" | "stateless",
+  explicitSessionMode?: "managed" | "none",
 ): Promise<CreatedRouteResponse> {
   const response = await controlRequest(app, "/v1/profiles", {
     method: "POST",
@@ -211,7 +211,7 @@ export async function createRoute(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        sessionMode: explicitSessionMode ?? profile.sessionMode ?? "stateless",
+        sessionMode: explicitSessionMode ?? profile.sessionMode ?? "none",
       }),
     }),
   ]);

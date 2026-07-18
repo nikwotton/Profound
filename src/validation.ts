@@ -101,9 +101,9 @@ export function validateRouteProfile(value: unknown, userId: string, retryDefaul
 export function validateGrantIssuance(value: unknown): { sessionMode: SessionMode; jobId?: string } {
   const input = object(value, "grant issuance");
   rejectUnknown(input, new Set(["sessionMode", "jobId"]), "grant issuance");
-  if (input["sessionMode"] !== "managed" && input["sessionMode"] !== "stateless") {
-    throw new ValidationError("sessionMode must be managed or stateless");
+  if (input["sessionMode"] !== "managed" && input["sessionMode"] !== "none") {
+    throw new ValidationError("sessionMode must be managed or none");
   }
   const jobId = input["jobId"] === undefined ? undefined : string(input["jobId"], "jobId");
-  return { sessionMode: input["sessionMode"], ...(jobId === undefined ? {} : { jobId }) };
+  return { sessionMode: input["sessionMode"] === "managed" ? "managed" : "stateless", ...(jobId === undefined ? {} : { jobId }) };
 }

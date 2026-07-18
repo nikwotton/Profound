@@ -2,7 +2,7 @@ import type { UsageRecord } from "./types.js";
 
 export interface RoutingPolicy {
   readonly version: string;
-  readonly lastValidatedAt: string;
+  readonly definedAt: string;
   readonly weights: {
     readonly reliability: number;
     readonly headroom: number;
@@ -24,16 +24,12 @@ export interface RoutingPolicy {
   readonly capacityCircuitHalfOpenLeaseMs: number;
   readonly preferredClassStabilizationMs: number;
   readonly sessionQuiescenceMs: number;
-  readonly maxCandidatesPerProvider: number;
-  readonly maxExactCityCandidatesPerProvider: number;
-  readonly maxProvidersPerOperation: number;
-  readonly attemptEstablishmentTimeoutMs: number;
-  readonly operationEstablishmentTimeoutMs: number;
 }
 
+/** Experimental shadow-scoring and recovery defaults; not an authoritative v0 contract. */
 export const ROUTING_POLICY: RoutingPolicy = Object.freeze({
-  version: "proxy-routing-policy-hypotheses-2026-07-18",
-  lastValidatedAt: "2026-07-18",
+  version: "experimental-routing-defaults-2026-07-18",
+  definedAt: "2026-07-18",
   weights: Object.freeze({
     reliability: 0.3,
     headroom: 0.3,
@@ -55,11 +51,6 @@ export const ROUTING_POLICY: RoutingPolicy = Object.freeze({
   capacityCircuitHalfOpenLeaseMs: 30_000,
   preferredClassStabilizationMs: 5 * 60_000,
   sessionQuiescenceMs: 30_000,
-  maxCandidatesPerProvider: 2,
-  maxExactCityCandidatesPerProvider: 3,
-  maxProvidersPerOperation: 3,
-  attemptEstablishmentTimeoutMs: 10_000,
-  operationEstablishmentTimeoutMs: 30_000,
 });
 
 export interface RoutingScoreComponents {

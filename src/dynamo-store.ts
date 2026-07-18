@@ -68,9 +68,9 @@ import type {
   HealthAlertEvent,
   HealthAlertState,
   ProviderHealth,
+  ProviderId,
   ProviderInventorySnapshot,
   RouteProfile,
-  RouteStatus,
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredLogicalSession,
@@ -97,7 +97,7 @@ export class DynamoRouteStore implements RouteStore {
     this.#usage = new DynamoUsageRepository(this.tableName, this.#client);
   }
 
-  async #withCapacityCircuitLock<T>(provider: StoredRoute["provider"], candidateKey: string, action: () => Promise<T>): Promise<T> {
+  async #withCapacityCircuitLock<T>(provider: ProviderId, candidateKey: string, action: () => Promise<T>): Promise<T> {
     const key = capacityCircuitKey(provider, candidateKey);
     const lockKey = { pk: key.pk, sk: "LOCK" };
     const owner = `${Date.now()}-${Math.random()}`;
@@ -136,7 +136,7 @@ export class DynamoRouteStore implements RouteStore {
     }
   }
 
-  async create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute> {
+  async create(id: string, profile: RouteProfile): Promise<StoredRoute> {
     const now = new Date().toISOString();
     const route: StoredRoute = {
       id,
@@ -152,12 +152,8 @@ export class DynamoRouteStore implements RouteStore {
       userId: profile.userId,
       shouldRetry: profile.shouldRetry,
       retryPolicy: profile.retryPolicy,
-      provider,
-      ...(endpointId === undefined ? {} : { endpointId }),
       status: "ready",
       terminateActive: false,
-      rotationEpoch: 0,
-      lastRotationAt: now,
       createdAt: now,
       updatedAt: now,
     };
@@ -167,7 +163,6 @@ export class DynamoRouteStore implements RouteStore {
       createdAt: now,
       status: route.status,
       route,
-      ...(endpointId === undefined ? {} : { gsi1pk: `ENDPOINT#${endpointId}`, gsi1sk: `${now}#${id}` }),
     };
     await this.#client.send(
       new PutCommand({
@@ -179,26 +174,16 @@ export class DynamoRouteStore implements RouteStore {
     return route;
   }
 
-  async update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute> {
+  async update(id: string, profile: RouteProfile): Promise<StoredRoute> {
     const previous = await this.get(id);
     const now = new Date().toISOString();
-    const {
-      endpointId: _endpointId,
-      lastError: _lastError,
-      geography: _geography,
-      carrier: _carrier,
-      providerOverride: _providerOverride,
-      ...retained
-    } = previous;
-    void _endpointId;
-    void _lastError;
+    const { geography: _geography, carrier: _carrier, providerOverride: _providerOverride, ...retained } = previous;
     void _geography;
     void _carrier;
     void _providerOverride;
     const route: StoredRoute = {
       ...retained,
       ...profile,
-      provider,
       status: "ready",
       updatedAt: now,
     };
@@ -731,7 +716,7 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async getCapacityCircuit(
-    provider: StoredRoute["provider"],
+    provider: ProviderId,
     candidateKey: string,
     now = new Date().toISOString(),
   ): Promise<CapacityCircuitState | undefined> {
@@ -745,7 +730,7 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async claimCapacityCircuit(
-    provider: StoredRoute["provider"],
+    provider: ProviderId,
     candidateKey: string,
     now: string,
   ): Promise<{ allowed: boolean; state?: CapacityCircuitState }> {
@@ -760,7 +745,7 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async recordCapacityCircuitFailure(
-    provider: StoredRoute["provider"],
+    provider: ProviderId,
     candidateKey: string,
     reason: CapacityCircuitReason,
     now: string,
@@ -784,7 +769,7 @@ export class DynamoRouteStore implements RouteStore {
     await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
   }
 
-  async resetCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string): Promise<void> {
+  async resetCapacityCircuit(provider: ProviderId, candidateKey: string): Promise<void> {
     await this.#client.send(new DeleteCommand({ TableName: this.tableName, Key: capacityCircuitKey(provider, candidateKey) }));
   }
 
@@ -852,137 +837,6 @@ export class DynamoRouteStore implements RouteStore {
 
   async shouldTerminateDeployment(deploymentId: string): Promise<boolean> {
     return (await this.getDeploymentDrain(deploymentId))?.terminateRemaining === true;
-  }
-
-  async setEndpoint(id: string, endpointId?: string): Promise<StoredRoute> {
-    const now = new Date().toISOString();
-    const update =
-      endpointId === undefined
-        ? "SET #route.updatedAt = :now REMOVE #route.endpointId, gsi1pk, gsi1sk"
-        : "SET #route.endpointId = :endpointId, #route.updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk";
-    try {
-      const result = await this.#client.send(
-        new UpdateCommand({
-          TableName: this.tableName,
-          Key: routeKey(id),
-          UpdateExpression: update,
-          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-          ExpressionAttributeValues: {
-            ":now": now,
-            ":revoked": "revoked",
-            ...(endpointId === undefined
-              ? {}
-              : {
-                  ":endpointId": endpointId,
-                  ":gsi1pk": `ENDPOINT#${endpointId}`,
-                  ":gsi1sk": `${now}#${id}`,
-                }),
-          },
-          ReturnValues: "ALL_NEW",
-        }),
-      );
-      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
-    } catch (error) {
-      conditionalNotFound(error);
-    }
-  }
-
-  async setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute> {
-    const now = new Date().toISOString();
-    const update =
-      lastError === undefined
-        ? "SET #status = :status, #route.#status = :status, #route.updatedAt = :now REMOVE #route.lastError"
-        : "SET #status = :status, #route.#status = :status, #route.updatedAt = :now, #route.lastError = :lastError";
-    try {
-      const result = await this.#client.send(
-        new UpdateCommand({
-          TableName: this.tableName,
-          Key: routeKey(id),
-          UpdateExpression: update,
-          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-          ExpressionAttributeValues: {
-            ":status": status,
-            ":now": now,
-            ":revoked": "revoked",
-            ...(lastError === undefined ? {} : { ":lastError": lastError }),
-          },
-          ReturnValues: "ALL_NEW",
-        }),
-      );
-      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
-    } catch (error) {
-      conditionalNotFound(error);
-    }
-  }
-
-  async claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined> {
-    const now = new Date().toISOString();
-    try {
-      const result = await this.#client.send(
-        new UpdateCommand({
-          TableName: this.tableName,
-          Key: routeKey(id),
-          UpdateExpression: "SET #status = :rotating, #route.#status = :rotating, #route.updatedAt = :now REMOVE #route.lastError",
-          ConditionExpression:
-            "attribute_exists(pk) AND #status = :ready AND (attribute_not_exists(#route.lastRotationAt) OR #route.lastRotationAt <= :dueBefore)",
-          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-          ExpressionAttributeValues: {
-            ":rotating": "rotating",
-            ":ready": "ready",
-            ":now": now,
-            ":dueBefore": dueBefore,
-          },
-          ReturnValues: "ALL_NEW",
-        }),
-      );
-      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
-    } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return undefined;
-      throw error;
-    }
-  }
-
-  async completeRotation(id: string): Promise<StoredRoute> {
-    const now = new Date().toISOString();
-    try {
-      const result = await this.#client.send(
-        new UpdateCommand({
-          TableName: this.tableName,
-          Key: routeKey(id),
-          UpdateExpression:
-            "SET #status = :ready, #route.#status = :ready, #route.lastRotationAt = :now, #route.updatedAt = :now REMOVE #route.lastError",
-          ConditionExpression: "attribute_exists(pk) AND #status = :rotating",
-          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-          ExpressionAttributeValues: { ":ready": "ready", ":rotating": "rotating", ":now": now },
-          ReturnValues: "ALL_NEW",
-        }),
-      );
-      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
-    } catch (error) {
-      conditionalNotFound(error);
-    }
-  }
-
-  async incrementRotationEpoch(id: string): Promise<StoredRoute> {
-    const now = new Date().toISOString();
-    try {
-      const result = await this.#client.send(
-        new UpdateCommand({
-          TableName: this.tableName,
-          Key: routeKey(id),
-          UpdateExpression: "SET #route.rotationEpoch = #route.rotationEpoch + :one, #route.updatedAt = :now",
-          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-          ExpressionAttributeNames: { "#status": "status", "#route": "route" },
-          ExpressionAttributeValues: { ":one": 1, ":now": now, ":revoked": "revoked" },
-          ReturnValues: "ALL_NEW",
-        }),
-      );
-      return decodeStoredRoute(itemField(result.Attributes, "route", "DynamoDB updated route item"));
-    } catch (error) {
-      conditionalNotFound(error);
-    }
   }
 
   async saveHealth(health: ProviderHealth): Promise<void> {

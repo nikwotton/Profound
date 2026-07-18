@@ -107,7 +107,7 @@ test("DynamoDB persistence survives store replacement and excludes caller-facing
   };
   const token = "route-token-that-must-not-be-stored";
 
-  await store.create("route-1", profile, "proxidize");
+  await store.create("route-1", profile);
   assert.doesNotMatch(JSON.stringify(routeItem), new RegExp(token));
   assert.doesNotMatch(JSON.stringify(routeItem), /tokenHash|tokenSalt/);
   const grant = await store.createAccessGrant("grant-1", "route-1", "user-a", "credential-1", token, "stateless");

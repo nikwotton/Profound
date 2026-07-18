@@ -5,7 +5,7 @@ import { GeographyPayload as Geography, RouteProfilePayload } from "./route-prof
 
 export { RouteProfilePayload } from "./route-profile-schema.js";
 
-export const CONTROL_API_VERSION = "0.8.0";
+export const CONTROL_API_VERSION = "0.9.0";
 const exactOptional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
 
 export const ApiError = Schema.Struct({
@@ -94,7 +94,7 @@ export const PublicRouteSchema = Schema.Struct({
   carrier: exactOptional(Schema.String),
   providerOverride: exactOptional(Schema.Literal("bright_data", "proxidize")),
   allowConnectionRetry: Schema.Boolean,
-  status: Schema.Literal("ready", "rotating", "failed", "revoked"),
+  status: Schema.Literal("ready", "revoked"),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 }).annotations({ identifier: "RouteProfile" });
@@ -102,7 +102,7 @@ export const PublicRouteSchema = Schema.Struct({
 export const PublicAccessGrantCredentialSchema = Schema.Struct({
   credentialId: Schema.String,
   username: Schema.String,
-  sessionMode: Schema.Literal("managed", "stateless"),
+  sessionMode: Schema.Literal("managed", "none"),
   sessionId: exactOptional(Schema.String),
   status: Schema.Literal("active", "overlap", "revoked", "expired"),
   createdAt: Schema.String,
@@ -135,7 +135,7 @@ export const PublicLogicalSessionSchema = Schema.Struct({
 }).annotations({ identifier: "LogicalSession" });
 
 const GrantIssuancePayload = Schema.Struct({
-  sessionMode: Schema.Literal("managed", "stateless"),
+  sessionMode: Schema.Literal("managed", "none"),
   jobId: exactOptional(Schema.String),
 }).annotations({ identifier: "GrantIssuanceInput", parseOptions: { onExcessProperty: "error" } });
 
@@ -214,7 +214,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
       .addError(RouteNotFound)
       .addError(ServiceUnavailable)
       .addError(InternalError)
-      .annotate(OpenApi.Description, "Create an explicit managed-session or stateless grant and return its secret once"),
+      .annotate(OpenApi.Description, "Create an explicit managed-session or no-session grant and return its secret once"),
   )
   .add(
     HttpApiEndpoint.get("listAccessGrants")`/v1/profiles/${profileId}/grants`
@@ -305,7 +305,7 @@ export const ControlApi = HttpApi.make("ProfoundControlApi")
   .annotate(OpenApi.Version, CONTROL_API_VERSION)
   .annotate(
     OpenApi.Description,
-    "Manage provider-neutral route profiles, access grants, managed logical sessions, and explicitly stateless credentials.",
+    "Manage provider-neutral route profiles, access grants, managed logical sessions, and explicit no-session credentials.",
   )
   .annotate(OpenApi.Transform, normalizeControlOpenApi);
 

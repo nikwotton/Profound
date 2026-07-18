@@ -35,7 +35,7 @@ function sessionId(
 ): string {
   if (sessionMode === "managed" && affinityHandle !== undefined && /^[a-f0-9]{20}$/.test(affinityHandle)) return affinityHandle;
   const scope = sessionMode === "managed" ? (affinityHandle ?? route.id) : logicalOperationId;
-  return createHash("sha256").update(`${scope}:${route.rotationEpoch}:candidate-${candidateIndex}`).digest("hex").slice(0, 20);
+  return createHash("sha256").update(`${scope}:candidate-${candidateIndex}`).digest("hex").slice(0, 20);
 }
 
 export function buildBrightDataUsername(
@@ -146,12 +146,6 @@ export class BrightDataAdapter implements ProviderAdapter<"bright_data"> {
             }),
       },
     };
-  }
-
-  rotate(): Promise<void> {
-    // The route service increments rotationEpoch. That changes Bright Data's
-    // session parameter without requiring a separate control-plane request.
-    return Promise.resolve();
   }
 
   async health(signal?: AbortSignal): Promise<ProviderHealth> {

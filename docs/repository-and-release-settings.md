@@ -72,7 +72,7 @@ Configure the production environment with:
 
 Configure equivalent `STAGING_*` values consumed by the release workflows. Point each private proxy DNS name at the emitted Network Load Balancer hostname. Validate certificate region, hostname coverage, and private DNS resolution before enabling clients.
 
-Provider mode, scaling bounds, Axiom endpoint/dataset naming, retention, timeouts, thresholds, and optional feature policy are code-owned in v0 and are not repository or environment variables.
+Provider mode, scaling bounds, Axiom endpoint/dataset naming, retention, timeouts, thresholds, and optional feature policy are code-owned implementation defaults and are not repository or environment variables. Only the credential-lifecycle and establishment-budget values in `V0_POLICY` are current authoritative v0 numeric design decisions.
 
 Runtime/vendor values belong in SST secrets, not GitHub variables or repository files. Required secret names and setup commands are documented in [OPERATIONS.md](OPERATIONS.md#required-stage-secrets).
 
