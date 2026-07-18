@@ -58,11 +58,11 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
 });
 
 test("gateway releases persist active tunnels and enforce the staged drain escalation policy", () => {
-  const service = file("src/route-service.ts");
+  const connectionTracker = file("src/active-connection-tracker.ts");
   const coordinator = file("src/deployment-coordinator.ts");
   const stack = file("infra/providers/aws.ts");
-  assert.match(service, /registerActiveTunnel/);
-  assert.match(service, /shouldTerminateDeployment/);
+  assert.match(connectionTracker, /registerActiveTunnel/);
+  assert.match(connectionTracker, /shouldTerminateDeployment/);
   assert.match(coordinator, /coordinateDeploymentDrain/);
   assert.match(coordinator, /SNSClient/);
   assert.match(stack, /DeploymentDrainPoller/);
