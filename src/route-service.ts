@@ -147,6 +147,10 @@ export interface RouteServiceEffects {
 }
 
 const MAX_PROVIDERS_PER_OPERATION = V0_POLICY.establishmentBudget.providersPerOperation;
+const AUTHORIZATION_CACHE_TTL_MS = 30_000;
+const AUTHORIZATION_EPOCH_REFRESH_MS = 1_000;
+const AUTHORIZATION_CACHE_MAX_ENTRIES = 10_000;
+const ROUTING_EVIDENCE_RECORD_LIMIT = 2_048;
 
 export interface ResolutionContext {
   logicalOperationId: string;
@@ -193,6 +197,10 @@ export class RouteService {
   readonly effects: RouteServiceEffects;
   readonly #providers: ReadonlyMap<ProviderId, ProviderAdapter>;
   readonly #rotationDisabledSlots = new Set<string>();
+  readonly #authorizationCache = new Map<string, { route: AuthenticatedRoute; expiresAt: number }>();
+  #authorizationEpoch = -1;
+  #authorizationEpochRefreshAt = 0;
+  #authorizationEpochRefresh: Promise<void> | undefined;
 
   private readonly store: RoutingStore;
   private readonly proxidize: MobileProviderAdapter;
@@ -266,6 +274,39 @@ export class RouteService {
     };
   }
 
+  async #refreshAuthorizationEpoch(): Promise<void> {
+    if (this.now() < this.#authorizationEpochRefreshAt) return;
+    this.#authorizationEpochRefresh ??= this.store
+      .getAuthorizationEpoch()
+      .then((epoch) => {
+        if (this.#authorizationEpoch !== epoch) this.#authorizationCache.clear();
+        this.#authorizationEpoch = epoch;
+        this.#authorizationEpochRefreshAt = this.now() + AUTHORIZATION_EPOCH_REFRESH_MS;
+      })
+      .finally(() => {
+        this.#authorizationEpochRefresh = undefined;
+      });
+    await this.#authorizationEpochRefresh;
+  }
+
+  #authorizationCacheKey(username: string, token: string): string {
+    return createHash("sha256").update(username).update("\0").update(token).digest("hex");
+  }
+
+  #cacheAuthorization(key: string, route: AuthenticatedRoute): void {
+    if (this.#authorizationCache.size >= AUTHORIZATION_CACHE_MAX_ENTRIES) {
+      const oldest = this.#authorizationCache.keys().next().value;
+      if (oldest !== undefined) this.#authorizationCache.delete(oldest);
+    }
+    this.#authorizationCache.set(key, { route: structuredClone(route), expiresAt: this.now() + AUTHORIZATION_CACHE_TTL_MS });
+  }
+
+  #invalidateAuthorizationCache(): void {
+    this.#authorizationCache.clear();
+    this.#authorizationEpoch = -1;
+    this.#authorizationEpochRefreshAt = 0;
+  }
+
   #capacityFailureReason(error: unknown): CapacityCircuitReason | undefined {
     if (!isRetryableUpstreamFailure(error)) return undefined;
     if (error instanceof AppError && /hard_limit|capacity_limit/.test(error.code)) return "provider_hard_limit";
@@ -324,7 +365,7 @@ export class RouteService {
     routingScore: number;
     routingScoreComponents: RoutingScoreComponents;
   }> {
-    const inventory = await this.proxidize.listEndpoints(true, signal);
+    const inventory = await this.proxidize.listEndpoints(false, signal);
     const capturedAt = new Date(this.now()).toISOString();
     await this.store
       .saveProviderInventory({
@@ -475,6 +516,7 @@ export class RouteService {
     }
 
     const updated = await this.store.update(id, profile);
+    this.#invalidateAuthorizationCache();
     this.logger.info("Route profile updated", {
       routeId: id,
       customerId: profile.customerId,
@@ -507,7 +549,9 @@ export class RouteService {
     principalId: string,
     suspectedCompromise = false,
   ): Promise<IssuedAccessGrant> {
-    return this.accessGrants.rotateCredential(id, previousCredentialId, principalId, suspectedCompromise);
+    const issued = await this.accessGrants.rotateCredential(id, previousCredentialId, principalId, suspectedCompromise);
+    this.#invalidateAuthorizationCache();
+    return issued;
   }
 
   async createManagedSession(grantId: string, principalId: string): Promise<IssuedAccessGrant> {
@@ -528,14 +572,17 @@ export class RouteService {
 
   async closeLogicalSession(grantId: string, sessionId: string, principalId: string, force = false): Promise<void> {
     await this.accessGrants.closeLogicalSession(grantId, sessionId, principalId, force);
+    this.#invalidateAuthorizationCache();
   }
 
   async revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Promise<void> {
     await this.accessGrants.revokeCredential(grantId, credentialId, principalId);
+    this.#invalidateAuthorizationCache();
   }
 
   async revokeAccessGrant(id: string, principalId: string, terminateActive = false): Promise<void> {
     await this.accessGrants.revoke(id, principalId, terminateActive);
+    this.#invalidateAuthorizationCache();
   }
 
   async #ownedRoute(id: string, userId: string, includeRevoked = false): Promise<StoredRoute> {
@@ -545,7 +592,7 @@ export class RouteService {
   }
 
   async list(userId: string): Promise<PublicRoute[]> {
-    return (await this.store.list()).filter((route) => route.userId === userId).map(toPublicRoute);
+    return (await this.store.list(userId)).map(toPublicRoute);
   }
 
   async get(id: string, userId: string): Promise<PublicRoute> {
@@ -558,12 +605,14 @@ export class RouteService {
       await this.store.revokeAccessGrant(grant.id, false);
     }
     await this.store.revoke(id, false);
+    this.#invalidateAuthorizationCache();
     this.logger.info("Route revoked", { routeId: id });
   }
 
   async emergencyRevoke(id: string): Promise<void> {
     for (const grant of await this.store.listAccessGrants(id)) await this.store.revokeAccessGrant(grant.id, true);
     await this.store.revoke(id, true);
+    this.#invalidateAuthorizationCache();
     this.connections.terminateRoute(id);
     this.logger.warn("Route emergency-revoked; active connections terminated", { routeId: id });
   }
@@ -602,6 +651,15 @@ export class RouteService {
     if (!/^pxy_[a-zA-Z0-9_-]{1,128}$/.test(id) || token.length === 0 || token.length > 512) {
       throw new AuthenticationError();
     }
+    await this.#refreshAuthorizationEpoch();
+    const cacheKey = this.#authorizationCacheKey(id, token);
+    const cached = this.#authorizationCache.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > this.now()) {
+      this.#authorizationCache.delete(cacheKey);
+      this.#authorizationCache.set(cacheKey, cached);
+      return structuredClone(cached.route);
+    }
+    if (cached !== undefined) this.#authorizationCache.delete(cacheKey);
     const authenticated = await this.store.authenticateAccessGrant(id, token);
     if (authenticated === undefined) throw new AuthenticationError();
     if (authenticated.credential.sessionMode === "managed") {
@@ -617,7 +675,9 @@ export class RouteService {
         throw new AuthenticationError();
       }
     }
-    return this.#routeForCredential(await this.store.get(authenticated.grant.routeId), authenticated.grant, authenticated.credential);
+    const route = this.#routeForCredential(authenticated.route, authenticated.grant, authenticated.credential);
+    this.#cacheAuthorization(cacheKey, route);
+    return route;
   }
 
   createResolutionState(): ResolutionState {
@@ -631,6 +691,9 @@ export class RouteService {
   }
 
   async assertNewConnectionAllowed(routeId: string, accessGrantId: string, sessionId?: string): Promise<void> {
+    if (!this.connections.canAcceptConnection()) {
+      throw new ProviderUnavailableError("Proxy task is at its active-connection admission limit");
+    }
     const current = await this.store.get(routeId);
     if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
     const grant = await this.store.getAccessGrant(accessGrantId);
@@ -648,16 +711,15 @@ export class RouteService {
     state: ResolutionState,
     context: ResolutionContext,
   ): Promise<UpstreamEndpoint> {
-    const grant = await this.store.getAccessGrant(route.accessGrantId);
-    const credential = grant.credentials.find((candidate) => candidate.id === route.credentialId);
-    if (credential === undefined) throw new AuthenticationError();
-    const current = this.#routeForCredential(await this.store.get(route.id), grant, credential);
+    const current = route;
     if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
     this.assertProtocolAllowed(current, protocol);
     const recentTo = new Date(this.now()).toISOString();
     const recentFrom = new Date(this.now() - ROUTING_POLICY.evidenceWindowMs).toISOString();
-    const recentRecords = await this.store.listUsageRecords(recentFrom, recentTo);
-    const activeConnections = await this.store.listAllActiveTunnels(recentTo);
+    const recentRecords = await this.store.listUsageRecords(recentFrom, recentTo, {
+      limit: ROUTING_EVIDENCE_RECORD_LIMIT,
+      newestFirst: true,
+    });
     let logicalSession: StoredLogicalSession | undefined;
     if (current.sessionMode === "managed") {
       if (current.sessionId === undefined) throw new AuthenticationError();
@@ -712,7 +774,8 @@ export class RouteService {
           };
           if (await this.store.saveLogicalSession(updated, logicalSession.bindingVersion)) logicalSession = updated;
         } else {
-          const activeForSession = activeConnections.filter((connection) => connection.sessionId === logicalSession?.id).length;
+          const activeForSession =
+            (await this.store.getActiveConnectionCounts([], [], [logicalSession.id], recentTo)).sessions.get(logicalSession.id) ?? 0;
           const stableFor = this.now() - Date.parse(logicalSession.preferredClassHealthySince);
           const quiescentFor =
             logicalSession.lastDisconnectedAt === undefined
@@ -752,7 +815,6 @@ export class RouteService {
         current,
         state,
         recentRecords,
-        activeConnections,
         context.signal,
       )
     ).slice(0, MAX_PROVIDERS_PER_OPERATION);
@@ -885,7 +947,9 @@ export class RouteService {
       }
       if (endpoint.activeLoadClaimId === undefined) {
         const providerRecords = recentRecords.filter((record) => record.provider === provider.descriptor.id);
-        const providerLoad = activeConnections.filter((connection) => connection.provider === provider.descriptor.id).length;
+        const providerLoad =
+          (await this.store.getActiveConnectionCounts([provider.descriptor.id], [], [], recentTo)).providers.get(provider.descriptor.id) ??
+          0;
         const scored = this.candidateRanker.scoreCandidate(provider, providerRecords, providerLoad, false);
         const claimId = randomUUID();
         const claimedAt = new Date(this.now()).toISOString();

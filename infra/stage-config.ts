@@ -44,7 +44,7 @@ export function resolveStageConfiguration(stage: string): StageConfiguration {
     removal: production ? "retain" : "remove",
     providerMode,
     minimumTasks: production ? 2 : 1,
-    maximumTasks: production ? 4 : 2,
+    maximumTasks: production ? 20 : 4,
     deployTransportTarget: kind === "ci",
     features: {
       controlApiIdentities: false,

@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { V0_POLICY } from "./service-policies.js";
 import type {
   ActiveTunnel,
@@ -33,6 +33,10 @@ export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = V0_POLICY.credentialLifecycle
 export const ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS = V0_POLICY.credentialLifecycle.renewalWindowMs;
 export const ACCESS_GRANT_CREDENTIAL_OVERLAP_MS = V0_POLICY.credentialLifecycle.overlapMs;
 
+export function hashAccessGrantToken(token: string, salt: string): Buffer {
+  return createHash("sha256").update(salt, "utf8").update("\0", "utf8").update(token, "utf8").digest();
+}
+
 function credentialDates(createdAt: string): { renewalDueAt: string; expiresAt: string } {
   const createdAtMs = Date.parse(createdAt);
   return {
@@ -54,7 +58,9 @@ export function createStoredCredential(
     sessionMode,
     ...(sessionId === undefined ? {} : { sessionId }),
     tokenSalt,
-    tokenHash: scryptSync(token, tokenSalt, 32).toString("hex"),
+    // Access-grant tokens contain 256 random bits. A salted digest provides
+    // one-way storage without putting a password KDF on every proxy request.
+    tokenHash: hashAccessGrantToken(token, tokenSalt).toString("hex"),
     status: "active",
     createdAt,
     ...credentialDates(createdAt),
@@ -127,9 +133,10 @@ export interface RouteRepository {
   create(id: string, profile: RouteProfile): Promise<StoredRoute>;
   update(id: string, profile: RouteProfile): Promise<StoredRoute>;
   get(id: string, includeRevoked?: boolean): Promise<StoredRoute>;
-  list(): Promise<StoredRoute[]>;
+  list(userId?: string): Promise<StoredRoute[]>;
   revoke(id: string, terminateActive?: boolean): Promise<void>;
   shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean>;
+  getAuthorizationEpoch(): Promise<number>;
 }
 
 export interface AccessGrantRepository {
@@ -184,6 +191,16 @@ export interface ActiveTunnelRepository {
   removeActiveTunnel(id: string): Promise<void>;
   listActiveTunnels(deploymentId: string, now?: string): Promise<ActiveTunnel[]>;
   listAllActiveTunnels(now?: string): Promise<ActiveTunnel[]>;
+  getActiveConnectionCounts(
+    providers: readonly ProviderId[],
+    endpointIds: readonly string[],
+    sessionIds: readonly string[],
+    now?: string,
+  ): Promise<{
+    providers: ReadonlyMap<ProviderId, number>;
+    endpoints: ReadonlyMap<string, number>;
+    sessions: ReadonlyMap<string, number>;
+  }>;
 }
 
 export interface CapacityCircuitRepository {
@@ -233,7 +250,7 @@ export interface HealthAlertRepository {
 
 export interface UsageRepository {
   recordUsage(record: UsageRecord): Promise<boolean>;
-  listUsageRecords(from: string, to: string): Promise<UsageRecord[]>;
+  listUsageRecords(from: string, to: string, options?: { limit?: number; newestFirst?: boolean }): Promise<UsageRecord[]>;
   saveUsageRollup(rollup: UsageRollup): Promise<void>;
   listUsageRollups(from: string, to: string, interval: UsageRollup["interval"]): Promise<UsageRollup[]>;
   saveUsageReconciliation(reconciliation: UsageReconciliation): Promise<boolean>;

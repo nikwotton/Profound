@@ -104,6 +104,8 @@ DynamoDB is the shared physical persistence service. Logical ownership remains e
 
 The AWS table uses on-demand capacity and point-in-time recovery. Production removal is protected. Personal stages are disposable; remove them instead of preserving obsolete pre-v0 state. The local runtime and offline tests use an ephemeral in-memory adapter; Dynamo-specific and deployed acceptance tests verify persistence semantics.
 
+High-volume active-tunnel and usage-ledger GSI writes are distributed across 16 deterministic shards. Per-provider, per-slot, and per-session active-load leases use dedicated DynamoDB partitions and TTLs, so candidate selection reads only the eligible candidates rather than scanning all active tunnels. Profile, grant, and logical-session lists use owner indexes. The routing data path reads at most the newest 2,048 attempt records from its 24-hour evidence window; accounting and dashboard queries retain their explicit requested ranges.
+
 ## AWS deployment with SST
 
 ### Prerequisites
@@ -233,6 +235,8 @@ The proxy NLB terminates TLS on port `8080` for HTTP proxy traffic. The control 
 
 AWS fixes the TLS-listener idle timeout at 350 seconds. V0 fixes the SOCKS5 TCP listener at 1,200 seconds and target-group deregistration at 300 seconds. Proxy-slot load exists only while an upstream connection is active and is heartbeated independently of those load-balancer timeouts.
 
+The proxy ECS service runs 2–20 tasks in production and 1–4 elsewhere. CPU and memory target tracking are supplemented by a connection target derived from the NLB `ActiveFlowCount` divided by the Container Insights `RunningTaskCount`; the current typed target is 500 active connections per task. Each task admits at most 750 tracked connections, failing new connections closed while existing streams drain. Authorization checks use a bounded per-task cache whose salted high-entropy token digests are invalidated by a shared DynamoDB epoch; active connections share one epoch poll per task rather than one poll per socket.
+
 ### Personal SST development
 
 Personal `sst dev` sessions force mock providers and use fixed non-sensitive development placeholders. Start one without provisioning stage secrets:
@@ -349,7 +353,7 @@ For evidence collection only, the roadmap hypothesis computes a 0–100 score:
 - Stability discounts stale evidence, logical identity churn, and repeated failover.
 - Signals without fresh evidence start neutral at `0.5`. The five-point band and `score²` weighting remain roadmap hypotheses and do not control v0 traffic.
 
-Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options. Managed sessions exhaust the eligible device-backed class despite soft saturation. For stateless traffic, residential soft saturation promotes compatible unsaturated device-backed capacity ahead of saturated residential overflow. Revalidate and version the roadmap policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent before allowing it to control production traffic.
+Slot claims are durable and liveness-backed. Each connection registers its tunnel and provider/slot/session leases in one DynamoDB transaction; connection teardown removes them and TTL bounds crash residue. Selection reads only the eligible slot partitions. Concurrent selectors may observe the same least-loaded slot, so placement is deliberately approximate under races instead of globally serialized; subsequent connections see the committed leases and converge. Candidates at or above the soft limit remain overflow options. Managed sessions exhaust the eligible device-backed class despite soft saturation. For stateless traffic, residential soft saturation promotes compatible unsaturated device-backed capacity ahead of saturated residential overflow. Revalidate and version the roadmap policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent before allowing it to control production traffic.
 
 The implemented v0 recommendation policy `experimental-proxidize-capacity-defaults-2026-07-18` is centralized in code and carried on durable records and rollups. Its numeric values are experimental implementation defaults, not validated service targets, and it does not control v0 least-loaded selection:
 

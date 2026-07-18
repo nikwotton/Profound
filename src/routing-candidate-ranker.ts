@@ -7,7 +7,7 @@ import { historicalRoutingEvidence, ROUTING_POLICY, scoreRoutingCandidate, type 
 import { V0_POLICY } from "./service-policies.js";
 import type { ResolutionState } from "./route-service.js";
 import type { RoutingStore } from "./store.js";
-import type { ActiveTunnel, AuthenticatedRoute, ProviderId, UsageRecord } from "./types.js";
+import type { AuthenticatedRoute, ProviderId, UsageRecord } from "./types.js";
 
 export const MAX_PEERS_PER_PROVIDER = V0_POLICY.establishmentBudget.candidatesPerProvider;
 export const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = V0_POLICY.establishmentBudget.candidatesPerProvider;
@@ -64,7 +64,6 @@ export class RoutingCandidateRanker {
     route: AuthenticatedRoute,
     state: ResolutionState,
     recentRecords: readonly UsageRecord[],
-    activeConnections: readonly ActiveTunnel[],
     signal: AbortSignal,
   ): Promise<ProviderAdapter[]> {
     const preferredClass = preferredProviderClass(route.sessionMode);
@@ -77,7 +76,7 @@ export class RoutingCandidateRanker {
           (record.capacityPressureProvider ?? (record.provider === "unresolved" ? undefined : record.provider)) === provider.descriptor.id,
       );
       if (provider.descriptor.id === "proxidize") {
-        const compatibleEndpoints = (await this.proxidize.listEndpoints(true, signal)).filter(
+        const compatibleEndpoints = (await this.proxidize.listEndpoints(false, signal)).filter(
           (endpoint) => endpoint.healthy && !state.excludedEndpointIds.has(endpoint.id) && this.proxidize.matches(endpoint, route),
         );
         const endpoints: typeof compatibleEndpoints = [];
@@ -86,10 +85,15 @@ export class RoutingCandidateRanker {
           else state.capacityConstraint = "capacity_circuit";
         }
         if (endpoints.length === 0) continue;
+        const endpointLoads = (
+          await this.store.getActiveConnectionCounts(
+            [],
+            endpoints.map(({ id }) => id),
+            [],
+          )
+        ).endpoints;
         const candidates = endpoints.map((endpoint): ScoredRoutingCandidate<string> & { activeConnections: number } => {
-          const load = activeConnections.filter(
-            (connection) => connection.provider === "proxidize" && connection.endpointId === endpoint.id,
-          ).length;
+          const load = endpointLoads.get(endpoint.id) ?? 0;
           return {
             candidate: endpoint.id,
             activeConnections: load,
@@ -119,7 +123,8 @@ export class RoutingCandidateRanker {
           state.capacityConstraint = "capacity_circuit";
           continue;
         }
-        const load = activeConnections.filter((connection) => connection.provider === provider.descriptor.id).length;
+        const load =
+          (await this.store.getActiveConnectionCounts([provider.descriptor.id], [], [])).providers.get(provider.descriptor.id) ?? 0;
         scored.push({
           candidate: provider,
           activeConnections: load,

@@ -9,7 +9,7 @@ test("stage configuration isolates personal stages with safe provider and capaci
   assert.equal(personal.protect, false);
   assert.equal(personal.removal, "remove");
   assert.equal(personal.deployTransportTarget, false);
-  assert.deepEqual([personal.minimumTasks, personal.maximumTasks], [1, 2]);
+  assert.deepEqual([personal.minimumTasks, personal.maximumTasks], [1, 4]);
   assert.deepEqual(personal.features, {
     controlApiIdentities: false,
     syntheticHealthRoute: false,
@@ -27,6 +27,6 @@ test("shared, CI, and production stage behavior is centralized and explicit", ()
   assert.equal(production.providerMode, "live");
   assert.equal(production.protect, true);
   assert.equal(production.removal, "retain");
-  assert.deepEqual([production.minimumTasks, production.maximumTasks], [2, 4]);
+  assert.deepEqual([production.minimumTasks, production.maximumTasks], [2, 20]);
   assert.throws(() => classifyStage("Bad/Stage"), /stage names/);
 });

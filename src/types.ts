@@ -118,6 +118,7 @@ export interface StoredAccessGrant {
 export interface AuthenticatedAccessGrant {
   grant: StoredAccessGrant;
   credential: StoredAccessGrantCredential;
+  route: StoredRoute;
 }
 
 export interface PublicAccessGrant {

@@ -1,8 +1,14 @@
-import { scryptSync, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { claimCapacityCircuitProbe, recordCapacityCircuitFailure as nextCapacityCircuitFailure } from "./capacity-circuit.js";
 import { NotFoundError } from "./errors.js";
 import { InMemoryUsageRepository } from "./in-memory-usage-repository.js";
-import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
+import {
+  ACCESS_GRANT_CREDENTIAL_OVERLAP_MS,
+  createStoredCredential,
+  credentialUsername,
+  hashAccessGrantToken,
+  type RouteStore,
+} from "./store.js";
 import type {
   ActiveTunnel,
   AuthenticatedAccessGrant,
@@ -62,6 +68,7 @@ export class InMemoryRouteStoreState {
   readonly usageReconciliations = new Map<string, UsageReconciliation>();
   readonly usageAlertEvents = new Map<string, UsageAlertEvent>();
   readonly capacityPressureEvidence = new Map<string, CapacityPressureEvidence>();
+  authorizationEpoch = 0;
 }
 
 /** Ephemeral persistence for local development and tests. Deployed services use DynamoRouteStore. */
@@ -79,6 +86,14 @@ export class InMemoryRouteStore implements RouteStore {
     return new Date(this.now()).toISOString();
   }
 
+  #bumpAuthorizationEpoch(): void {
+    this.state.authorizationEpoch += 1;
+  }
+
+  async getAuthorizationEpoch(): Promise<number> {
+    return this.state.authorizationEpoch;
+  }
+
   async create(id: string, profile: RouteProfile): Promise<StoredRoute> {
     if (this.state.routes.has(id)) throw new Error("duplicate_route");
     const now = this.#nowIso();
@@ -91,6 +106,7 @@ export class InMemoryRouteStore implements RouteStore {
       updatedAt: now,
     };
     this.state.routes.set(id, route);
+    this.#bumpAuthorizationEpoch();
     return copy(route);
   }
 
@@ -103,6 +119,7 @@ export class InMemoryRouteStore implements RouteStore {
       updatedAt: this.#nowIso(),
     };
     this.state.routes.set(id, route);
+    this.#bumpAuthorizationEpoch();
     return copy(route);
   }
 
@@ -112,9 +129,9 @@ export class InMemoryRouteStore implements RouteStore {
     return copy(route);
   }
 
-  async list(): Promise<StoredRoute[]> {
+  async list(userId?: string): Promise<StoredRoute[]> {
     return [...this.state.routes.values()]
-      .filter((route) => route.status !== "revoked")
+      .filter((route) => route.status !== "revoked" && (userId === undefined || route.userId === userId))
       .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))
       .map(copy);
   }
@@ -159,6 +176,7 @@ export class InMemoryRouteStore implements RouteStore {
     grant.credentials.push(createStoredCredential(credentialId, token, sessionMode, now, sessionId));
     grant.updatedAt = now;
     this.state.grants.set(id, copy(grant));
+    this.#bumpAuthorizationEpoch();
     return copy(grant);
   }
 
@@ -188,14 +206,14 @@ export class InMemoryRouteStore implements RouteStore {
     const nowMs = Date.parse(now);
     const credential = grant.credentials.find((candidate) => {
       if (credentialUsername(candidate.id) !== username || !credentialUsable(candidate, nowMs)) return false;
-      const actual = scryptSync(token, candidate.tokenSalt, 32);
+      const actual = hashAccessGrantToken(token, candidate.tokenSalt);
       const expected = Buffer.from(candidate.tokenHash, "hex");
       return actual.length === expected.length && timingSafeEqual(actual, expected);
     });
     if (credential === undefined) return undefined;
     credential.lastUsedAt = now;
     grant.updatedAt = now;
-    return copy({ grant, credential });
+    return copy({ grant, credential, route });
   }
 
   async rotateAccessGrantCredential(
@@ -223,6 +241,7 @@ export class InMemoryRouteStore implements RouteStore {
     });
     grant.credentials.push(createStoredCredential(credentialId, token, previous.sessionMode, now, previous.sessionId));
     grant.updatedAt = now;
+    this.#bumpAuthorizationEpoch();
     return copy(grant);
   }
 
@@ -236,6 +255,7 @@ export class InMemoryRouteStore implements RouteStore {
     credential.status = "revoked";
     credential.revokeAt = now;
     grant.updatedAt = now;
+    this.#bumpAuthorizationEpoch();
   }
 
   async revokeAccessGrant(id: string, terminateActive = false): Promise<void> {
@@ -245,6 +265,7 @@ export class InMemoryRouteStore implements RouteStore {
     if (terminateActive) grant.terminateActive = true;
     grant.updatedAt = this.#nowIso();
     await this.closeLogicalSessions(id, terminateActive);
+    this.#bumpAuthorizationEpoch();
   }
 
   async createLogicalSession(session: StoredLogicalSession): Promise<void> {
@@ -282,6 +303,7 @@ export class InMemoryRouteStore implements RouteStore {
     session.updatedAt = now;
     session.bindingVersion += 1;
     this.state.sessions.set(id, copy(session));
+    this.#bumpAuthorizationEpoch();
   }
 
   async closeLogicalSessions(grantId: string, terminateActive = false): Promise<void> {
@@ -294,6 +316,7 @@ export class InMemoryRouteStore implements RouteStore {
     route.status = "revoked";
     route.terminateActive = terminateActive || route.terminateActive;
     route.updatedAt = this.#nowIso();
+    this.#bumpAuthorizationEpoch();
   }
 
   async shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean> {
@@ -353,6 +376,31 @@ export class InMemoryRouteStore implements RouteStore {
       .filter((tunnel) => tunnel.expiresAt > now)
       .toSorted((left, right) => left.id.localeCompare(right.id))
       .map(copy);
+  }
+
+  async getActiveConnectionCounts(
+    providers: readonly ProviderId[],
+    endpointIds: readonly string[],
+    sessionIds: readonly string[],
+    now = this.#nowIso(),
+  ): Promise<{
+    providers: ReadonlyMap<ProviderId, number>;
+    endpoints: ReadonlyMap<string, number>;
+    sessions: ReadonlyMap<string, number>;
+  }> {
+    const providerCounts = new Map<ProviderId, number>(providers.map((provider) => [provider, 0]));
+    const endpointCounts = new Map<string, number>(endpointIds.map((endpointId) => [endpointId, 0]));
+    const sessionCounts = new Map<string, number>(sessionIds.map((sessionId) => [sessionId, 0]));
+    for (const tunnel of await this.listAllActiveTunnels(now)) {
+      if (providerCounts.has(tunnel.provider)) providerCounts.set(tunnel.provider, (providerCounts.get(tunnel.provider) ?? 0) + 1);
+      if (tunnel.endpointId !== undefined && endpointCounts.has(tunnel.endpointId)) {
+        endpointCounts.set(tunnel.endpointId, (endpointCounts.get(tunnel.endpointId) ?? 0) + 1);
+      }
+      if (tunnel.sessionId !== undefined && sessionCounts.has(tunnel.sessionId)) {
+        sessionCounts.set(tunnel.sessionId, (sessionCounts.get(tunnel.sessionId) ?? 0) + 1);
+      }
+    }
+    return { providers: providerCounts, endpoints: endpointCounts, sessions: sessionCounts };
   }
 
   async getCapacityCircuit(provider: ProviderId, candidateKey: string, now = this.#nowIso()): Promise<CapacityCircuitState | undefined> {
@@ -500,8 +548,8 @@ export class InMemoryRouteStore implements RouteStore {
     return this.#usage.recordUsage(record);
   }
 
-  listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
-    return this.#usage.listUsageRecords(from, to);
+  listUsageRecords(from: string, to: string, options?: { limit?: number; newestFirst?: boolean }): Promise<UsageRecord[]> {
+    return this.#usage.listUsageRecords(from, to, options);
   }
 
   saveUsageRollup(rollup: UsageRollup): Promise<void> {

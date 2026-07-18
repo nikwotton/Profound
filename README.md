@@ -6,7 +6,7 @@ V0 includes:
 
 - native HTTP forwarding, HTTPS `CONNECT`, and SOCKS5 TCP `CONNECT`;
 - reusable, secret-free route profiles and independently revocable access grants;
-- deterministic least-loaded candidate selection, safe pre-commit retry, and atomic per-connection proxy-slot assignment;
+- deterministic least-loaded candidate selection, safe pre-commit retry, and TTL-backed per-connection proxy-slot leases without a global selection lock;
 - mock providers in an entirely local runtime and personal SST stages that require no vendor account or payment;
 - ephemeral in-memory persistence for local review and DynamoDB persistence for deployed stages;
 - health aggregation, signed external canaries, alerts, usage accounting, and a company-facing dashboard;

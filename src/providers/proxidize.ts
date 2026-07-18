@@ -102,6 +102,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
   }
   #cachedEndpoints: MobileEndpoint[] = [];
   #cacheExpiresAt = 0;
+  #endpointRefresh: Promise<MobileEndpoint[]> | undefined;
 
   get providerAccountId(): string {
     return this.config.providerAccountId ?? "proxidize-primary";
@@ -155,6 +156,13 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
 
   async listEndpoints(refresh = false, signal?: AbortSignal): Promise<MobileEndpoint[]> {
     if (!refresh && Date.now() < this.#cacheExpiresAt) return this.#cachedEndpoints;
+    this.#endpointRefresh ??= this.#loadEndpoints(signal).finally(() => {
+      this.#endpointRefresh = undefined;
+    });
+    return this.#endpointRefresh;
+  }
+
+  async #loadEndpoints(signal?: AbortSignal): Promise<MobileEndpoint[]> {
     try {
       const subscriptions = expectRecord(
         await this.#request("/api/v1/subscription?type=per_proxy", signal === undefined ? undefined : { signal }),
@@ -219,7 +227,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
   }
 
   async resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint> {
-    const endpoints = await this.listEndpoints(true, options.signal);
+    const endpoints = await this.listEndpoints(false, options.signal);
     const assigned =
       options.selectedEndpointId === undefined ? undefined : endpoints.find((candidate) => candidate.id === options.selectedEndpointId);
     const endpoint =
@@ -262,7 +270,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
   }
 
   async setRotationInterval(endpointId: string, intervalSeconds?: number): Promise<void> {
-    const endpoint = (await this.listEndpoints(true)).find((candidate) => candidate.id === endpointId);
+    const endpoint = (await this.listEndpoints(false)).find((candidate) => candidate.id === endpointId);
     if (endpoint === undefined) throw providerError(new ProviderUnavailableError("Mobile endpoint was not found"));
     await this.#request("/api/v1/perproxy/set-rotation-interval", {
       method: "POST",

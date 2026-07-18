@@ -10,6 +10,7 @@ export const v0Policy = {
     blockedTargetHostnames: TRANSPORT_POLICY.blockedTargetHostnames.join(","),
     streamBufferBytes: String(TRANSPORT_POLICY.streamBufferBytes),
     maxHeaderBytes: String(TRANSPORT_POLICY.maxHeaderBytes),
+    targetActiveConnectionsPerTask: TRANSPORT_POLICY.targetActiveConnectionsPerTask,
     connectTimeoutMs: String(V0_POLICY.establishmentBudget.attemptTimeoutMs),
     operationTimeoutMs: String(V0_POLICY.establishmentBudget.operationTimeoutMs),
     retryMaxAttempts: String(V0_POLICY.establishmentBudget.providersPerOperation * V0_POLICY.establishmentBudget.candidatesPerProvider),

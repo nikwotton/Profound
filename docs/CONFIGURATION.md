@@ -40,17 +40,17 @@ Stage behavior is fixed in `infra/stage-config.ts`:
 
 | Stage                | Provider | Data-plane tasks | Removal          |
 | -------------------- | -------- | ---------------- | ---------------- |
-| `prod`, `production` | live     | 2–4              | protected/retain |
-| `staging`            | live     | 1–2              | removable        |
-| `preview`            | mock     | 1–2              | removable        |
-| `ci`, `ci-*`         | mock     | 1–2              | removable        |
-| personal stage       | mock     | 1–2              | removable        |
+| `prod`, `production` | live     | 2–20             | protected/retain |
+| `staging`            | live     | 1–4              | removable        |
+| `preview`            | mock     | 1–4              | removable        |
+| `ci`, `ci-*`         | mock     | 1–4              | removable        |
+| personal stage       | mock     | 1–4              | removable        |
 
 The optional multi-identity map, dedicated synthetic route, signed alert destinations, and external usage-accounting source are typed stage features. They are disabled in the initial v0 policy. Enabling one requires a reviewed code change and its corresponding SST secret; there is no environment-variable feature gate.
 
 Only two numeric policy groups are authoritative v0 design decisions: credential lifecycle and the connection-establishment budget. They live together in `src/service-policies.ts` as `V0_POLICY`. Other operational values are current typed implementation defaults in `infra/providers/aws.ts` or component policy modules, including:
 
-- destination ports, connection/operation/stream limits, retries, and provider capability policy;
+- destination ports, connection/operation/stream limits, per-task connection admission, retries, and provider capability policy;
 - NLB idle and deregistration timing;
 - Axiom endpoint, generated dataset names, and the current telemetry-retention default;
 - canary request limits, throttling, and GeoIP accuracy policy;

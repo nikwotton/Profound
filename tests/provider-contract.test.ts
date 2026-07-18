@@ -201,3 +201,43 @@ test("Proxidize decodes injected control-plane responses and exposes typed, attr
     return true;
   });
 });
+
+test("Proxidize coalesces concurrent inventory refreshes and reuses the data-path cache", async () => {
+  let requestCount = 0;
+  const adapter = new ProxidizeAdapter({
+    apiBaseUrl: "https://proxidize.invalid",
+    apiToken: "token",
+    requestTimeoutMs: 1_000,
+    cacheTtlMs: 5_000,
+    exactCity: "provider_guaranteed",
+    fetchImplementation: async (input) => {
+      requestCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+      return url.includes("subscription")
+        ? Response.json({ data: [{ meta_data: { username: "account" } }] })
+        : Response.json({
+            data: [
+              {
+                id: "slot-1",
+                username: "proxy-user",
+                password: "proxy-password",
+                host: "proxy.example",
+                port: 8080,
+                country: "US",
+                region: "NY",
+                carrier: "T-Mobile",
+                public_key: "key-1",
+                healthy: true,
+              },
+            ],
+          });
+    },
+  });
+
+  const [first, second] = await Promise.all([adapter.listEndpoints(true), adapter.listEndpoints(true)]);
+  assert.deepEqual(first, second);
+  assert.equal(requestCount, 2, "one subscription and one inventory request serve both callers");
+  await adapter.listEndpoints(false);
+  assert.equal(requestCount, 2, "data-plane reads reuse the fresh inventory snapshot");
+});

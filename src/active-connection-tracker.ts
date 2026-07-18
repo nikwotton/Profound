@@ -1,13 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { DEPLOYMENT_POLL_INTERVAL_MS } from "./release-policy.js";
+import { TRANSPORT_POLICY } from "./service-policies.js";
 import type { RoutingStore } from "./store.js";
 import { ACTIVE_CONNECTION_TTL_MS } from "./types.js";
 import type { ActiveTunnel, DataPlaneProtocol, UpstreamEndpoint } from "./types.js";
+
+interface TrackedConnection {
+  routeId: string;
+  accessGrantId: string;
+  sessionId?: string;
+  terminate: () => void;
+  nextHeartbeatAt: number;
+}
 
 export class ActiveConnectionTracker {
   readonly #activeByRoute = new Map<string, Set<() => void>>();
   readonly #activeByGrant = new Map<string, Set<() => void>>();
   readonly #activeBySession = new Map<string, Set<() => void>>();
+  readonly #connections = new Map<string, TrackedConnection>();
+  #pollTimer: NodeJS.Timeout | undefined;
+  #polling = false;
+  #authorizationEpoch = -1;
+  #nextDeploymentCheckAt = 0;
 
   constructor(
     private readonly store: RoutingStore,
@@ -25,6 +39,10 @@ export class ActiveConnectionTracker {
 
   terminateSession(sessionId: string): void {
     this.#terminate(this.#activeBySession.get(sessionId));
+  }
+
+  canAcceptConnection(): boolean {
+    return this.#connections.size < TRANSPORT_POLICY.maxActiveConnectionsPerTask;
   }
 
   async track(
@@ -63,32 +81,19 @@ export class ActiveConnectionTracker {
     grantCallbacks.add(terminate);
     sessionCallbacks?.add(terminate);
     let finished = false;
-    let nextTunnelHeartbeatAt = 0;
-    let nextDeploymentCheckAt = 0;
-    const check = async (): Promise<void> => {
-      if (finished) return;
-      if (await this.store.shouldTerminateActive(routeId, accessGrantId, sessionId)) return terminate();
-      if (this.now() >= nextDeploymentCheckAt) {
-        nextDeploymentCheckAt = this.now() + DEPLOYMENT_POLL_INTERVAL_MS;
-        if (await this.store.shouldTerminateDeployment(this.deploymentId)) return terminate();
-      }
-      if (this.now() >= nextTunnelHeartbeatAt) {
-        nextTunnelHeartbeatAt = this.now() + 30_000;
-        const heartbeat = new Date(this.now()).toISOString();
-        await this.store.heartbeatActiveTunnel(
-          activeConnectionId,
-          heartbeat,
-          new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString(),
-        );
-      }
-    };
-    void check().catch(() => terminate());
-    const interval = setInterval(() => void check().catch(() => terminate()), 1_000);
-    interval.unref();
+    this.#connections.set(activeConnectionId, {
+      routeId,
+      accessGrantId,
+      ...(sessionId === undefined ? {} : { sessionId }),
+      terminate,
+      nextHeartbeatAt: this.now() + 30_000,
+    });
+    this.#startPoller();
     return () => {
       if (finished) return;
       finished = true;
-      clearInterval(interval);
+      this.#connections.delete(activeConnectionId);
+      this.#stopPollerWhenIdle();
       this.#remove(this.#activeByRoute, routeId, terminate);
       this.#remove(this.#activeByGrant, accessGrantId, terminate);
       if (sessionId !== undefined) this.#remove(this.#activeBySession, sessionId, terminate);
@@ -118,6 +123,59 @@ export class ActiveConnectionTracker {
 
   #terminate(callbacks: Set<() => void> | undefined): void {
     for (const terminate of [...(callbacks ?? [])]) terminate();
+  }
+
+  #startPoller(): void {
+    if (this.#pollTimer !== undefined) return;
+    void this.#poll().catch(() => this.#terminateAll());
+    this.#pollTimer = setInterval(() => void this.#poll().catch(() => this.#terminateAll()), 1_000);
+    this.#pollTimer.unref();
+  }
+
+  #stopPollerWhenIdle(): void {
+    if (this.#connections.size > 0 || this.#pollTimer === undefined) return;
+    clearInterval(this.#pollTimer);
+    this.#pollTimer = undefined;
+  }
+
+  async #poll(): Promise<void> {
+    if (this.#polling || this.#connections.size === 0) return;
+    this.#polling = true;
+    try {
+      const epoch = await this.store.getAuthorizationEpoch();
+      if (epoch !== this.#authorizationEpoch) {
+        this.#authorizationEpoch = epoch;
+        const unique = new Map<string, TrackedConnection>();
+        for (const connection of this.#connections.values()) {
+          unique.set(`${connection.routeId}\0${connection.accessGrantId}\0${connection.sessionId ?? ""}`, connection);
+        }
+        await Promise.all(
+          [...unique.values()].map(async (connection) => {
+            if (await this.store.shouldTerminateActive(connection.routeId, connection.accessGrantId, connection.sessionId)) {
+              connection.terminate();
+            }
+          }),
+        );
+      }
+      if (this.now() >= this.#nextDeploymentCheckAt) {
+        this.#nextDeploymentCheckAt = this.now() + DEPLOYMENT_POLL_INTERVAL_MS;
+        if (await this.store.shouldTerminateDeployment(this.deploymentId)) this.#terminateAll();
+      }
+      const heartbeat = new Date(this.now()).toISOString();
+      await Promise.all(
+        [...this.#connections.entries()].map(async ([id, connection]) => {
+          if (this.now() < connection.nextHeartbeatAt) return;
+          connection.nextHeartbeatAt = this.now() + 30_000;
+          await this.store.heartbeatActiveTunnel(id, heartbeat, new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString());
+        }),
+      );
+    } finally {
+      this.#polling = false;
+    }
+  }
+
+  #terminateAll(): void {
+    for (const connection of this.#connections.values()) connection.terminate();
   }
 
   async #recordDisconnect(sessionId: string): Promise<void> {

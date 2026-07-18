@@ -122,7 +122,14 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     // The bastion is required by `sst tunnel` so operators and the deployed
     // integration suite can reach the internal status and health endpoints.
     const vpc = new sst.aws.Vpc("Network", { bastion: true });
-    const cluster = new sst.aws.Cluster("Cluster", { vpc });
+    const cluster = new sst.aws.Cluster("Cluster", {
+      vpc,
+      transform: {
+        cluster(args) {
+          args.settings = [{ name: "containerInsights", value: "enabled" }];
+        },
+      },
+    });
     // The public canary is deliberately isolated in an unpeered VPC so its
     // runtime has no route into the proxy, status, or health-aggregator VPC.
     const canaryVpc = new sst.aws.Vpc("CanaryNetwork");
@@ -529,6 +536,52 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
         },
       },
     });
+    if (!$dev) {
+      const scalingTarget = service.nodes.autoScalingTarget;
+      new aws.appautoscaling.Policy("ProxyActiveConnectionScaling", {
+        serviceNamespace: scalingTarget.serviceNamespace,
+        scalableDimension: scalingTarget.scalableDimension,
+        resourceId: scalingTarget.resourceId,
+        policyType: "TargetTrackingScaling",
+        targetTrackingScalingPolicyConfiguration: {
+          targetValue: v0Policy.routing.targetActiveConnectionsPerTask,
+          scaleInCooldown: 300,
+          scaleOutCooldown: 30,
+          customizedMetricSpecification: {
+            metrics: [
+              {
+                id: "active_flows",
+                returnData: false,
+                metricStat: {
+                  metric: {
+                    namespace: "AWS/NetworkELB",
+                    metricName: "ActiveFlowCount",
+                    dimensions: [{ name: "LoadBalancer", value: proxyLoadBalancer.arnSuffix }],
+                  },
+                  stat: "Average",
+                },
+              },
+              {
+                id: "running_tasks",
+                returnData: false,
+                metricStat: {
+                  metric: {
+                    namespace: "ECS/ContainerInsights",
+                    metricName: "RunningTaskCount",
+                    dimensions: [
+                      { name: "ClusterName", value: cluster.nodes.cluster.name },
+                      { name: "ServiceName", value: service.nodes.service.name },
+                    ],
+                  },
+                  stat: "Average",
+                },
+              },
+              { id: "connections_per_task", expression: "IF(running_tasks>0,active_flows/running_tasks,active_flows)", returnData: true },
+            ],
+          },
+        },
+      });
+    }
     const host = $dev ? "127.0.0.1" : (proxyDomain ?? proxyLoadBalancer.dnsName);
 
     const controlPlane = new sst.aws.Service("ControlPlane", {

@@ -28,6 +28,17 @@ import type {
 export const ENTITY_INDEX = "EntityCreatedAt";
 export const ASSIGNMENT_INDEX = "EndpointAssignments";
 export const ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS = 5 * 60_000;
+export const HIGH_VOLUME_ENTITY_SHARDS = 16;
+
+export function shardedEntity(entity: "active_tunnel" | "usage_record", id: string): string {
+  let hash = 2_166_136_261;
+  for (const character of id) hash = Math.imul(hash ^ character.charCodeAt(0), 16_777_619);
+  return `${entity}#${(hash >>> 0) % HIGH_VOLUME_ENTITY_SHARDS}`;
+}
+
+export function entityShards(entity: "active_tunnel" | "usage_record"): string[] {
+  return Array.from({ length: HIGH_VOLUME_ENTITY_SHARDS }, (_, shard) => `${entity}#${shard}`);
+}
 
 export function itemField(item: unknown, field: string, context: string): unknown {
   return expectRecord(item, context)[field];
@@ -66,6 +77,8 @@ export interface LogicalSessionItem {
   routeId: string;
   status: StoredLogicalSession["status"];
   session: StoredLogicalSession;
+  gsi1pk: string;
+  gsi1sk: string;
 }
 
 export interface CredentialLookupItem {
@@ -129,7 +142,7 @@ export interface HealthAlertDeliveryItem {
 export interface ActiveTunnelItem {
   pk: string;
   sk: "STATE";
-  entity: "active_tunnel";
+  entity: string;
   createdAt: string;
   gsi1pk: string;
   gsi1sk: string;
@@ -157,7 +170,7 @@ export interface DeploymentDrainItem {
 export interface UsageRecordItem {
   pk: string;
   sk: "RECORD";
-  entity: "usage_record";
+  entity: string;
   createdAt: string;
   record: UsageRecord;
 }
@@ -215,6 +228,8 @@ export function logicalSessionItem(session: StoredLogicalSession): LogicalSessio
     routeId: session.routeId,
     status: session.status,
     session,
+    gsi1pk: `GRANT#${session.grantId}`,
+    gsi1sk: `${session.createdAt}#${session.id}`,
   };
 }
 
@@ -250,6 +265,8 @@ export function grantItem(grant: StoredAccessGrant): AccessGrantItem {
     routeId: grant.routeId,
     principalId: grant.principalId,
     grant,
+    gsi1pk: `ROUTE#${grant.routeId}`,
+    gsi1sk: `${grant.createdAt}#${grant.id}`,
   };
 }
 

@@ -1,7 +1,9 @@
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, type QueryCommandInput } from "@aws-sdk/lib-dynamodb";
 import {
   ENTITY_INDEX,
+  entityShards,
   itemField,
+  shardedEntity,
   type CapacityPressureEvidenceItem,
   type UsageAlertEventItem,
   type UsageReconciliationItem,
@@ -24,7 +26,7 @@ export class DynamoUsageRepository implements UsageRepository {
     private readonly client: DynamoDBDocumentClient,
   ) {}
 
-  async #queryAll(input: QueryCommandInput): Promise<Record<string, unknown>[]> {
+  async #queryAll(input: QueryCommandInput, limit?: number): Promise<Record<string, unknown>[]> {
     const items: Record<string, unknown>[] = [];
     let exclusiveStartKey: Record<string, unknown> | undefined;
     do {
@@ -35,6 +37,7 @@ export class DynamoUsageRepository implements UsageRepository {
         }),
       );
       items.push(...(result.Items ?? []));
+      if (limit !== undefined && items.length >= limit) return items.slice(0, limit);
       exclusiveStartKey = result.LastEvaluatedKey;
     } while (exclusiveStartKey !== undefined);
     return items;
@@ -48,7 +51,7 @@ export class DynamoUsageRepository implements UsageRepository {
           Item: {
             pk: `USAGE#${record.id}`,
             sk: "RECORD",
-            entity: "usage_record",
+            entity: shardedEntity("usage_record", record.id),
             createdAt: record.completedAt,
             record,
           } satisfies UsageRecordItem,
@@ -62,18 +65,34 @@ export class DynamoUsageRepository implements UsageRepository {
     }
   }
 
-  async listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
-      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
-      ExpressionAttributeValues: { ":entity": "usage_record", ":from": from, ":to": to },
-      ScanIndexForward: true,
-    });
-    return items
+  async listUsageRecords(from: string, to: string, options: { limit?: number; newestFirst?: boolean } = {}): Promise<UsageRecord[]> {
+    const shards = entityShards("usage_record");
+    const perShardLimit = options.limit === undefined ? undefined : Math.max(1, Math.ceil(options.limit / shards.length) * 2);
+    const items = (
+      await Promise.all(
+        shards.map((entity) =>
+          this.#queryAll(
+            {
+              TableName: this.tableName,
+              IndexName: ENTITY_INDEX,
+              KeyConditionExpression: "#entity = :entity AND #createdAt BETWEEN :from AND :to",
+              ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
+              ExpressionAttributeValues: { ":entity": entity, ":from": from, ":to": to },
+              ScanIndexForward: !options.newestFirst,
+              ...(perShardLimit === undefined ? {} : { Limit: perShardLimit }),
+            },
+            perShardLimit,
+          ),
+        ),
+      )
+    ).flat();
+    const records = items
       .map((item) => decodeUsageRecord(itemField(item, "record", "DynamoDB usage-record item")))
-      .filter((record) => record.completedAt >= from && record.completedAt < to);
+      .filter((record) => record.completedAt >= from && record.completedAt < to)
+      .toSorted((left, right) =>
+        options.newestFirst ? right.completedAt.localeCompare(left.completedAt) : left.completedAt.localeCompare(right.completedAt),
+      );
+    return records.slice(0, options.limit ?? records.length);
   }
 
   async saveUsageRollup(rollup: UsageRollup): Promise<void> {

@@ -86,6 +86,8 @@ export interface TransportPolicy {
   readonly maxHeaderBytes: number;
   readonly allowedTargetPorts: readonly number[];
   readonly blockedTargetHostnames: readonly string[];
+  readonly targetActiveConnectionsPerTask: number;
+  readonly maxActiveConnectionsPerTask: number;
 }
 
 export const TRANSPORT_POLICY: TransportPolicy = Object.freeze({
@@ -95,4 +97,6 @@ export const TRANSPORT_POLICY: TransportPolicy = Object.freeze({
   maxHeaderBytes: 32 * 1024,
   allowedTargetPorts: Object.freeze([80, 443]),
   blockedTargetHostnames: Object.freeze([]),
+  targetActiveConnectionsPerTask: 500,
+  maxActiveConnectionsPerTask: 750,
 });

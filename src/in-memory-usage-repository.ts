@@ -20,11 +20,13 @@ export class InMemoryUsageRepository implements UsageRepository {
     return true;
   }
 
-  async listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
-    return [...this.state.usageRecords.values()]
+  async listUsageRecords(from: string, to: string, options: { limit?: number; newestFirst?: boolean } = {}): Promise<UsageRecord[]> {
+    const records = [...this.state.usageRecords.values()]
       .filter((record) => record.completedAt >= from && record.completedAt < to)
-      .toSorted((left, right) => left.completedAt.localeCompare(right.completedAt))
-      .map(copy);
+      .toSorted((left, right) =>
+        options.newestFirst ? right.completedAt.localeCompare(left.completedAt) : left.completedAt.localeCompare(right.completedAt),
+      );
+    return records.slice(0, options.limit ?? records.length).map(copy);
   }
 
   async saveUsageRollup(rollup: UsageRollup): Promise<void> {

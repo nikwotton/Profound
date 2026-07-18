@@ -1,4 +1,4 @@
-import { scryptSync, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -23,11 +23,13 @@ import {
   credentialLookupKey,
   credentialUsable,
   decodeCredentialLookup,
+  entityShards,
   grantItem,
   itemField,
   logicalSessionItem,
   logicalSessionKey,
   routeKey,
+  shardedEntity,
   type ActiveTunnelItem,
   type CapabilityHealthItem,
   type CapacityCircuitItem,
@@ -54,7 +56,13 @@ import {
   decodeStoredLogicalSession,
   decodeStoredRoute,
 } from "./storage-decoding.js";
-import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
+import {
+  ACCESS_GRANT_CREDENTIAL_OVERLAP_MS,
+  createStoredCredential,
+  credentialUsername,
+  hashAccessGrantToken,
+  type RouteStore,
+} from "./store.js";
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
@@ -95,6 +103,26 @@ export class DynamoRouteStore implements RouteStore {
         marshallOptions: { removeUndefinedValues: true },
       });
     this.#usage = new DynamoUsageRepository(this.tableName, this.#client);
+  }
+
+  async getAuthorizationEpoch(): Promise<number> {
+    const result = await this.#client.send(
+      new GetCommand({ TableName: this.tableName, Key: { pk: "AUTHORIZATION#GLOBAL", sk: "EPOCH" }, ConsistentRead: true }),
+    );
+    const version = result.Item === undefined ? undefined : itemField(result.Item, "version", "authorization epoch");
+    return typeof version === "number" && Number.isSafeInteger(version) && version >= 0 ? version : 0;
+  }
+
+  async #bumpAuthorizationEpoch(): Promise<void> {
+    await this.#client.send(
+      new UpdateCommand({
+        TableName: this.tableName,
+        Key: { pk: "AUTHORIZATION#GLOBAL", sk: "EPOCH" },
+        UpdateExpression: "ADD #version :one",
+        ExpressionAttributeNames: { "#version": "version" },
+        ExpressionAttributeValues: { ":one": 1 },
+      }),
+    );
   }
 
   async #withCapacityCircuitLock<T>(provider: ProviderId, candidateKey: string, action: () => Promise<T>): Promise<T> {
@@ -163,6 +191,8 @@ export class DynamoRouteStore implements RouteStore {
       createdAt: now,
       status: route.status,
       route,
+      gsi1pk: `USER#${route.userId}`,
+      gsi1sk: `${route.createdAt}#${route.id}`,
     };
     await this.#client.send(
       new PutCommand({
@@ -171,6 +201,7 @@ export class DynamoRouteStore implements RouteStore {
         ConditionExpression: "attribute_not_exists(pk)",
       }),
     );
+    await this.#bumpAuthorizationEpoch();
     return route;
   }
 
@@ -193,6 +224,8 @@ export class DynamoRouteStore implements RouteStore {
       createdAt: route.createdAt,
       status: route.status,
       route,
+      gsi1pk: `USER#${route.userId}`,
+      gsi1sk: `${route.createdAt}#${route.id}`,
     };
     await this.#client.send(
       new PutCommand({
@@ -201,6 +234,7 @@ export class DynamoRouteStore implements RouteStore {
         ConditionExpression: "attribute_exists(pk)",
       }),
     );
+    await this.#bumpAuthorizationEpoch();
     return route;
   }
 
@@ -234,14 +268,17 @@ export class DynamoRouteStore implements RouteStore {
     return items;
   }
 
-  async list(): Promise<StoredRoute[]> {
+  async list(userId?: string): Promise<StoredRoute[]> {
     const items = await this.#queryAll({
       TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
+      IndexName: userId === undefined ? ENTITY_INDEX : ASSIGNMENT_INDEX,
+      KeyConditionExpression: userId === undefined ? "#entity = :entity" : "gsi1pk = :user",
       FilterExpression: "#status <> :revoked",
-      ExpressionAttributeNames: { "#entity": "entity", "#status": "status" },
-      ExpressionAttributeValues: { ":entity": "route", ":revoked": "revoked" },
+      ExpressionAttributeNames: { ...(userId === undefined ? { "#entity": "entity" } : {}), "#status": "status" },
+      ExpressionAttributeValues: {
+        ...(userId === undefined ? { ":entity": "route" } : { ":user": `USER#${userId}` }),
+        ":revoked": "revoked",
+      },
     });
     return items.map((item) => decodeStoredRoute(itemField(item, "route", "DynamoDB route item")));
   }
@@ -328,6 +365,7 @@ export class DynamoRouteStore implements RouteStore {
           ],
         }),
       );
+      await this.#bumpAuthorizationEpoch();
       return grant;
     } catch (error) {
       conditionalNotFound(error);
@@ -352,13 +390,11 @@ export class DynamoRouteStore implements RouteStore {
     await this.get(routeId);
     const items = await this.#queryAll({
       TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
-      FilterExpression: "routeId = :routeId" + (principalId === undefined ? "" : " AND principalId = :principalId"),
-      ExpressionAttributeNames: { "#entity": "entity" },
+      IndexName: ASSIGNMENT_INDEX,
+      KeyConditionExpression: "gsi1pk = :route",
+      FilterExpression: principalId === undefined ? undefined : "principalId = :principalId",
       ExpressionAttributeValues: {
-        ":entity": "access_grant",
-        ":routeId": routeId,
+        ":route": `ROUTE#${routeId}`,
         ...(principalId === undefined ? {} : { ":principalId": principalId }),
       },
     });
@@ -376,9 +412,10 @@ export class DynamoRouteStore implements RouteStore {
     if (lookupResult.Item === undefined) return undefined;
     const lookup = decodeCredentialLookup(lookupResult.Item);
     let grant: StoredAccessGrant;
+    let route: StoredRoute;
     try {
       grant = await this.getAccessGrant(lookup.grantId);
-      await this.get(grant.routeId);
+      route = await this.get(grant.routeId);
     } catch (error) {
       if (error instanceof NotFoundError) return undefined;
       throw error;
@@ -388,7 +425,7 @@ export class DynamoRouteStore implements RouteStore {
     const credentialIndex = grant.credentials.findIndex((candidateCredential) => {
       if (candidateCredential.id !== lookup.credentialId || credentialUsername(candidateCredential.id) !== username) return false;
       if (!credentialUsable(candidateCredential, nowMs)) return false;
-      const candidate = scryptSync(token, candidateCredential.tokenSalt, 32);
+      const candidate = hashAccessGrantToken(token, candidateCredential.tokenSalt);
       const expected = Buffer.from(candidateCredential.tokenHash, "hex");
       return candidate.length === expected.length && timingSafeEqual(candidate, expected);
     });
@@ -397,7 +434,7 @@ export class DynamoRouteStore implements RouteStore {
     if (credential === undefined) throw new Error("Matched access-grant credential disappeared");
     const lastUsedAtMs = credential.lastUsedAt === undefined ? undefined : Date.parse(credential.lastUsedAt);
     if (lastUsedAtMs !== undefined && nowMs - lastUsedAtMs < ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS) {
-      return { grant, credential };
+      return { grant, credential, route };
     }
     credential.lastUsedAt = now;
     grant.updatedAt = now;
@@ -417,7 +454,7 @@ export class DynamoRouteStore implements RouteStore {
         ExpressionAttributeValues: { ":now": now, ":revoked": "revoked", ":tokenHash": credential.tokenHash },
       }),
     );
-    return { grant, credential };
+    return { grant, credential, route };
   }
 
   async rotateAccessGrantCredential(
@@ -469,6 +506,7 @@ export class DynamoRouteStore implements RouteStore {
           ],
         }),
       );
+      await this.#bumpAuthorizationEpoch();
       return grant;
     } catch (error) {
       conditionalNotFound(error);
@@ -491,6 +529,7 @@ export class DynamoRouteStore implements RouteStore {
         ConditionExpression: "attribute_exists(pk)",
       }),
     );
+    await this.#bumpAuthorizationEpoch();
   }
 
   async revokeAccessGrant(id: string, terminateActive = false): Promise<void> {
@@ -511,6 +550,7 @@ export class DynamoRouteStore implements RouteStore {
       conditionalNotFound(error);
     }
     await this.closeLogicalSessions(id, terminateActive);
+    await this.#bumpAuthorizationEpoch();
   }
 
   async createLogicalSession(session: StoredLogicalSession): Promise<void> {
@@ -534,11 +574,9 @@ export class DynamoRouteStore implements RouteStore {
   async listLogicalSessions(grantId: string): Promise<StoredLogicalSession[]> {
     const items = await this.#queryAll({
       TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
-      FilterExpression: "grantId = :grantId",
-      ExpressionAttributeNames: { "#entity": "entity" },
-      ExpressionAttributeValues: { ":entity": "logical_session", ":grantId": grantId },
+      IndexName: ASSIGNMENT_INDEX,
+      KeyConditionExpression: "gsi1pk = :grant",
+      ExpressionAttributeValues: { ":grant": `GRANT#${grantId}` },
     });
     return items.map((item) => decodeStoredLogicalSession(itemField(item, "session", "DynamoDB logical-session item")));
   }
@@ -575,6 +613,7 @@ export class DynamoRouteStore implements RouteStore {
     await this.#client.send(
       new PutCommand({ TableName: this.tableName, Item: logicalSessionItem(closed), ConditionExpression: "attribute_exists(pk)" }),
     );
+    await this.#bumpAuthorizationEpoch();
   }
 
   async closeLogicalSessions(grantId: string, terminateActive = false): Promise<void> {
@@ -598,6 +637,7 @@ export class DynamoRouteStore implements RouteStore {
     } catch (error) {
       conditionalNotFound(error);
     }
+    await this.#bumpAuthorizationEpoch();
   }
 
   async shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean> {
@@ -614,18 +654,27 @@ export class DynamoRouteStore implements RouteStore {
     const item: ActiveTunnelItem = {
       pk: `ACTIVE_TUNNEL#${tunnel.id}`,
       sk: "STATE",
-      entity: "active_tunnel",
+      entity: shardedEntity("active_tunnel", tunnel.id),
       createdAt: tunnel.startedAt,
       gsi1pk: `DEPLOYMENT#${tunnel.deploymentId}`,
       gsi1sk: `${tunnel.startedAt}#${tunnel.id}`,
       expiresAtSeconds: Math.ceil(Date.parse(tunnel.expiresAt) / 1_000),
       tunnel,
     };
+    const leases = this.#activeLoadLeaseKeys(tunnel).map((key) => ({
+      ...key,
+      entity: "active_load_lease",
+      createdAt: tunnel.startedAt,
+      expiresAtSeconds: item.expiresAtSeconds,
+    }));
     await this.#client.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: item,
-        ConditionExpression: "attribute_not_exists(pk)",
+      new TransactWriteCommand({
+        TransactItems: [
+          { Put: { TableName: this.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } },
+          ...leases.map((lease) => ({
+            Put: { TableName: this.tableName, Item: lease, ConditionExpression: "attribute_not_exists(pk)" },
+          })),
+        ],
       }),
     );
   }
@@ -636,83 +685,125 @@ export class DynamoRouteStore implements RouteStore {
     createTunnel: (endpointId: string) => ActiveTunnel,
   ): Promise<{ tunnel: ActiveTunnel; activeConnections: number }> {
     if (candidateEndpointIds.length === 0) throw new Error("no_slot_candidates");
-    const owner = `${Date.now()}-${Math.random()}`;
-    const lockKey = { pk: "PROXY_SLOT_SELECTION#GLOBAL", sk: "LOCK" };
-    const deadline = Date.now() + 5_000;
-    for (;;) {
-      const nowSeconds = Math.floor(Date.now() / 1_000);
-      try {
-        await this.#client.send(
-          new PutCommand({
-            TableName: this.tableName,
-            Item: { ...lockKey, owner, expiresAtSeconds: nowSeconds + 10 },
-            ConditionExpression: "attribute_not_exists(pk) OR expiresAtSeconds < :now",
-            ExpressionAttributeValues: { ":now": nowSeconds },
-          }),
-        );
-        break;
-      } catch (error) {
-        if (!(error instanceof Error && error.name === "ConditionalCheckFailedException") || Date.now() >= deadline) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    }
-    try {
-      const candidates = new Set(candidateEndpointIds);
-      const loads = new Map<string, number>();
-      for (const tunnel of await this.listAllActiveTunnels()) {
-        if (tunnel.provider !== "proxidize" || tunnel.endpointId === undefined || !candidates.has(tunnel.endpointId)) continue;
-        loads.set(tunnel.endpointId, (loads.get(tunnel.endpointId) ?? 0) + 1);
-      }
-      const endpointId = selectEndpoint(loads);
-      if (!candidates.has(endpointId)) throw new Error("invalid_slot_selection");
-      const tunnel = createTunnel(endpointId);
-      await this.registerActiveTunnel(tunnel);
-      return { tunnel, activeConnections: (loads.get(endpointId) ?? 0) + 1 };
-    } finally {
-      await this.#client
-        .send(
-          new DeleteCommand({
-            TableName: this.tableName,
-            Key: lockKey,
-            ConditionExpression: "#owner = :owner",
-            ExpressionAttributeNames: { "#owner": "owner" },
-            ExpressionAttributeValues: { ":owner": owner },
-          }),
-        )
-        .catch(() => undefined);
-    }
+    const candidates = new Set(candidateEndpointIds);
+    const loads = (await this.getActiveConnectionCounts([], candidateEndpointIds, [])).endpoints;
+    const endpointId = selectEndpoint(loads);
+    if (!candidates.has(endpointId)) throw new Error("invalid_slot_selection");
+    const tunnel = createTunnel(endpointId);
+    await this.registerActiveTunnel(tunnel);
+    return { tunnel, activeConnections: (loads.get(endpointId) ?? 0) + 1 };
   }
 
   async heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
+    const existing = await this.#client.send(
+      new GetCommand({ TableName: this.tableName, Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" }, ConsistentRead: true }),
+    );
+    if (existing.Item === undefined) return;
+    const tunnel = decodeActiveTunnel(itemField(existing.Item, "tunnel", "DynamoDB active-tunnel item"));
+    const ttl = Math.ceil(Date.parse(expiresAt) / 1_000);
     try {
       await this.#client.send(
-        new UpdateCommand({
-          TableName: this.tableName,
-          Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
-          UpdateExpression: "SET #tunnel.lastHeartbeatAt = :heartbeat, #tunnel.expiresAt = :expiresAt, expiresAtSeconds = :ttl",
-          ConditionExpression: "attribute_exists(pk)",
-          ExpressionAttributeNames: { "#tunnel": "tunnel" },
-          ExpressionAttributeValues: {
-            ":heartbeat": lastHeartbeatAt,
-            ":expiresAt": expiresAt,
-            ":ttl": Math.ceil(Date.parse(expiresAt) / 1_000),
-          },
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Update: {
+                TableName: this.tableName,
+                Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
+                UpdateExpression: "SET #tunnel.lastHeartbeatAt = :heartbeat, #tunnel.expiresAt = :expiresAt, expiresAtSeconds = :ttl",
+                ConditionExpression: "attribute_exists(pk)",
+                ExpressionAttributeNames: { "#tunnel": "tunnel" },
+                ExpressionAttributeValues: { ":heartbeat": lastHeartbeatAt, ":expiresAt": expiresAt, ":ttl": ttl },
+              },
+            },
+            ...this.#activeLoadLeaseKeys(tunnel).map((key) => ({
+              Update: {
+                TableName: this.tableName,
+                Key: key,
+                UpdateExpression: "SET expiresAtSeconds = :ttl",
+                ConditionExpression: "attribute_exists(pk)",
+                ExpressionAttributeValues: { ":ttl": ttl },
+              },
+            })),
+          ],
         }),
       );
     } catch (error) {
-      if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
+      if (!(error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")))
+        throw error;
     }
   }
 
   async removeActiveTunnel(id: string): Promise<void> {
+    const existing = await this.#client.send(
+      new GetCommand({ TableName: this.tableName, Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" }, ConsistentRead: true }),
+    );
+    if (existing.Item === undefined) return;
+    const tunnel = decodeActiveTunnel(itemField(existing.Item, "tunnel", "DynamoDB active-tunnel item"));
     await this.#client.send(
-      new UpdateCommand({
-        TableName: this.tableName,
-        Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
-        UpdateExpression: "REMOVE gsi1pk, gsi1sk SET expiresAtSeconds = :expired",
-        ExpressionAttributeValues: { ":expired": Math.floor(Date.now() / 1_000) - 1 },
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: this.tableName,
+              Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
+              UpdateExpression: "REMOVE gsi1pk, gsi1sk SET expiresAtSeconds = :expired",
+              ExpressionAttributeValues: { ":expired": Math.floor(Date.now() / 1_000) - 1 },
+            },
+          },
+          ...this.#activeLoadLeaseKeys(tunnel).map((key) => ({ Delete: { TableName: this.tableName, Key: key } })),
+        ],
       }),
     );
+  }
+
+  #activeLoadLeaseKeys(tunnel: ActiveTunnel): Array<{ pk: string; sk: string }> {
+    return [
+      { pk: `ACTIVE_LOAD#PROVIDER#${tunnel.provider}`, sk: tunnel.id },
+      ...(tunnel.endpointId === undefined ? [] : [{ pk: `ACTIVE_LOAD#ENDPOINT#${tunnel.endpointId}`, sk: tunnel.id }]),
+      ...(tunnel.sessionId === undefined ? [] : [{ pk: `ACTIVE_LOAD#SESSION#${tunnel.sessionId}`, sk: tunnel.id }]),
+    ];
+  }
+
+  async #countActiveLoad(pk: string, now: string): Promise<number> {
+    let count = 0;
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.#client.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: "pk = :pk",
+          FilterExpression: "expiresAtSeconds > :now",
+          ExpressionAttributeValues: { ":pk": pk, ":now": Math.floor(Date.parse(now) / 1_000) },
+          Select: "COUNT",
+          ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
+        }),
+      );
+      count += result.Count ?? 0;
+      exclusiveStartKey = result.LastEvaluatedKey;
+    } while (exclusiveStartKey !== undefined);
+    return count;
+  }
+
+  async getActiveConnectionCounts(
+    providers: readonly ProviderId[],
+    endpointIds: readonly string[],
+    sessionIds: readonly string[],
+    now = new Date().toISOString(),
+  ): Promise<{
+    providers: ReadonlyMap<ProviderId, number>;
+    endpoints: ReadonlyMap<string, number>;
+    sessions: ReadonlyMap<string, number>;
+  }> {
+    const providerCounts = await Promise.all(
+      providers.map(async (provider) => [provider, await this.#countActiveLoad(`ACTIVE_LOAD#PROVIDER#${provider}`, now)] as const),
+    );
+    const endpointCounts = await Promise.all(
+      endpointIds.map(async (endpointId) => [endpointId, await this.#countActiveLoad(`ACTIVE_LOAD#ENDPOINT#${endpointId}`, now)] as const),
+    );
+    const sessionCounts = await Promise.all(
+      sessionIds.map(async (sessionId) => [sessionId, await this.#countActiveLoad(`ACTIVE_LOAD#SESSION#${sessionId}`, now)] as const),
+    );
+    return { providers: new Map(providerCounts), endpoints: new Map(endpointCounts), sessions: new Map(sessionCounts) };
   }
 
   async getCapacityCircuit(
@@ -799,13 +890,19 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async listAllActiveTunnels(now = new Date().toISOString()): Promise<ActiveTunnel[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
-      ExpressionAttributeNames: { "#entity": "entity" },
-      ExpressionAttributeValues: { ":entity": "active_tunnel" },
-    });
+    const items = (
+      await Promise.all(
+        entityShards("active_tunnel").map((entity) =>
+          this.#queryAll({
+            TableName: this.tableName,
+            IndexName: ENTITY_INDEX,
+            KeyConditionExpression: "#entity = :entity",
+            ExpressionAttributeNames: { "#entity": "entity" },
+            ExpressionAttributeValues: { ":entity": entity },
+          }),
+        ),
+      )
+    ).flat();
     return items
       .map((item) => decodeActiveTunnel(itemField(item, "tunnel", "DynamoDB active-tunnel item")))
       .filter((tunnel) => tunnel.expiresAt > now);
@@ -1061,8 +1158,8 @@ export class DynamoRouteStore implements RouteStore {
     return this.#usage.recordUsage(record);
   }
 
-  listUsageRecords(from: string, to: string): Promise<UsageRecord[]> {
-    return this.#usage.listUsageRecords(from, to);
+  listUsageRecords(from: string, to: string, options?: { limit?: number; newestFirst?: boolean }): Promise<UsageRecord[]> {
+    return this.#usage.listUsageRecords(from, to, options);
   }
 
   saveUsageRollup(rollup: UsageRollup): Promise<void> {
