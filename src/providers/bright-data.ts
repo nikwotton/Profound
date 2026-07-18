@@ -26,21 +26,30 @@ function brightDataError(error: ProviderUnavailableError): ProviderUnavailableEr
   return error;
 }
 
-function sessionId(route: StoredRoute, now: number, logicalOperationId = route.id, candidateIndex = 0): string {
-  const bucket = route.rotation.mode === "interval" ? Math.floor(now / (route.rotation.intervalSeconds * 1_000)) : 0;
-  const scope =
-    route.rotation.mode === "per_request"
-      ? logicalOperationId
-      : `${route.session.mode === "sticky" ? (route.session.id ?? route.id) : route.id}:${bucket}`;
+function sessionId(
+  route: StoredRoute,
+  logicalOperationId = route.id,
+  candidateIndex = 0,
+  sessionMode: "managed" | "none" = "none",
+  affinityHandle?: string,
+): string {
+  if (sessionMode === "managed" && affinityHandle !== undefined && /^[a-f0-9]{20}$/.test(affinityHandle)) return affinityHandle;
+  const scope = sessionMode === "managed" ? (affinityHandle ?? route.id) : logicalOperationId;
   return createHash("sha256").update(`${scope}:${route.rotationEpoch}:candidate-${candidateIndex}`).digest("hex").slice(0, 20);
 }
 
 export function buildBrightDataUsername(
   config: Pick<BrightDataConfig, "customerId" | "zone">,
   route: StoredRoute,
-  now = Date.now(),
-  assignment: { logicalOperationId?: string; candidateIndex?: number } = {},
+  _now = Date.now(),
+  assignment: {
+    logicalOperationId?: string;
+    candidateIndex?: number;
+    sessionMode?: "managed" | "none";
+    affinityHandle?: string;
+  } = {},
 ): string {
+  void _now;
   const fields = ["brd", "customer", compact(config.customerId), "zone", compact(config.zone)];
   if (route.targeting.country !== undefined) fields.push("country", route.targeting.country.toLowerCase());
   if (route.targeting.region !== undefined) fields.push("state", compact(route.targeting.region));
@@ -48,7 +57,13 @@ export function buildBrightDataUsername(
   if (route.targeting.postalCode !== undefined) fields.push("zip", route.targeting.postalCode);
   if (route.targeting.asn !== undefined) fields.push("asn", String(route.targeting.asn));
   if (route.targeting.carrier !== undefined) fields.push("carrier", compact(route.targeting.carrier));
-  const session = sessionId(route, now, assignment.logicalOperationId, assignment.candidateIndex);
+  const session = sessionId(
+    route,
+    assignment.logicalOperationId,
+    assignment.candidateIndex,
+    assignment.sessionMode,
+    assignment.affinityHandle,
+  );
   fields.push("session", session);
   return fields.join("-");
 }
@@ -60,8 +75,6 @@ export class BrightDataAdapter implements ProviderAdapter<"bright_data"> {
     capabilities: {
       clientProtocols: new Set(["http", "https", "socks5"] as const),
       upstreamProtocols: new Set(["http"] as const),
-      authenticatedTraffic: true,
-      unauthenticatedTraffic: true,
       geography: new Set<keyof Targeting>(["country", "region", "city", "postalCode", "asn", "carrier"]),
       sessions: true,
       exactCity: "provider_guaranteed" as const,
@@ -74,6 +87,19 @@ export class BrightDataAdapter implements ProviderAdapter<"bright_data"> {
       dnsResolution: {
         http: "provider_configurable" as const,
         socks5: "provider_configurable" as const,
+      },
+      destinationSafety: {
+        http: "provider_trusted" as const,
+        socks5: "provider_trusted" as const,
+        providerNetworkScope: "external_public_only" as const,
+      },
+      health: {
+        source: "provider_api_or_probe" as const,
+      },
+      capacity: {
+        observation: "provider_api_or_evidence" as const,
+        hardLimit: "provider_signal_or_proxy_failure" as const,
+        provisioning: "unsupported" as const,
       },
     },
     pricing: {

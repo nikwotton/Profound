@@ -16,6 +16,7 @@ import type {
   RouteStatus,
   StoredAccessGrant,
   StoredAccessGrantCredential,
+  StoredLogicalSession,
   StoredRoute,
   UsageAlertEvent,
   UsageReconciliation,
@@ -53,6 +54,17 @@ export interface AccessGrantItem {
   grant: StoredAccessGrant;
   gsi1pk?: string;
   gsi1sk?: string;
+}
+
+export interface LogicalSessionItem {
+  pk: string;
+  sk: "STATE";
+  entity: "logical_session";
+  createdAt: string;
+  grantId: string;
+  routeId: string;
+  status: StoredLogicalSession["status"];
+  session: StoredLogicalSession;
 }
 
 export interface CredentialLookupItem {
@@ -187,6 +199,22 @@ export function routeKey(id: string): { pk: string; sk: string } {
 
 export function accessGrantKey(id: string): { pk: string; sk: "STATE" } {
   return { pk: `ACCESS_GRANT#${id}`, sk: "STATE" };
+}
+
+export function logicalSessionKey(id: string): { pk: string; sk: "STATE" } {
+  return { pk: `LOGICAL_SESSION#${id}`, sk: "STATE" };
+}
+
+export function logicalSessionItem(session: StoredLogicalSession): LogicalSessionItem {
+  return {
+    ...logicalSessionKey(session.id),
+    entity: "logical_session",
+    createdAt: session.createdAt,
+    grantId: session.grantId,
+    routeId: session.routeId,
+    status: session.status,
+    session,
+  };
 }
 
 export function credentialLookupKey(username: string): { pk: string; sk: "LOOKUP" } {

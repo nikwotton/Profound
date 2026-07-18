@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { OpenApi } from "@effect/platform";
 import { ControlApi, CONTROL_API_VERSION } from "../src/control-contract.js";
 import { expectRecord, expectString, parseJson } from "../src/decoding.js";
-import { decodeOpenApiDocument, findBreakingOpenApiChanges } from "../src/openapi-compat.js";
+import { decodeOpenApiDocument, findBreakingOpenApiChanges, permitsVersionedBreakingChanges } from "../src/openapi-compat.js";
 
 const root = resolve(import.meta.dirname, "..");
 const artifactPath = resolve(root, `openapi/profound-control-api.v${CONTROL_API_VERSION}.json`);
@@ -44,7 +44,14 @@ if (command === "generate") {
   if (baselinePath === undefined) throw new Error("Usage: pnpm openapi:compat -- <baseline.json>");
   const baseline = decodeOpenApiDocument(parseJson(await readFile(resolve(baselinePath), "utf8"), `OpenAPI baseline ${baselinePath}`));
   const changes = findBreakingOpenApiChanges(baseline, document);
-  if (changes.length > 0) throw new Error(`Breaking OpenAPI changes:\n- ${changes.join("\n- ")}`);
+  if (changes.length > 0 && !permitsVersionedBreakingChanges(baseline.info?.version, CONTROL_API_VERSION)) {
+    throw new Error(`Breaking OpenAPI changes:\n- ${changes.join("\n- ")}`);
+  }
+  if (changes.length > 0) {
+    console.log(
+      `Accepted ${changes.length} detected breaking change(s) at the explicit API version boundary ${baseline.info?.version} -> ${CONTROL_API_VERSION}`,
+    );
+  }
   console.log(`OpenAPI contract is compatible with ${baselinePath}`);
 } else {
   throw new Error("Usage: pnpm openapi:<generate|check|compat> [-- baseline.json]");

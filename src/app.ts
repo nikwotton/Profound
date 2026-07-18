@@ -177,10 +177,10 @@ export async function startTestApplication(
     attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
     operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    streamBufferBytes: config.streamBufferBytes,
     maxHeaderBytes: config.maxHeaderBytes,
-    maxHttpRequestBodyBytes: config.maxHttpRequestBodyBytes,
-    maxHttpResponseBodyBytes: config.maxHttpResponseBodyBytes,
-    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
+    targetValidator:
+      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
     logger,
     telemetry,
   });
@@ -190,8 +190,10 @@ export async function startTestApplication(
     attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
     operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    streamBufferBytes: config.streamBufferBytes,
     maxHandshakeBytes: config.maxHeaderBytes,
-    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
+    targetValidator:
+      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
     logger,
     telemetry,
   });
@@ -273,10 +275,10 @@ export async function startDataPlaneApplication(
     attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
     operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    streamBufferBytes: config.streamBufferBytes,
     maxHeaderBytes: config.maxHeaderBytes,
-    maxHttpRequestBodyBytes: config.maxHttpRequestBodyBytes,
-    maxHttpResponseBodyBytes: config.maxHttpResponseBodyBytes,
-    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
+    targetValidator:
+      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
     logger,
     telemetry,
   });
@@ -286,8 +288,10 @@ export async function startDataPlaneApplication(
     attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
     operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    streamBufferBytes: config.streamBufferBytes,
     maxHandshakeBytes: config.maxHeaderBytes,
-    targetValidator: dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts),
+    targetValidator:
+      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
     logger,
     telemetry,
   });

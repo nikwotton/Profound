@@ -21,19 +21,16 @@ test("HTTP and Lambda trust boundaries decode exact runtime shapes", () => {
   assert.deepEqual(
     Schema.decodeUnknownSync(RouteProfilePayload)({
       customerId: "customer-1",
-      isTargetAuthenticated: false,
       allowConnectionRetry: true,
     }),
     {
       customerId: "customer-1",
-      isTargetAuthenticated: false,
       allowConnectionRetry: true,
     },
   );
   assert.throws(() =>
     Schema.decodeUnknownSync(RouteProfilePayload)({
       customerId: "customer-1",
-      isTargetAuthenticated: false,
       allowConnectionRetry: true,
       unexpected: true,
     }),

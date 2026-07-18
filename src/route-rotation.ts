@@ -73,7 +73,17 @@ export class RotationCoordinator {
     const stored = await this.options.store.get(id);
     const { endpointId: _routeEndpointId, ...profile } = stored;
     void _routeEndpointId;
-    const route: AuthenticatedRoute = { ...profile, userId: grant.principalId, accessGrantId: grant.id };
+    const credential = grant.credentials.find((candidate) => candidate.status === "active");
+    if (credential === undefined) throw new NotFoundError();
+    const route: AuthenticatedRoute = {
+      ...profile,
+      userId: grant.principalId,
+      accessGrantId: grant.id,
+      credentialId: credential.id,
+      sessionMode: credential.sessionMode,
+      ...(credential.sessionId === undefined ? {} : { sessionId: credential.sessionId }),
+      ...(grant.jobId === undefined ? {} : { jobId: grant.jobId }),
+    };
     if (route.provider === "proxidize") {
       throw new AppError("Device-backed slot assignment and rerouting are internal", "rotation_not_supported", 409);
     }

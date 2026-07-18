@@ -26,8 +26,7 @@ export interface RetryPolicy {
   maxAttempts: number;
 }
 
-export type SessionPolicy =
-  { mode: "none"; requireGeographicContinuity: false } | { mode: "sticky"; id?: string; requireGeographicContinuity: boolean };
+export type SessionMode = "managed" | "none";
 
 export interface RouteProfileInput {
   customerId: string;
@@ -38,7 +37,6 @@ export interface RouteProfileInput {
   };
   carrier?: string;
   providerOverride?: ProviderId | null;
-  isTargetAuthenticated: boolean;
   allowConnectionRetry: boolean;
 }
 
@@ -49,15 +47,12 @@ export interface RouteProfile {
   geography?: NonNullable<RouteProfileInput["geography"]>;
   carrier?: string;
   providerOverride?: ProviderId;
-  isTargetAuthenticated: boolean;
   allowConnectionRetry: boolean;
   userId: string;
   /** Internal policy derived from the provider-neutral profile. */
   allowedProtocols: DataPlaneProtocol[];
   targeting: Targeting;
   rotation: RotationPolicy;
-  session: SessionPolicy;
-  isAuthenticated: boolean;
   shouldRetry: boolean;
   retryPolicy: RetryPolicy;
 }
@@ -85,6 +80,8 @@ export type PublicAccessGrantCredentialStatus = StoredAccessGrantCredentialStatu
 
 export interface StoredAccessGrantCredential {
   id: string;
+  sessionMode: SessionMode;
+  sessionId?: string;
   tokenSalt: string;
   tokenHash: string;
   status: StoredAccessGrantCredentialStatus;
@@ -98,6 +95,8 @@ export interface StoredAccessGrantCredential {
 export interface PublicAccessGrantCredential {
   credentialId: string;
   username: string;
+  sessionMode: SessionMode;
+  sessionId?: string;
   status: PublicAccessGrantCredentialStatus;
   createdAt: string;
   renewalDueAt: string;
@@ -111,6 +110,7 @@ export interface StoredAccessGrant {
   id: string;
   routeId: string;
   principalId: string;
+  jobId?: string;
   credentials: StoredAccessGrantCredential[];
   status: AccessGrantStatus;
   /** Set only by an explicit emergency revocation. */
@@ -119,18 +119,70 @@ export interface StoredAccessGrant {
   updatedAt: string;
 }
 
+export interface AuthenticatedAccessGrant {
+  grant: StoredAccessGrant;
+  credential: StoredAccessGrantCredential;
+}
+
 export interface PublicAccessGrant {
   grantId: string;
   profileId: string;
+  jobId: string | null;
   status: AccessGrantStatus;
   credentials: PublicAccessGrantCredential[];
   createdAt: string;
   updatedAt: string;
 }
 
+export type LogicalSessionStatus = "open" | "closed";
+
+export interface SessionAffinity {
+  provider: ProviderId;
+  providerClass: ProviderClass;
+  candidateId: string;
+  affinityHandle: string;
+  profileFingerprint: string;
+  desiredProviderClass: ProviderClass;
+  currentProviderClass: ProviderClass;
+  degradedFallback: boolean;
+  boundAt: string;
+  lastUsedAt: string;
+}
+
+export interface StoredLogicalSession {
+  id: string;
+  grantId: string;
+  routeId: string;
+  status: LogicalSessionStatus;
+  terminateActive: boolean;
+  bindingVersion: number;
+  affinity?: SessionAffinity;
+  preferredClassHealthySince?: string;
+  lastDisconnectedAt?: string;
+  closedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublicLogicalSession {
+  sessionId: string;
+  grantId: string;
+  profileId: string;
+  sessionMode: "managed";
+  status: LogicalSessionStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+  closedAt?: string;
+}
+
 /** Route policy resolved through a successfully authenticated access grant. */
 export interface AuthenticatedRoute extends StoredRoute {
   accessGrantId: string;
+  credentialId: string;
+  jobId?: string;
+  sessionMode: SessionMode;
+  sessionId?: string;
 }
 
 export interface PublicRoute extends RouteProfileInput {
@@ -246,6 +298,7 @@ export interface ActiveTunnel {
   deploymentId: string;
   routeId: string;
   accessGrantId: string;
+  sessionId?: string;
   protocol: DataPlaneProtocol;
   provider: ProviderId;
   endpointId?: string;
@@ -268,8 +321,6 @@ export interface DeploymentDrainState {
 export interface ProviderCapabilities {
   clientProtocols: ReadonlySet<DataPlaneProtocol>;
   upstreamProtocols: ReadonlySet<UpstreamProxyProtocol>;
-  authenticatedTraffic: boolean;
-  unauthenticatedTraffic: boolean;
   geography: ReadonlySet<keyof Targeting>;
   countries?: ReadonlySet<string>;
   sessions: boolean;
@@ -283,6 +334,19 @@ export interface ProviderCapabilities {
   dnsResolution: {
     http: DnsResolutionBehavior;
     socks5: DnsResolutionBehavior;
+  };
+  destinationSafety: {
+    http: "verified" | "provider_trusted";
+    socks5: "verified" | "provider_trusted";
+    providerNetworkScope: "external_public_only" | "privileged_or_unknown";
+  };
+  health: {
+    source: "provider_api_or_probe" | "provider_inventory";
+  };
+  capacity: {
+    observation: "provider_api_or_evidence" | "provider_inventory";
+    hardLimit: "provider_signal_or_proxy_failure";
+    provisioning: "unsupported" | "operator_only" | "adapter_optional";
   };
 }
 
@@ -307,13 +371,28 @@ export type UsageProvider = ProviderId | "unresolved";
 export type UsageOutcome = "success" | "http_error" | "retry" | "failure";
 export type UsageCostStatus = "estimated" | "reconciled";
 export type UsageInterval = "hour" | "day" | "week" | "month";
-export type UsageGroupBy = "provider" | "customer" | "user" | "route" | "country" | "city" | "outcome";
+export type UsageGroupBy =
+  | "provider"
+  | "customer"
+  | "user"
+  | "route"
+  | "job"
+  | "session_mode"
+  | "destination_domain"
+  | "destination_host"
+  | "destination_path_template"
+  | "country"
+  | "city"
+  | "outcome";
 
 export interface UsageRecord {
   kind: "attempt" | "capacity";
   id: string;
   logicalOperationId: string;
+  jobId?: string;
   accessGrantId: string;
+  sessionMode?: SessionMode;
+  sessionId?: string;
   routeId: string;
   userId: string;
   customerId: string;
@@ -324,6 +403,10 @@ export interface UsageRecord {
   failover: boolean;
   bytesSent: number;
   bytesReceived: number;
+  destinationDomain?: string;
+  destinationHost?: string;
+  destinationPort?: number;
+  destinationPathTemplate?: string;
   country?: string;
   city?: string;
   endpointId?: string;
@@ -350,6 +433,12 @@ export interface UsageRecord {
     costEfficiency: number;
     stability: number;
   };
+  sessionAffinityHit?: boolean;
+  sessionRebindCause?: string;
+  desiredProviderClass?: ProviderClass;
+  currentProviderClass?: ProviderClass;
+  degradedFallback?: boolean;
+  failbackOutcome?: "not_attempted" | "success" | "failure";
   pricingVersion?: string;
   pricingModel?: "per_gib" | "per_device_month";
   priceUsd?: number;
@@ -455,7 +544,7 @@ export interface ProviderHealth {
   message?: string;
 }
 
-export type CapabilityName = "all_traffic" | "authenticated_traffic" | "unauthenticated_traffic" | "health_verification";
+export type CapabilityName = "all_traffic" | "managed_sessions" | "stateless_traffic" | "health_verification";
 
 export type CapabilityStatus = "operational" | "degraded" | "unavailable";
 

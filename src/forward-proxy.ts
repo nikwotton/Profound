@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
-import type { Duplex } from "node:stream";
+import { createConnection, type Socket } from "node:net";
+import { Transform, type Duplex } from "node:stream";
 import { assignmentAttributes, assignmentLogContext } from "./assignment-evidence.js";
 import { assertSafeProviderResolution, recordDestinationResolution, resolvedAddressesFromHeader } from "./destination-resolution.js";
 import { abortReason, beginAttemptBudget, operationDeadline } from "./establishment-budget.js";
@@ -14,13 +15,13 @@ import {
 } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "./net-utils.js";
-import { expectBufferChunk } from "./decoding.js";
-import { RouteService } from "./route-service.js";
+import { RouteService, sessionRoutingTelemetryAttributes, sessionRoutingUsageContext } from "./route-service.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
 import { establishTunnel } from "./tunnel-operation.js";
 import { type AuthenticatedRoute, type ListenAddress, type UpstreamEndpoint, type UsageOutcome } from "./types.js";
+import { usageDestination } from "./usage-destination.js";
 
 export interface ForwardProxyOptions {
   host: string;
@@ -28,9 +29,8 @@ export interface ForwardProxyOptions {
   attemptEstablishmentTimeoutMs: number;
   operationEstablishmentTimeoutMs: number;
   streamIdleTimeoutMs: number;
+  streamBufferBytes: number;
   maxHeaderBytes: number;
-  maxHttpRequestBodyBytes: number;
-  maxHttpResponseBodyBytes: number;
   targetValidator: TargetValidator;
   logger: Logger;
   telemetry: Telemetry;
@@ -62,6 +62,16 @@ function responseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   return result;
 }
 
+function counter(onBytes: (bytes: number) => void, highWaterMark: number): Transform {
+  return new Transform({
+    highWaterMark,
+    transform(chunk: Buffer, _encoding, callback) {
+      onBytes(chunk.length);
+      callback(null, chunk);
+    },
+  });
+}
+
 function headerBytes(headers: IncomingHttpHeaders): number {
   return Object.entries(headers).reduce((total, [name, value]) => {
     if (value === undefined) return total;
@@ -75,34 +85,14 @@ function usageOutcome(value: string): UsageOutcome {
   return "failure";
 }
 
-function replayable(request: IncomingMessage, bodyLength: number): boolean {
-  const method = request.method ?? "";
-  const safeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS" || method === "TRACE";
-  return safeMethod && bodyLength === 0;
-}
-
-function readBufferedBody(
-  message: IncomingMessage,
-  maximumBytes: number,
-  overflowError: () => AppError,
-  onOverflow: () => void,
-  onBytes: (bytes: number) => void = () => undefined,
-): Promise<Buffer> {
-  const contentLength = Number(first(message.headers["content-length"]));
-  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
-    onOverflow();
-    return Promise.reject(overflowError());
-  }
-
+function openProviderConnection(host: string, port: number, signal: AbortSignal): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
+    const socket = createConnection({ host, port });
     let settled = false;
     const cleanup = (): void => {
-      message.off("data", onData);
-      message.off("end", onEnd);
-      message.off("aborted", onAborted);
-      message.off("error", onError);
+      signal.removeEventListener("abort", onAbort);
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
     };
     const settle = (operation: () => void): void => {
       if (settled) return;
@@ -110,24 +100,25 @@ function readBufferedBody(
       cleanup();
       operation();
     };
-    const onData = (chunk: unknown): void => {
-      const buffer = expectBufferChunk(chunk);
-      size += buffer.length;
-      onBytes(buffer.length);
-      if (size > maximumBytes) {
-        settle(() => reject(overflowError()));
-        onOverflow();
-        return;
-      }
-      chunks.push(buffer);
+    const onConnect = (): void => {
+      settle(() => {
+        socket.setNoDelay(true);
+        resolve(socket);
+      });
     };
-    const onEnd = (): void => settle(() => resolve(Buffer.concat(chunks, size)));
-    const onAborted = (): void => settle(() => reject(new ProviderUnavailableError("HTTP body stream closed early")));
     const onError = (error: Error): void => settle(() => reject(error));
-    message.on("data", onData);
-    message.once("end", onEnd);
-    message.once("aborted", onAborted);
-    message.once("error", onError);
+    const onAbort = (): void => {
+      const reason = abortReason(signal);
+      const error = reason instanceof Error ? reason : new Error("Provider connection attempt was cancelled");
+      settle(() => {
+        socket.destroy(error);
+        reject(error);
+      });
+    };
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
 }
 
@@ -246,16 +237,10 @@ export class ForwardProxyServer {
         throw new AppError("Target URLs must not contain credentials", "target_forbidden", 403);
       }
       const port = target.port === "" ? 80 : Number(target.port);
+      const destination = usageDestination(target.hostname, port, target.pathname);
       initialBudget = beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
       const targetValidation = await this.options.targetValidator(target.hostname, port, initialBudget.signal);
-      const requestBody = await readBufferedBody(
-        request,
-        this.options.maxHttpRequestBodyBytes,
-        () => new AppError("Plain HTTP request body exceeds the configured limit", "request_too_large", 413),
-        () => request.resume(),
-      );
-      const canReplay = replayable(request, requestBody.length);
-      const maxAttempts = route.shouldRetry && canReplay ? route.retryPolicy.maxAttempts : 1;
+      const maxAttempts = route.shouldRetry ? route.retryPolicy.maxAttempts : 1;
       const resolutionState = this.routes.createResolutionState();
 
       const attempt = async (
@@ -276,9 +261,11 @@ export class ForwardProxyServer {
           "server.address": target.hostname,
         });
         let upstream: UpstreamEndpoint | undefined;
+        let providerSocket: Socket | undefined;
         let bytesSent = 0;
         let bytesReceived = 0;
         let attemptFinished = false;
+        let commitmentState: "pre_commit" | "committed" = "pre_commit";
         let stopTracking: (() => void) | undefined;
         const finishAttempt = (outcome: string, error?: unknown, status?: number): void => {
           if (attemptFinished) return;
@@ -292,6 +279,7 @@ export class ForwardProxyServer {
               provider,
               protocol: "http",
               outcome,
+              "proxy.commitment_state": commitmentState,
               "proxy.failover": provider !== "unresolved" && provider !== route?.provider,
               "proxy.bytes_sent": bytesSent,
               "proxy.bytes_received": bytesReceived,
@@ -301,7 +289,7 @@ export class ForwardProxyServer {
             route === undefined
               ? undefined
               : {
-                  isAuthenticated: route.isAuthenticated,
+                  sessionMode: route.sessionMode,
                   ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                   ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
                 },
@@ -313,10 +301,12 @@ export class ForwardProxyServer {
             accessGrantId: route?.accessGrantId,
             userId: route?.userId,
             customerId: route?.customerId,
+            jobId: route?.jobId,
             provider,
             endpointId: upstream?.endpointId,
             protocol: "http",
             outcome,
+            commitmentState,
             retryIndex: attemptIndex,
             failover: provider !== "unresolved" && provider !== route?.provider,
             latencyMs: Date.now() - attemptStartedAt,
@@ -330,7 +320,10 @@ export class ForwardProxyServer {
               .recordUsage({
                 id: attemptId,
                 logicalOperationId: operationId,
+                ...(route.jobId === undefined ? {} : { jobId: route.jobId }),
                 accessGrantId: route.accessGrantId,
+                sessionMode: route.sessionMode,
+                ...(route.sessionId === undefined ? {} : { sessionId: route.sessionId }),
                 routeId: route.id,
                 userId: route.userId,
                 customerId: route.customerId,
@@ -341,6 +334,7 @@ export class ForwardProxyServer {
                 failover: provider !== "unresolved" && provider !== route.provider,
                 bytesSent,
                 bytesReceived,
+                ...destination,
                 ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
                 ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
                 ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
@@ -377,6 +371,7 @@ export class ForwardProxyServer {
                       routingScoreComponents: upstream.routingScoreComponents,
                     }),
                 establishmentWaitMs: resolutionState.establishmentWaitMs,
+                ...sessionRoutingUsageContext(resolutionState),
                 startedAt: new Date(attemptStartedAt).toISOString(),
                 completedAt,
               })
@@ -396,6 +391,8 @@ export class ForwardProxyServer {
             logicalOperationId: operationId,
             signal: budget.signal,
           });
+          const sessionAttributes = sessionRoutingTelemetryAttributes(resolutionState);
+          if (Object.keys(sessionAttributes).length > 0) attemptSpan.addEvent("proxy.session.routing", sessionAttributes);
           attemptSpan.setAttributes({
             provider: upstream.provider,
             "proxy.endpoint.id": upstream.endpointId,
@@ -420,7 +417,14 @@ export class ForwardProxyServer {
             ...assignmentLogContext(upstream.assignment),
             ...routingScoreLogContext(upstream),
           });
-          await this.routes.assertNewConnectionAllowed(route.id, route.accessGrantId);
+          const connectedProviderSocket = await openProviderConnection(upstream.host, upstream.port, budget.signal);
+          providerSocket = connectedProviderSocket;
+          budget.finish();
+          if (callerController.signal.aborted || response.destroyed) {
+            providerSocket.destroy();
+            throw new AppError("Caller disconnected during upstream establishment", "caller_cancelled", 499);
+          }
+          await this.routes.assertNewConnectionAllowed(route.id, route.accessGrantId, route.sessionId);
           const outboundHeaders = forwardHeaders(request.headers, upstream);
           const outboundHeaderBytes =
             Buffer.byteLength(`${request.method ?? "GET"} ${target.toString()} HTTP/1.1\r\n`) + headerBytes(outboundHeaders);
@@ -432,9 +436,9 @@ export class ForwardProxyServer {
               path: target.toString(),
               headers: outboundHeaders,
               agent: false,
+              createConnection: () => connectedProviderSocket,
             },
             (upstreamResponse) => {
-              budget.finish();
               if (upstream !== undefined) void this.routes.recordCandidateSuccess(upstream).catch(() => undefined);
               const status = upstreamResponse.statusCode ?? 502;
               bytesReceived += Buffer.byteLength(`HTTP/1.1 ${status}\r\n`) + headerBytes(upstreamResponse.headers);
@@ -493,90 +497,71 @@ export class ForwardProxyServer {
                 finishOperation("failure", error);
                 return;
               }
-              void readBufferedBody(
-                upstreamResponse,
-                this.options.maxHttpResponseBodyBytes,
-                () => new AppError("Plain HTTP response body exceeds the configured limit", "response_too_large", 502),
-                () => upstreamResponse.destroy(),
-                (bytes) => {
-                  bytesReceived += bytes;
-                },
-              ).then(
-                (responseBody) => {
-                  response.writeHead(status, responseHeaders(upstreamResponse.headers));
-                  response.once("finish", () => {
-                    finishAttempt(status >= 500 ? "http_error" : "success", undefined, status);
-                    finishOperation("success");
-                  });
-                  response.once("close", () => {
-                    if (!response.writableFinished) {
-                      const error = new ProviderUnavailableError("Caller response stream closed early");
-                      finishAttempt("failure", error, status);
-                      finishOperation("failure", error);
-                    }
-                  });
-                  response.end(responseBody);
-                },
-                (error: unknown) => {
+              response.writeHead(status, responseHeaders(upstreamResponse.headers));
+              response.once("finish", () => {
+                finishAttempt(status >= 500 ? "http_error" : "success", undefined, status);
+                finishOperation("success");
+              });
+              response.once("close", () => {
+                if (!response.writableFinished) {
+                  const error = new ProviderUnavailableError("Caller response stream closed early");
+                  upstreamResponse.destroy(error);
                   finishAttempt("failure", error, status);
-                  this.#sendError(
-                    response,
-                    error instanceof AppError ? error : new ProviderUnavailableError("Upstream response stream closed early"),
-                  );
                   finishOperation("failure", error);
-                },
+                }
+              });
+              const responseStreamError = (error: Error): void => {
+                finishAttempt("failure", error, status);
+                if (response.headersSent) response.destroy(error);
+                else this.#sendError(response, new ProviderUnavailableError("Upstream response stream closed early"));
+                finishOperation("failure", error);
+              };
+              upstreamResponse.once("aborted", () =>
+                responseStreamError(new ProviderUnavailableError("Upstream response stream closed early")),
               );
+              upstreamResponse.once("error", responseStreamError);
+              upstreamResponse
+                .pipe(
+                  counter((bytes) => {
+                    bytesReceived += bytes;
+                  }, this.options.streamBufferBytes),
+                )
+                .pipe(response);
             },
           );
-          stopTracking = await this.routes.trackActiveConnection(route.id, route.accessGrantId, "http", upstream, () => {
+          stopTracking = await this.routes.trackActiveConnection(route.id, route.accessGrantId, route.sessionId, "http", upstream, () => {
             upstreamRequest.destroy(new AppError("Route was emergency-revoked", "route_emergency_revoked", 403));
             response.destroy();
           });
           const abortUpstream = (): void => {
-            upstreamRequest.destroy(abortReason(budget.signal));
+            upstreamRequest.destroy(new AppError("Caller disconnected during proxy streaming", "caller_cancelled", 499));
           };
-          budget.signal.addEventListener("abort", abortUpstream, { once: true });
-          upstreamRequest.setTimeout(budget.remainingMs(), () => {
-            upstreamRequest.destroy(new ProviderUnavailableError("Upstream proxy timed out"));
-          });
-          let upstreamConnected = false;
-          upstreamRequest.once("socket", (socket) => {
-            if (!socket.connecting) upstreamConnected = true;
-            socket.once("connect", () => {
-              upstreamConnected = true;
-            });
-          });
-          upstreamRequest.once("finish", () => {
-            bytesSent += outboundHeaderBytes;
-            budget.finish();
-            budget.signal.removeEventListener("abort", abortUpstream);
+          callerController.signal.addEventListener("abort", abortUpstream, { once: true });
+          upstreamRequest.setTimeout(this.options.streamIdleTimeoutMs, () => {
+            upstreamRequest.destroy(new ProviderUnavailableError("Upstream proxy exceeded the stream idle timeout"));
           });
           upstreamRequest.once("error", (error) => {
+            callerController.signal.removeEventListener("abort", abortUpstream);
             void (async () => {
-              budget.finish();
-              budget.signal.removeEventListener("abort", abortUpstream);
-              const applicationBytesForwarded = upstreamConnected && (upstreamRequest.socket?.bytesWritten ?? 0) > 0;
-              if (!applicationBytesForwarded) await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
-              if (
-                attemptIndex + 1 < maxAttempts &&
-                !response.headersSent &&
-                !callerController.signal.aborted &&
-                !applicationBytesForwarded &&
-                isRetryableUpstreamFailure(error)
-              ) {
-                await retry(error);
-                return;
-              }
               finishAttempt("failure", error);
               this.#sendError(response, new ProviderUnavailableError("Upstream provider connection failed"));
               finishOperation("failure", error);
             })();
           });
-          bytesSent += requestBody.length;
-          upstreamRequest.end(requestBody);
+          commitmentState = "committed";
+          attemptSpan.setAttribute("proxy.commitment_state", commitmentState);
+          bytesSent += outboundHeaderBytes;
+          request
+            .pipe(
+              counter((bytes) => {
+                bytesSent += bytes;
+              }, this.options.streamBufferBytes),
+            )
+            .pipe(upstreamRequest);
         } catch (error) {
           budget.finish();
-          await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
+          providerSocket?.destroy();
+          if (commitmentState === "pre_commit") await this.routes.recordCandidateFailure(upstream, error).catch(() => undefined);
           if (stopTracking === undefined) await this.routes.releaseCandidate(upstream).catch(() => undefined);
           const failedAssignment = assignmentFromError(error);
           if (failedAssignment !== undefined) {
@@ -600,6 +585,7 @@ export class ForwardProxyServer {
             attemptIndex + 1 < maxAttempts &&
             !response.headersSent &&
             !callerController.signal.aborted &&
+            commitmentState === "pre_commit" &&
             isRetryableUpstreamFailure(error)
           ) {
             await retry(error);
@@ -682,6 +668,7 @@ export class ForwardProxyServer {
         initialBudget,
         attemptEstablishmentTimeoutMs: this.options.attemptEstablishmentTimeoutMs,
         streamIdleTimeoutMs: this.options.streamIdleTimeoutMs,
+        streamBufferBytes: this.options.streamBufferBytes,
         maxHandshakeBytes: this.options.maxHeaderBytes,
         logger: this.options.logger,
         telemetry: this.options.telemetry,

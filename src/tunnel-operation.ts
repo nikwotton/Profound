@@ -7,11 +7,12 @@ import { beginAttemptBudget, type AttemptBudget } from "./establishment-budget.j
 import { AppError, ProviderUnavailableError, assignmentFromError, isRetryableUpstreamFailure, providerIdFromError } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
-import type { ResolutionState, RouteService } from "./route-service.js";
+import { sessionRoutingTelemetryAttributes, sessionRoutingUsageContext, type ResolutionState, type RouteService } from "./route-service.js";
 import type { TargetValidation } from "./target-security.js";
 import type { Telemetry } from "./telemetry.js";
 import type { AuthenticatedRoute, ProxyTarget, UpstreamEndpoint } from "./types.js";
 import { openUpstreamTunnel, type OpenedUpstreamTunnel } from "./upstream-tunnel.js";
+import { usageDestination } from "./usage-destination.js";
 
 export type TunnelProtocol = "https" | "socks5";
 
@@ -30,14 +31,16 @@ export interface TunnelOperationOptions {
   initialBudget: AttemptBudget;
   attemptEstablishmentTimeoutMs: number;
   streamIdleTimeoutMs: number;
+  streamBufferBytes: number;
   maxHandshakeBytes: number;
   logger: Logger;
   telemetry: Telemetry;
   prepareClient(opened: OpenedUpstreamTunnel): { bytesSent: number; bytesReceived: number };
 }
 
-function counter(onBytes: (bytes: number) => void): Transform {
+function counter(onBytes: (bytes: number) => void, highWaterMark: number): Transform {
   return new Transform({
+    highWaterMark,
     transform(chunk: Buffer, _encoding, callback) {
       onBytes(chunk.length);
       callback(null, chunk);
@@ -47,7 +50,7 @@ function counter(onBytes: (bytes: number) => void): Transform {
 
 function passiveContext(route: AuthenticatedRoute) {
   return {
-    isAuthenticated: route.isAuthenticated,
+    sessionMode: route.sessionMode,
     ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
   };
@@ -67,12 +70,16 @@ function establishedUsage(
     bytesSent: number;
     bytesReceived: number;
     completedAt: string;
+    target: ProxyTarget;
   },
 ) {
   return {
     id: options.attemptId,
     logicalOperationId: options.operationId,
+    ...(route.jobId === undefined ? {} : { jobId: route.jobId }),
     accessGrantId: route.accessGrantId,
+    sessionMode: route.sessionMode,
+    ...(route.sessionId === undefined ? {} : { sessionId: route.sessionId }),
     routeId: route.id,
     userId: route.userId,
     customerId: route.customerId,
@@ -83,6 +90,7 @@ function establishedUsage(
     failover: upstream.provider !== route.provider,
     bytesSent: options.bytesSent,
     bytesReceived: options.bytesReceived,
+    ...usageDestination(options.target.host, options.target.port),
     ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
     ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
@@ -119,6 +127,7 @@ function establishedUsage(
           routingScoreComponents: upstream.routingScoreComponents,
         }),
     establishmentWaitMs: state.establishmentWaitMs,
+    ...sessionRoutingUsageContext(state),
     startedAt: new Date(options.attemptStartedAt).toISOString(),
     completedAt: options.completedAt,
   };
@@ -137,12 +146,16 @@ function failedUsage(
     attemptStartedAt: number;
     attemptedProvider: ReturnType<typeof providerIdFromError>;
     completedAt: string;
+    target: ProxyTarget;
   },
 ) {
   return {
     id: options.attemptId,
     logicalOperationId: options.operationId,
+    ...(route.jobId === undefined ? {} : { jobId: route.jobId }),
     accessGrantId: route.accessGrantId,
+    sessionMode: route.sessionMode,
+    ...(route.sessionId === undefined ? {} : { sessionId: route.sessionId }),
     routeId: route.id,
     userId: route.userId,
     customerId: route.customerId,
@@ -153,6 +166,7 @@ function failedUsage(
     failover: options.attemptedProvider !== undefined && options.attemptedProvider !== route.provider,
     bytesSent: 0,
     bytesReceived: 0,
+    ...usageDestination(options.target.host, options.target.port),
     ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
     ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
@@ -174,6 +188,7 @@ function failedUsage(
           routingScoreComponents: upstream.routingScoreComponents,
         }),
     establishmentWaitMs: state.establishmentWaitMs,
+    ...sessionRoutingUsageContext(state),
     startedAt: new Date(options.attemptStartedAt).toISOString(),
     completedAt: options.completedAt,
   };
@@ -209,6 +224,8 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         logicalOperationId: options.operationId,
         signal: budget.signal,
       });
+      const sessionAttributes = sessionRoutingTelemetryAttributes(resolutionState);
+      if (Object.keys(sessionAttributes).length > 0) attemptSpan.addEvent("proxy.session.routing", sessionAttributes);
       attemptSpan.setAttributes({
         ...assignmentAttributes(upstream.assignment),
         ...routingScoreTelemetryAttributes(upstream),
@@ -278,19 +295,29 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         throw new AppError("Caller disconnected during tunnel establishment", "caller_cancelled", 499);
       }
       try {
-        await options.routes.assertNewConnectionAllowed(route.id, route.accessGrantId);
+        await options.routes.assertNewConnectionAllowed(route.id, route.accessGrantId, route.sessionId);
       } catch (error) {
         opened.socket.destroy();
         throw error;
       }
-      const stopTracking = await options.routes.trackActiveConnection(route.id, route.accessGrantId, protocol, upstream, () => {
-        options.clientSocket.destroy(new AppError("Route was emergency-revoked", "route_emergency_revoked", 403));
-        opened.socket.destroy();
-      });
+      const stopTracking = await options.routes.trackActiveConnection(
+        route.id,
+        route.accessGrantId,
+        route.sessionId,
+        protocol,
+        upstream,
+        () => {
+          options.clientSocket.destroy(new AppError("Route was emergency-revoked", "route_emergency_revoked", 403));
+          opened.socket.destroy();
+        },
+      );
+      let commitmentState: "pre_commit" | "committed" = "pre_commit";
       let bytesSent: number;
       let bytesReceived: number;
       try {
         ({ bytesSent, bytesReceived } = options.prepareClient(opened));
+        commitmentState = "committed";
+        attemptSpan.setAttribute("proxy.commitment_state", commitmentState);
       } catch (error) {
         stopTracking();
         opened.socket.destroy();
@@ -303,14 +330,14 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         .pipe(
           counter((bytes) => {
             bytesSent += bytes;
-          }),
+          }, options.streamBufferBytes),
         )
         .pipe(opened.socket);
       opened.socket
         .pipe(
           counter((bytes) => {
             bytesReceived += bytes;
-          }),
+          }, options.streamBufferBytes),
         )
         .pipe(options.clientSocket);
       let tunnelFinished = false;
@@ -326,6 +353,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
             provider: activeUpstream.provider,
             protocol,
             outcome,
+            "proxy.commitment_state": commitmentState,
             "proxy.failover": activeUpstream.provider !== route.provider,
             "proxy.bytes_sent": bytesSent,
             "proxy.bytes_received": bytesReceived,
@@ -341,6 +369,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
           accessGrantId: route.accessGrantId,
           userId: route.userId,
           customerId: route.customerId,
+          jobId: route.jobId,
           provider: activeUpstream.provider,
           endpointId: activeUpstream.endpointId,
           ...assignmentLogContext(activeUpstream.assignment),
@@ -350,6 +379,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
           targetHost: target.host,
           targetPort: target.port,
           outcome,
+          commitmentState,
           latencyMs: Date.now() - attemptStartedAt,
           bytesSent,
           bytesReceived,
@@ -367,6 +397,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
               bytesSent,
               bytesReceived,
               completedAt,
+              target,
             }),
           )
           .catch((usageError: unknown) => options.logger.error("Usage record persistence failed", { error: usageError }));
@@ -382,12 +413,14 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         accessGrantId: route.accessGrantId,
         userId: route.userId,
         customerId: route.customerId,
+        jobId: route.jobId,
         provider: activeUpstream.provider,
         endpointId: activeUpstream.endpointId,
         ...assignmentLogContext(activeUpstream.assignment),
         dataPlaneProtocol: protocol,
         targetHost: target.host,
         targetPort: target.port,
+        commitmentState,
       });
       return;
     } catch (error) {
@@ -409,6 +442,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         });
       }
       if (upstream !== undefined) resolutionState.excludedEndpointIds.add(upstream.endpointId);
+      const commitmentState = "pre_commit" as const;
       const retry = !options.callerSignal.aborted && attemptIndex + 1 < maxAttempts && isRetryableUpstreamFailure(error);
       const attemptedProvider = upstream?.provider ?? providerIdFromError(error);
       const outcome = retry ? "retry" : "failure";
@@ -419,6 +453,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
           provider: attemptedProvider ?? "unresolved",
           protocol,
           outcome,
+          "proxy.commitment_state": commitmentState,
           "proxy.failover": attemptedProvider !== undefined && attemptedProvider !== route.provider,
           "proxy.bytes_sent": 0,
           "proxy.bytes_received": 0,
@@ -433,12 +468,14 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         accessGrantId: route.accessGrantId,
         userId: route.userId,
         customerId: route.customerId,
+        jobId: route.jobId,
         provider: attemptedProvider,
         endpointId: upstream?.endpointId,
         dataPlaneProtocol: protocol,
         targetHost: target.host,
         targetPort: target.port,
         outcome,
+        commitmentState,
         retryIndex: attemptIndex,
         failover: attemptedProvider !== undefined && attemptedProvider !== route.provider,
       });
@@ -454,6 +491,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
             attemptStartedAt,
             attemptedProvider,
             completedAt,
+            target,
           }),
         )
         .catch((usageError: unknown) => options.logger.error("Usage record persistence failed", { error: usageError }));

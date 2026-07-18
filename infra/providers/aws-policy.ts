@@ -1,10 +1,15 @@
+import { TRANSPORT_POLICY } from "../../src/service-policies.js";
+
 export const v0Policy = {
   loadBalancer: {
     tcpIdleTimeoutSeconds: 1_200,
     deregistrationDelaySeconds: 300,
   },
   routing: {
-    allowedTargetPorts: "80,443",
+    allowedTargetPorts: TRANSPORT_POLICY.allowedTargetPorts.join(","),
+    blockedTargetHostnames: TRANSPORT_POLICY.blockedTargetHostnames.join(","),
+    streamBufferBytes: String(TRANSPORT_POLICY.streamBufferBytes),
+    maxHeaderBytes: String(TRANSPORT_POLICY.maxHeaderBytes),
     connectTimeoutMs: "10000",
     operationTimeoutMs: "30000",
     retryMaxAttempts: "4",

@@ -37,7 +37,7 @@ function usage(overrides: Partial<UsageRecord> = {}): UsageRecord {
   };
 }
 
-test("routing score uses the versioned weighted formula and nonlinear headroom", () => {
+test("roadmap routing-score hypothesis uses the documented weighted formula and nonlinear headroom", () => {
   const result = scoreRoutingCandidate({
     reliability: 0.8,
     activeConnections: 2,
@@ -56,7 +56,7 @@ test("routing score uses the versioned weighted formula and nonlinear headroom",
   assert.equal(result.saturated, false);
 });
 
-test("top-band selection excludes candidates more than five points behind and weights score squared", () => {
+test("roadmap top-band hypothesis excludes candidates more than five points behind and weights score squared", () => {
   const candidates: Array<ScoredRoutingCandidate<string>> = [
     {
       candidate: "best",

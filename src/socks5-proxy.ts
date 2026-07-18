@@ -18,6 +18,7 @@ export interface Socks5ProxyOptions {
   attemptEstablishmentTimeoutMs: number;
   operationEstablishmentTimeoutMs: number;
   streamIdleTimeoutMs: number;
+  streamBufferBytes: number;
   maxHandshakeBytes: number;
   targetValidator: TargetValidator;
   logger: Logger;
@@ -206,6 +207,7 @@ export class Socks5ProxyServer {
         initialBudget,
         attemptEstablishmentTimeoutMs: this.options.attemptEstablishmentTimeoutMs,
         streamIdleTimeoutMs: this.options.streamIdleTimeoutMs,
+        streamBufferBytes: this.options.streamBufferBytes,
         maxHandshakeBytes: this.options.maxHandshakeBytes,
         logger: this.options.logger,
         telemetry: this.options.telemetry,

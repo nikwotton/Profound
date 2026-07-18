@@ -22,7 +22,6 @@ deployedTest("deployed HTTP forwarding preserves native method, path, query, hea
   const route = await createRoute({
     name: `http-transparency-${Date.now()}`,
     targeting: { country: "US", postalCode: "10001", asn: 12_345 },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
@@ -61,7 +60,6 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
   const route = await createRoute({
     name: `target-outcomes-${Date.now()}`,
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: true,
     retryPolicy: { maxAttempts: 4 },
   });
@@ -85,7 +83,7 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
   assert.equal(parsedBody(redirect)["requestCount"], 1);
 });
 
-deployedTest("deployed Bright Data routes support fresh exits and authenticated exact-city policies", async (t) => {
+deployedTest("deployed Bright Data routes support fresh exits and exact-city policies", async (t) => {
   const { metadata } = await deployedEnvironment();
   assert.ok(metadata.integrationTarget);
   const target = new URL("/bright-data", metadata.integrationTarget.url).toString();
@@ -96,7 +94,6 @@ deployedTest("deployed Bright Data routes support fresh exits and authenticated 
     name: `fresh-${Date.now()}`,
     targeting: { country: "US", city: "New York" },
     rotation: { mode: "per_request" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   routeIds.push(fresh.profile.id);
@@ -105,15 +102,14 @@ deployedTest("deployed Bright Data routes support fresh exits and authenticated 
   assert.notEqual(freshFirst.headers["x-mock-exit-ip"], freshSecond.headers["x-mock-exit-ip"]);
   assert.equal(freshFirst.headers["x-mock-city"], "newyork");
 
-  const authenticated = await createRoute({
-    name: `authenticated-bright-${Date.now()}`,
+  const exactCity = await createRoute({
+    name: `exact-city-bright-${Date.now()}`,
     targeting: { country: "GB", city: "London" },
     rotation: { mode: "per_request" },
-    isAuthenticated: true,
     shouldRetry: false,
   });
-  routeIds.push(authenticated.profile.id);
-  assert.equal((await requestViaHttpProxy(authenticated.proxyUrls.http, target)).headers["x-mock-city"], "london");
+  routeIds.push(exactCity.profile.id);
+  assert.equal((await requestViaHttpProxy(exactCity.proxyUrls.http, target)).headers["x-mock-city"], "london");
 });
 
 deployedTest("deployed Proxidize connections share slot capacity and preserve the exact city", async (t) => {
@@ -123,13 +119,15 @@ deployedTest("deployed Proxidize connections share slot capacity and preserve th
   const routes: CreatedRouteResponse[] = [];
   for (const number of [1, 2]) {
     routes.push(
-      await createRoute({
-        name: `mobile-distribution-${number}-${Date.now()}`,
-        targeting: { country: "US", region: "NY", city: "New York" },
-        rotation: { mode: "manual" },
-        isAuthenticated: true,
-        shouldRetry: false,
-      }),
+      await createRoute(
+        {
+          name: `mobile-distribution-${number}-${Date.now()}`,
+          targeting: { country: "US", region: "NY", city: "New York" },
+          rotation: { mode: "manual" },
+          shouldRetry: false,
+        },
+        "managed",
+      ),
     );
   }
   t.after(async () => Promise.all(routes.map(({ profile }) => revokeRoute(profile.id).catch(() => undefined))));
@@ -154,7 +152,6 @@ deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and T
     name: `tunnel-protocols-${Date.now()}`,
     allowedProtocols: ["http", "https", "socks5"],
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
@@ -195,7 +192,6 @@ deployedTest("deployed gateways enforce public destinations, ports, and credenti
   const route = await createRoute({
     name: `http-only-security-${Date.now()}`,
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));

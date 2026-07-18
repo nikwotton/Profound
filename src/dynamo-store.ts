@@ -24,6 +24,8 @@ import {
   decodeCredentialLookup,
   grantItem,
   itemField,
+  logicalSessionItem,
+  logicalSessionKey,
   routeKey,
   type ActiveTunnelItem,
   type CapabilityHealthItem,
@@ -54,6 +56,7 @@ import {
   decodeProviderHealth,
   decodeProviderInventorySnapshot,
   decodeStoredAccessGrant,
+  decodeStoredLogicalSession,
   decodeStoredRoute,
   decodeUsageReconciliation,
   decodeUsageAlertEvent,
@@ -68,6 +71,7 @@ import type {
   CapacityCircuitReason,
   CapacityCircuitState,
   ActiveTunnel,
+  AuthenticatedAccessGrant,
   DeploymentDrainState,
   HealthAlertDelivery,
   HealthAlertEvent,
@@ -77,6 +81,8 @@ import type {
   RouteProfile,
   RouteStatus,
   StoredAccessGrant,
+  StoredAccessGrantCredential,
+  StoredLogicalSession,
   StoredRoute,
   UsageRecord,
   UsageAlertEvent,
@@ -145,15 +151,12 @@ export class DynamoRouteStore implements RouteStore {
       targeting: profile.targeting,
       rotation: profile.rotation,
       allowedProtocols: profile.allowedProtocols,
-      session: profile.session,
       customerId: profile.customerId,
       ...(profile.geography === undefined ? {} : { geography: profile.geography }),
       ...(profile.carrier === undefined ? {} : { carrier: profile.carrier }),
       ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
-      isTargetAuthenticated: profile.isTargetAuthenticated,
       allowConnectionRetry: profile.allowConnectionRetry,
       userId: profile.userId,
-      isAuthenticated: profile.isAuthenticated,
       shouldRetry: profile.shouldRetry,
       retryPolicy: profile.retryPolicy,
       provider,
@@ -271,14 +274,18 @@ export class DynamoRouteStore implements RouteStore {
     principalId: string,
     credentialId: string,
     token: string,
+    sessionMode: StoredAccessGrantCredential["sessionMode"],
+    sessionId?: string,
+    jobId?: string,
   ): Promise<StoredAccessGrant> {
     await this.get(routeId);
     const now = new Date().toISOString();
-    const credential = createStoredCredential(credentialId, token, now);
+    const credential = createStoredCredential(credentialId, token, sessionMode, now, sessionId);
     const grant: StoredAccessGrant = {
       id,
       routeId,
       principalId,
+      ...(jobId === undefined ? {} : { jobId }),
       credentials: [credential],
       status: "ready",
       terminateActive: false,
@@ -306,6 +313,47 @@ export class DynamoRouteStore implements RouteStore {
       }),
     );
     return grant;
+  }
+
+  async addAccessGrantCredential(
+    id: string,
+    credentialId: string,
+    token: string,
+    sessionMode: StoredAccessGrantCredential["sessionMode"],
+    sessionId?: string,
+  ): Promise<StoredAccessGrant> {
+    const grant = await this.getAccessGrant(id);
+    const now = new Date().toISOString();
+    const credential = createStoredCredential(credentialId, token, sessionMode, now, sessionId);
+    grant.credentials.push(credential);
+    grant.updatedAt = now;
+    try {
+      await this.#client.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: grantItem(grant),
+                ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
+                ExpressionAttributeNames: { "#status": "status" },
+                ExpressionAttributeValues: { ":revoked": "revoked" },
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: credentialLookupItem(grant.id, credential),
+                ConditionExpression: "attribute_not_exists(pk)",
+              },
+            },
+          ],
+        }),
+      );
+      return grant;
+    } catch (error) {
+      conditionalNotFound(error);
+    }
   }
 
   async getAccessGrant(id: string, includeRevoked = false): Promise<StoredAccessGrant> {
@@ -339,7 +387,7 @@ export class DynamoRouteStore implements RouteStore {
     return items.map((item) => decodeStoredAccessGrant(itemField(item, "grant", "DynamoDB access-grant item")));
   }
 
-  async authenticateAccessGrant(username: string, token: string): Promise<StoredAccessGrant | undefined> {
+  async authenticateAccessGrant(username: string, token: string): Promise<AuthenticatedAccessGrant | undefined> {
     const lookupResult = await this.#client.send(
       new GetCommand({
         TableName: this.tableName,
@@ -370,7 +418,9 @@ export class DynamoRouteStore implements RouteStore {
     const credential = grant.credentials[credentialIndex];
     if (credential === undefined) throw new Error("Matched access-grant credential disappeared");
     const lastUsedAtMs = credential.lastUsedAt === undefined ? undefined : Date.parse(credential.lastUsedAt);
-    if (lastUsedAtMs !== undefined && nowMs - lastUsedAtMs < ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS) return grant;
+    if (lastUsedAtMs !== undefined && nowMs - lastUsedAtMs < ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS) {
+      return { grant, credential };
+    }
     credential.lastUsedAt = now;
     grant.updatedAt = now;
     await this.#client.send(
@@ -389,11 +439,12 @@ export class DynamoRouteStore implements RouteStore {
         ExpressionAttributeValues: { ":now": now, ":revoked": "revoked", ":tokenHash": credential.tokenHash },
       }),
     );
-    return grant;
+    return { grant, credential };
   }
 
   async rotateAccessGrantCredential(
     id: string,
+    previousCredentialId: string,
     credentialId: string,
     token: string,
     suspectedCompromise = false,
@@ -402,7 +453,10 @@ export class DynamoRouteStore implements RouteStore {
     const now = new Date().toISOString();
     const nowMs = Date.parse(now);
     const overlapLimit = nowMs + ACCESS_GRANT_CREDENTIAL_OVERLAP_MS;
+    const previous = grant.credentials.find((credential) => credential.id === previousCredentialId);
+    if (previous === undefined) throw new NotFoundError();
     grant.credentials = grant.credentials.map((credential) => {
+      if (credential.id !== previousCredentialId) return credential;
       if (!credentialUsable(credential, nowMs)) return credential;
       if (suspectedCompromise) return { ...credential, status: "revoked" as const, revokeAt: now };
       return {
@@ -411,7 +465,7 @@ export class DynamoRouteStore implements RouteStore {
         revokeAt: new Date(Math.min(Date.parse(credential.expiresAt), overlapLimit)).toISOString(),
       };
     });
-    const newCredential = createStoredCredential(credentialId, token, now);
+    const newCredential = createStoredCredential(credentialId, token, previous.sessionMode, now, previous.sessionId);
     grant.credentials.push(newCredential);
     grant.updatedAt = now;
     try {
@@ -478,6 +532,75 @@ export class DynamoRouteStore implements RouteStore {
     } catch (error) {
       conditionalNotFound(error);
     }
+    await this.closeLogicalSessions(id, terminateActive);
+  }
+
+  async createLogicalSession(session: StoredLogicalSession): Promise<void> {
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: logicalSessionItem(session),
+        ConditionExpression: "attribute_not_exists(pk)",
+      }),
+    );
+  }
+
+  async getLogicalSession(id: string, includeClosed = false): Promise<StoredLogicalSession> {
+    const result = await this.#client.send(new GetCommand({ TableName: this.tableName, Key: logicalSessionKey(id), ConsistentRead: true }));
+    if (result.Item === undefined) throw new NotFoundError();
+    const session = decodeStoredLogicalSession(itemField(result.Item, "session", "DynamoDB logical-session item"));
+    if (!includeClosed && session.status === "closed") throw new NotFoundError();
+    return session;
+  }
+
+  async listLogicalSessions(grantId: string): Promise<StoredLogicalSession[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity",
+      FilterExpression: "grantId = :grantId",
+      ExpressionAttributeNames: { "#entity": "entity" },
+      ExpressionAttributeValues: { ":entity": "logical_session", ":grantId": grantId },
+    });
+    return items.map((item) => decodeStoredLogicalSession(itemField(item, "session", "DynamoDB logical-session item")));
+  }
+
+  async saveLogicalSession(session: StoredLogicalSession, expectedBindingVersion: number): Promise<boolean> {
+    try {
+      await this.#client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: logicalSessionItem(session),
+          ConditionExpression: "attribute_exists(pk) AND #status = :open AND #session.bindingVersion = :expected",
+          ExpressionAttributeNames: { "#status": "status", "#session": "session" },
+          ExpressionAttributeValues: { ":open": "open", ":expected": expectedBindingVersion },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+      throw error;
+    }
+  }
+
+  async closeLogicalSession(id: string, terminateActive = false): Promise<void> {
+    const session = await this.getLogicalSession(id, true);
+    if (session.status === "closed" && (!terminateActive || session.terminateActive)) return;
+    const now = new Date().toISOString();
+    const closed: StoredLogicalSession = {
+      ...session,
+      status: "closed",
+      terminateActive: session.terminateActive || terminateActive,
+      closedAt: session.closedAt ?? now,
+      updatedAt: now,
+    };
+    await this.#client.send(
+      new PutCommand({ TableName: this.tableName, Item: logicalSessionItem(closed), ConditionExpression: "attribute_exists(pk)" }),
+    );
+  }
+
+  async closeLogicalSessions(grantId: string, terminateActive = false): Promise<void> {
+    for (const session of await this.listLogicalSessions(grantId)) await this.closeLogicalSession(session.id, terminateActive);
   }
 
   async revoke(id: string, terminateActive = false): Promise<void> {
@@ -499,10 +622,11 @@ export class DynamoRouteStore implements RouteStore {
     }
   }
 
-  async shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean> {
+  async shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean> {
     try {
       if ((await this.get(id, true)).terminateActive) return true;
-      return accessGrantId === undefined ? false : (await this.getAccessGrant(accessGrantId, true)).terminateActive;
+      if (accessGrantId !== undefined && (await this.getAccessGrant(accessGrantId, true)).terminateActive) return true;
+      return sessionId === undefined ? false : (await this.getLogicalSession(sessionId, true)).terminateActive;
     } catch {
       return false;
     }

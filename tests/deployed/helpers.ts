@@ -144,7 +144,6 @@ export interface PublicRoute {
   customerId: string;
   geography?: { countryCode?: string; regionCode?: string; city?: string };
   carrier?: string;
-  isTargetAuthenticated: boolean;
   allowConnectionRetry: boolean;
   createdAt: string;
   updatedAt: string;
@@ -157,12 +156,11 @@ type LegacyTestProfileInput = Partial<RouteProfileInput> & {
   session?: unknown;
   allowedProtocols?: unknown;
   retryPolicy?: unknown;
-  isAuthenticated?: boolean;
   shouldRetry?: boolean;
 };
 
 function canonicalTestProfile(input: LegacyTestProfileInput): RouteProfileInput {
-  const { targeting, isAuthenticated, shouldRetry, ...profile } = input;
+  const { targeting, shouldRetry, ...profile } = input;
   const carrier = profile.carrier ?? targeting?.carrier;
   const geography =
     targeting === undefined
@@ -176,7 +174,6 @@ function canonicalTestProfile(input: LegacyTestProfileInput): RouteProfileInput 
     customerId: profile.customerId ?? `deployed-test-${Date.now()}`,
     ...(geography === undefined ? {} : { geography }),
     ...(carrier === undefined ? {} : { carrier }),
-    isTargetAuthenticated: profile.isTargetAuthenticated ?? isAuthenticated ?? false,
     allowConnectionRetry: profile.allowConnectionRetry ?? shouldRetry ?? false,
   };
 }
@@ -286,7 +283,10 @@ export async function controlRequest(path: string, init: RequestInit = {}, token
   });
 }
 
-export async function createRoute(profile: LegacyTestProfileInput): Promise<CreatedRouteResponse> {
+export async function createRoute(
+  profile: LegacyTestProfileInput,
+  sessionMode: "managed" | "none" = "none",
+): Promise<CreatedRouteResponse> {
   const response = await controlRequest("/v1/profiles", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -296,7 +296,11 @@ export async function createRoute(profile: LegacyTestProfileInput): Promise<Crea
   const { profileId } = (await response.json()) as { profileId: string };
   const [profileResponse, grantResponse] = await Promise.all([
     controlRequest(`/v1/profiles/${profileId}`),
-    controlRequest(`/v1/profiles/${profileId}/grants`, { method: "POST" }),
+    controlRequest(`/v1/profiles/${profileId}/grants`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionMode }),
+    }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) throw new Error("Profile setup failed");
   const publicProfile = ((await profileResponse.json()) as { profile: PublicRoute }).profile;

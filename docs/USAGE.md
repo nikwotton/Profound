@@ -5,8 +5,9 @@ This guide covers Profound Proxy Router v0's provider-neutral control plane and 
 ## Concepts
 
 - A **route profile** stores stable workload requirements. It contains no protocol choice, session or rotation policy, caller secret, or provider secret; the optional `providerOverride` is its sole provider constraint.
-- An **access grant** is the credential, ownership, and revocation boundary for one independently revocable workload. It does not reserve a provider, slot, device, or IP.
-- A **credential** authenticates one access grant. Its opaque username is stable for that credential; its password is shown only when issued or rotated.
+- An **access grant** is the authorization, ownership, and credential boundary for one route profile. It contains managed sessions and/or explicitly stateless credentials, but does not reserve capacity.
+- A **logical session** is an optional, provider-neutral best-effort affinity scope. It may remember an opaque provider binding across connections; it is not an exclusive slot, device, or IP lease and does not own target cookies or tokens.
+- A **credential** authenticates one access grant and is either scoped to one managed session or explicitly stateless. Its opaque username is stable for that credential; its password is shown only when issued or rotated.
 - The **data plane** accepts native proxy traffic. Clients keep the original destination URL, method, path, query, headers, body, redirects, and TLS behavior.
 
 The control bearer token and proxy credential are separate:
@@ -44,7 +45,6 @@ curl -sS http://127.0.0.1:8081/v1/profiles \
       "city": "New York"
     },
     "carrier": "T-Mobile",
-    "isTargetAuthenticated": true,
     "allowConnectionRetry": false
   }'
 ```
@@ -55,14 +55,16 @@ The `201` response contains only the new identifier:
 { "profileId": "PROFILE_ID" }
 ```
 
-Issue an access grant and its initial credential:
+Issue an access grant and explicitly select managed affinity or stateless operation:
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8081/v1/profiles/PROFILE_ID/grants \
-  -H 'Authorization: Bearer change-me'
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{ "sessionMode": "managed", "jobId": "collection-job-123" }'
 ```
 
-The `201` response contains redacted `grant` metadata, credential-free `endpoints`, and a `credential` with `credentialId`, opaque `username`, and one-time `password`. Store the password immediately in a secret manager. It cannot be retrieved later. Do not construct a username from a profile or grant ID.
+`sessionMode` is required; omission is invalid. `managed` creates an initial logical session and session-scoped credential, while `none` creates a stateless credential with no cross-connection continuity preference. Optional `jobId` is immutable for that grant, is returned by grant list/read operations, may be reused across grants under the same customer, and is inherited by usage, logs, and telemetry. It does not replace the distinct per-operation `logicalOperationId`. The `201` response contains redacted `grant` metadata, credential-free `endpoints`, the optional managed `session`, and a `credential` with `credentialId`, opaque `username`, and one-time `password`. Store the password immediately in a secret manager. It cannot be retrieved later. Do not construct a username from a profile, grant, or session ID.
 
 ## Send proxy traffic
 
@@ -84,7 +86,7 @@ curl --proxy 'http://127.0.0.1:8080' \
   http://example.com/
 ```
 
-The client sends an absolute-form request target. Profound removes proxy-only authentication and preserves target method, path, query, headers, body, statuses, and redirects. Plain-HTTP request and response bodies are fully buffered before forwarding or delivery, with centralized defaults of 10 MB and 50 MB respectively.
+The client sends an absolute-form request target. Profound removes proxy-only authentication and preserves target method, path, query, headers, body, statuses, and redirects. Request and response bodies stream with bounded backpressure after a compatible upstream connection is established; v0 does not impose application-level HTTP body-size caps.
 
 SOCKS5 with provider-side DNS:
 
@@ -98,43 +100,47 @@ V0 supports authenticated SOCKS5 TCP `CONNECT`; it rejects unauthenticated negot
 
 ## Route profile contract
 
-The committed [OpenAPI contract](../openapi/profound-control-api.v0.6.0.json) is authoritative.
+The committed [OpenAPI contract](../openapi/profound-control-api.v0.7.0.json) is authoritative.
 
 | Field                   | Required    | Behavior                                                                                                                |
 | ----------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `customerId`            | Yes         | Non-empty attribution value.                                                                                            |
-| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required for authenticated targets.                              |
-| `geography.regionCode`  | No          | State or region constraint.                                                                                             |
-| `geography.city`        | Conditional | Required with country when `isTargetAuthenticated` is true.                                                             |
-| `carrier`               | No          | Carrier constraint.                                                                                                     |
+| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required when region or city is supplied.                        |
+| `geography.regionCode`  | No          | State or region hard constraint; requires country.                                                                      |
+| `geography.city`        | No          | Exact-city hard constraint; requires country.                                                                           |
+| `carrier`               | No          | Carrier hard constraint.                                                                                                |
 | `providerOverride`      | No          | `bright_data`, `proxidize`, or `null`; constrains routing without bypassing compatibility, safety, health, or capacity. |
-| `isTargetAuthenticated` | Yes         | Declares whether the target session is authenticated; controls provider-class preference and identity requirements.     |
 | `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                               |
 
-Unknown fields are rejected. In particular, profiles do not accept `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
+Unknown fields are rejected. In particular, profiles do not accept target-authentication state, `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
 
-Authenticated targets require exact country and city targeting. They exhaust compatible device-backed candidates before residential candidates; device-backed soft saturation does not open residential fallback. Unauthenticated targets normally prefer residential candidates for cost, but residential soft saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain service-private and appear only in authorized dashboard and telemetry views.
+Every supplied geography level is a hard gate for initial placement, retry, failover, rebind, and failback; city means exact city. Target-site authentication remains ordinary pass-through traffic and is deliberately not part of the routing contract. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain service-private and appear only in authorized dashboard and telemetry views.
 
 Replace the stable requirements with `PUT /v1/profiles/{id}`. New connections use the replacement; established requests and tunnels continue under the policy with which they opened.
 
-## Access grants and credentials
+## Access grants, sessions, and credentials
 
-Access grants are reusable credential scopes, not target-session or provider-assignment boundaries. Every new upstream connection independently scores compatible providers and, for Proxidize, compatible proxy slots. The router atomically claims the selected slot's active load before establishment. Multiple grants, callers, customers, and connections may share a slot. The assignment lasts only for that connection; grant or credential revocation has no durable assignment to release.
+An access grant owns independently revocable authorization for one profile. Managed sessions and stateless credentials live under it. A managed session records non-exclusive, last-known affinity while it is open; an idle session reserves no capacity and sends no keepalive traffic. Stateless credentials are placed independently for every connection. Multiple grants, callers, sessions, and connections may share provider capacity.
 
-| Operation                                | Endpoint                                                 |
-| ---------------------------------------- | -------------------------------------------------------- |
-| Create/list profiles                     | `POST /v1/profiles`, `GET /v1/profiles`                  |
-| Inspect/replace/remove profile           | `GET`, `PUT`, `DELETE /v1/profiles/{id}`                 |
-| Create/list grants                       | `POST`, `GET /v1/profiles/{id}/grants`                   |
-| Inspect/revoke grant                     | `GET`, `DELETE /v1/grants/{grantId}`                     |
-| Rotate credential                        | `POST /v1/grants/{grantId}/credentials/rotate`           |
-| Replace suspected-compromised credential | `POST /v1/grants/{grantId}/credentials/emergency-rotate` |
-| Inspect credential metadata              | `GET /v1/grants/{grantId}/credentials/{credentialId}`    |
-| Revoke one credential                    | `DELETE /v1/grants/{grantId}/credentials/{credentialId}` |
+| Operation                      | Endpoint                                                                |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| Create/list profiles           | `POST /v1/profiles`, `GET /v1/profiles`                                 |
+| Inspect/replace/remove profile | `GET`, `PUT`, `DELETE /v1/profiles/{id}`                                |
+| Create/list grants             | `POST`, `GET /v1/profiles/{id}/grants`                                  |
+| Inspect/revoke grant           | `GET`, `DELETE /v1/grants/{grantId}`                                    |
+| Create stateless credential    | `POST /v1/grants/{grantId}/credentials` with `sessionMode: "none"`      |
+| Rotate credential              | `POST /v1/grants/{grantId}/credentials/{credentialId}/rotate`           |
+| Replace compromised credential | `POST /v1/grants/{grantId}/credentials/{credentialId}/emergency-rotate` |
+| Inspect/revoke credential      | `GET`, `DELETE /v1/grants/{grantId}/credentials/{credentialId}`         |
+| Create/list managed sessions   | `POST`, `GET /v1/grants/{grantId}/sessions`                             |
+| Inspect/close session          | `GET`, `DELETE /v1/grants/{grantId}/sessions/{sessionId}`               |
+| Force-close session            | `POST /v1/grants/{grantId}/sessions/{sessionId}/force-close`            |
 
-Credentials have a fixed 30-day lifetime. `renewalDueAt` is seven days before expiry. Routine rotation leaves prior usable credentials in bounded overlap for at most 72 hours or until original expiry. Emergency rotation invalidates prior credentials immediately. Profile or grant removal blocks new use while established traffic is allowed to finish.
+Closing a session rejects new connections immediately and lets established work drain. Force-close also terminates active connections. Sessions otherwise stay open until explicitly closed or their grant/profile is revoked. Revoking a grant closes all its sessions for new connections while established work drains.
 
-Profile, grant, and credential list/read responses never include passwords, verifiers, provider credentials, device identifiers, or proxy URLs with embedded credentials.
+Credentials have a fixed 30-day lifetime. `renewalDueAt` is seven days before expiry. Routine rotation leaves the selected prior credential in bounded overlap for at most 72 hours or until original expiry. Emergency rotation invalidates the selected suspected credential immediately. Rotation preserves `sessionMode` and `sessionId`; it never creates a new logical identity.
+
+Profile, grant, session, and credential list/read responses never include passwords, verifiers, provider credentials, provider affinity, device identifiers, IP assignments, or proxy URLs with embedded credentials.
 
 ## Routing and retry behavior
 
@@ -142,13 +148,15 @@ Provider selection and provider-specific rotation are private service implementa
 
 `providerOverride` is the one deliberate exception: set it to `bright_data` or `proxidize` only when a workload must constrain the vendor, or leave it `null`/omit it for ordinary provider-neutral routing. An override never bypasses protocol, geography, safety, health, hard-capacity, or circuit checks. If the named provider cannot satisfy the profile, the control plane returns `provider_override_unsatisfied`; the data plane does not fall back to another provider.
 
-Within the applicable provider-preference tier, candidates receive a versioned score from reliability, nonlinear capacity headroom, proxy-controlled establishment performance, expected cost, and stability. The router randomly selects within five points of the best score, weighted by score squared, so similarly qualified traffic is distributed without ignoring material quality differences. A candidate at its soft capacity limit remains an overflow option rather than being rejected. For authenticated traffic, device-backed saturation changes ordering only inside that class. For unauthenticated traffic, residential saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow.
+Within the applicable provider-preference tier, v0 selects the least-loaded eligible candidate using a stable identifier as the tie-breaker. A candidate at its soft capacity limit remains an overflow option rather than being rejected. Managed sessions prefer device-backed providers and remain within that class through soft saturation. Stateless traffic prefers residential providers, but residential soft saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow. The weighted reliability, headroom, performance, cost, and stability score is emitted only as a shadow roadmap diagnostic; it does not control v0 selection.
 
-- Unauthenticated operations use fresh residential candidates.
-- Authenticated operations prefer device-backed providers, require exact-city routing, and keep a connection on its selected upstream for its lifetime. The preference supplies a controlled, coherent identity; device and IP continuity across connections is best effort rather than guaranteed.
-- Bright Data remains eligible for authenticated targets when it satisfies all constraints; Proxidize remains subject to inventory and capacity.
+- `sessionMode` controls provider-class preference; target authentication never does. Managed sessions prefer device-backed providers and stateless traffic prefers residential providers.
+- `sessionMode: "none"` has no cross-connection affinity. Managed sessions first try their eligible recorded binding and preserve it through soft saturation; new sessions and stateless connections use normal least-loaded placement.
+- A managed binding may rebind atomically after ineligibility, effective hard capacity, an open circuit, a pre-commit failure, or an incompatible profile update. Concurrent connections converge on the winning binding instead of deliberately splitting identities.
+- A managed cross-class fallback remains marked degraded. The next real connection probes the preferred class only after five minutes of continuous health and 30 seconds with no active connection; success rebinds atomically and failure restarts stabilization.
+- Bright Data remains eligible for managed sessions when it satisfies all constraints; Proxidize remains eligible for stateless traffic and subject to inventory and capacity.
 - Repeated proxy-controlled pre-commit establishment/capacity failures and provider-reported hard limits open a shared capacity circuit. The initial cooldown is 60 seconds, repeated openings back off, and one half-open probe closes the circuit after success.
-- `allowConnectionRetry` only permits retries before target request or tunnel bytes are committed.
+- `allowConnectionRetry` only permits another upstream establishment attempt before commitment. Plain HTTP commits when its first application-request byte is written upstream; CONNECT and SOCKS5 commit when tunnel establishment is acknowledged to the caller or a tunneled byte is relayed.
 - Target HTTP responses, provider-authentication failures, and failures after commit are not hidden by failover.
 - No request ever falls back to the router's direct Internet connection.
 
@@ -170,12 +178,13 @@ The Effect error discriminator `_tag` may also appear in the JSON representation
 ## Destination and transport safety
 
 - Explicit loopback, private, link-local, multicast, reserved, metadata, and special-use IP literals are rejected.
+- `localhost` and operator-configured local-only hostnames or parent domains are rejected.
 - Domains remain intact for provider-side DNS. Local DNS is diagnostic only and cannot reroute the request.
-- Verified provider-side private resolution is rejected. Where an opaque provider supplies no resolution evidence, safety is best effort and the missing evidence is recorded by the service.
+- Provider-selected addresses are classified `verified` when the adapter can observe or constrain them; verified private or special-purpose results are rejected.
+- Opaque DNS is classified `provider-trusted` and is eligible only for third-party exits with no protected company-network reachability. Bright Data and Proxidize meet that external-provider boundary, but the gateway does not claim complete SSRF enforcement for resources reachable from a provider's own network.
 - Target URL credentials and credentials in `CONNECT` authorities are rejected.
 - Target ports default to `80` and `443`; operators may deliberately allow more public TCP ports.
-- Plain-HTTP request and response bodies are buffered with the configured request and response caps. Oversized requests are rejected before upstream forwarding; oversized responses are rejected before response bytes reach the caller.
-- HTTP CONNECT and SOCKS5 tunnels remain opaque streams with backpressure and are not subject to application-body caps.
+- Plain HTTP, HTTP CONNECT, and SOCKS5 all stream through a small bounded transport buffer with backpressure; v0 has no application-body caps.
 
 ## Privacy and logging
 

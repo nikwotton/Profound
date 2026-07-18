@@ -12,6 +12,7 @@ import type {
   ProviderInventorySnapshot,
   StoredAccessGrant,
   StoredAccessGrantCredential,
+  StoredLogicalSession,
   StoredRoute,
   UsageAlertEvent,
   UsageReconciliation,
@@ -46,17 +47,10 @@ const Rotation = Schema.Union(
   Schema.Struct({ mode: Schema.Literal("manual") }),
 );
 
-const Session = Schema.Union(
-  Schema.Struct({ mode: Schema.Literal("none"), requireGeographicContinuity: Schema.Literal(false) }),
-  Schema.Struct({
-    mode: Schema.Literal("sticky"),
-    id: exactOptional(Schema.String),
-    requireGeographicContinuity: Schema.Boolean,
-  }),
-);
-
 const StoredAccessGrantCredentialSchema: Schema.Schema<StoredAccessGrantCredential> = Schema.Struct({
   id: Schema.String,
+  sessionMode: Schema.Literal("managed", "none"),
+  sessionId: exactOptional(Schema.String),
   tokenSalt: Schema.String,
   tokenHash: Schema.String,
   status: Schema.Literal("active", "overlap", "revoked"),
@@ -67,10 +61,39 @@ const StoredAccessGrantCredentialSchema: Schema.Schema<StoredAccessGrantCredenti
   lastUsedAt: exactOptional(IsoTimestamp),
 });
 
+const StoredLogicalSessionSchema: Schema.Schema<StoredLogicalSession> = Schema.Struct({
+  id: Schema.String,
+  grantId: Schema.String,
+  routeId: Schema.String,
+  status: Schema.Literal("open", "closed"),
+  terminateActive: Schema.Boolean,
+  bindingVersion: NonNegativeInteger,
+  affinity: exactOptional(
+    Schema.Struct({
+      provider: Schema.Literal("bright_data", "proxidize"),
+      providerClass: Schema.Literal("residential", "device_backed"),
+      candidateId: Schema.String,
+      affinityHandle: Schema.String,
+      profileFingerprint: Schema.String,
+      desiredProviderClass: Schema.Literal("residential", "device_backed"),
+      currentProviderClass: Schema.Literal("residential", "device_backed"),
+      degradedFallback: Schema.Boolean,
+      boundAt: IsoTimestamp,
+      lastUsedAt: IsoTimestamp,
+    }),
+  ),
+  preferredClassHealthySince: exactOptional(IsoTimestamp),
+  lastDisconnectedAt: exactOptional(IsoTimestamp),
+  closedAt: exactOptional(IsoTimestamp),
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
+});
+
 const StoredAccessGrantSchema: Schema.Schema<StoredAccessGrant> = Schema.Struct({
   id: Schema.String,
   routeId: Schema.String,
   principalId: Schema.String,
+  jobId: exactOptional(Schema.String),
   credentials: mutableArray(StoredAccessGrantCredentialSchema),
   status: Schema.Literal("ready", "revoked"),
   terminateActive: Schema.Boolean,
@@ -84,7 +107,6 @@ const StoredRouteSchema: Schema.Schema<StoredRoute> = Schema.Struct({
   allowedProtocols: mutableArray(Schema.Literal("http", "https", "socks5")),
   targeting: Targeting,
   rotation: Rotation,
-  session: Session,
   customerId: Schema.String,
   geography: exactOptional(
     Schema.Struct({
@@ -95,10 +117,8 @@ const StoredRouteSchema: Schema.Schema<StoredRoute> = Schema.Struct({
   ),
   carrier: exactOptional(Schema.String),
   providerOverride: exactOptional(Schema.Literal("bright_data", "proxidize")),
-  isTargetAuthenticated: Schema.Boolean,
   allowConnectionRetry: Schema.Boolean,
   userId: Schema.String,
-  isAuthenticated: Schema.Boolean,
   shouldRetry: Schema.Boolean,
   retryPolicy: Schema.Struct({ maxAttempts: PositiveInteger }),
   provider: Schema.Literal("bright_data", "proxidize"),
@@ -117,6 +137,7 @@ const ActiveTunnelSchema: Schema.Schema<ActiveTunnel> = Schema.Struct({
   deploymentId: Schema.String,
   routeId: Schema.String,
   accessGrantId: Schema.String,
+  sessionId: exactOptional(Schema.String),
   protocol: Schema.Literal("http", "https", "socks5"),
   provider: Schema.Literal("bright_data", "proxidize"),
   endpointId: exactOptional(Schema.String),
@@ -175,7 +196,7 @@ const ProviderInventorySnapshotSchema: Schema.Schema<ProviderInventorySnapshot> 
 });
 
 const CapabilityHealth = Schema.Struct({
-  capability: Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic", "health_verification"),
+  capability: Schema.Literal("all_traffic", "managed_sessions", "stateless_traffic", "health_verification"),
   status: Schema.Literal("operational", "degraded", "unavailable"),
   providerStatusAt: exactOptional(IsoTimestamp),
   endToEndValidatedAt: exactOptional(IsoTimestamp),
@@ -202,7 +223,7 @@ const HealthAlertEventSchema: Schema.Schema<HealthAlertEvent> = Schema.Struct({
   id: Schema.String,
   dedupeKey: Schema.String,
   kind: Schema.Literal("alert", "recovery"),
-  capability: Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic", "health_verification"),
+  capability: Schema.Literal("all_traffic", "managed_sessions", "stateless_traffic", "health_verification"),
   status: Schema.Literal("operational", "degraded", "unavailable"),
   previousStatus: exactOptional(Schema.Literal("degraded", "unavailable")),
   severity: Schema.Literal("critical", "warning", "info"),
@@ -213,7 +234,7 @@ const HealthAlertEventSchema: Schema.Schema<HealthAlertEvent> = Schema.Struct({
 });
 
 const HealthAlertStateSchema: Schema.Schema<HealthAlertState> = Schema.Struct({
-  capability: Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic", "health_verification"),
+  capability: Schema.Literal("all_traffic", "managed_sessions", "stateless_traffic", "health_verification"),
   observedStatus: Schema.Literal("operational", "degraded", "unavailable"),
   observedSince: IsoTimestamp,
   alertedStatus: exactOptional(Schema.Literal("degraded", "unavailable")),
@@ -238,7 +259,10 @@ const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
   kind: Schema.Literal("attempt", "capacity"),
   id: Schema.String,
   logicalOperationId: Schema.String,
+  jobId: exactOptional(Schema.String),
   accessGrantId: Schema.String,
+  sessionMode: exactOptional(Schema.Literal("managed", "none")),
+  sessionId: exactOptional(Schema.String),
   routeId: Schema.String,
   userId: Schema.String,
   customerId: Schema.String,
@@ -249,6 +273,10 @@ const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
   failover: Schema.Boolean,
   bytesSent: NonNegativeInteger,
   bytesReceived: NonNegativeInteger,
+  destinationDomain: exactOptional(Schema.String),
+  destinationHost: exactOptional(Schema.String),
+  destinationPort: exactOptional(PositiveInteger),
+  destinationPathTemplate: exactOptional(Schema.String),
   country: exactOptional(Schema.String),
   city: exactOptional(Schema.String),
   endpointId: exactOptional(Schema.String),
@@ -277,6 +305,12 @@ const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
       stability: NonNegativeNumber,
     }),
   ),
+  sessionAffinityHit: exactOptional(Schema.Boolean),
+  sessionRebindCause: exactOptional(Schema.String),
+  desiredProviderClass: exactOptional(Schema.Literal("residential", "device_backed")),
+  currentProviderClass: exactOptional(Schema.Literal("residential", "device_backed")),
+  degradedFallback: exactOptional(Schema.Boolean),
+  failbackOutcome: exactOptional(Schema.Literal("not_attempted", "success", "failure")),
   pricingVersion: exactOptional(Schema.String),
   pricingModel: exactOptional(Schema.Literal("per_gib", "per_device_month")),
   priceUsd: exactOptional(NonNegativeNumber),
@@ -386,6 +420,7 @@ function requirePositivePeriod<A extends { periodStartedAt: string; periodEndsAt
 export const decodeStoredAccessGrantCredential = (value: unknown): StoredAccessGrantCredential =>
   decode(StoredAccessGrantCredentialSchema, value);
 export const decodeStoredAccessGrant = (value: unknown): StoredAccessGrant => decode(StoredAccessGrantSchema, value);
+export const decodeStoredLogicalSession = (value: unknown): StoredLogicalSession => decode(StoredLogicalSessionSchema, value);
 export const decodeStoredRoute = (value: unknown): StoredRoute => decode(StoredRouteSchema, value);
 export const decodeActiveTunnel = (value: unknown): ActiveTunnel => decode(ActiveTunnelSchema, value);
 export const decodeCapacityCircuitState = (value: unknown): CapacityCircuitState => decode(CapacityCircuitStateSchema, value);

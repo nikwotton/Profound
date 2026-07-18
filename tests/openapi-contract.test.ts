@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { OpenApi } from "@effect/platform";
 import { ControlApi, CONTROL_API_VERSION } from "../src/control-contract.js";
-import { decodeOpenApiDocument, findBreakingOpenApiChanges } from "../src/openapi-compat.js";
+import { decodeOpenApiDocument, findBreakingOpenApiChanges, permitsVersionedBreakingChanges } from "../src/openapi-compat.js";
 
 test("versioned OpenAPI artifact stays synchronized with Effect schemas and excludes data-plane protocols", async () => {
   const artifact = decodeOpenApiDocument(JSON.parse(await readFile(`openapi/profound-control-api.v${CONTROL_API_VERSION}.json`, "utf8")));
@@ -39,4 +39,8 @@ test("OpenAPI compatibility check rejects breaking management-contract changes",
   additive.paths ??= {};
   additive.paths["/v1/new-operation"] = { get: { responses: { "200": { description: "ok" } } } };
   assert.deepEqual(findBreakingOpenApiChanges(baseline, additive), []);
+  assert.equal(permitsVersionedBreakingChanges("0.6.0", "0.7.0"), true);
+  assert.equal(permitsVersionedBreakingChanges("0.7.0", "0.7.1"), false);
+  assert.equal(permitsVersionedBreakingChanges("1.2.0", "2.0.0"), true);
+  assert.equal(permitsVersionedBreakingChanges("1.2.0", "1.3.0"), false);
 });

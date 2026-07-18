@@ -4,5 +4,10 @@
   "proxyEndpoint": "brd.superproxy.io:33335",
   "targeting": ["country", "region", "city", "postalCode", "asn", "carrier"],
   "rotation": ["per_request", "interval", "manual"],
-  "healthEndpoint": "GET /network_status/res"
+  "destinationSafety": "provider_trusted",
+  "providerNetworkScope": "external_public_only",
+  "healthEndpoint": "GET /network_status/res",
+  "capacityObservation": "provider_api_or_evidence",
+  "hardLimitBehavior": "provider_signal_or_proxy_failure",
+  "provisioning": "unsupported"
 }

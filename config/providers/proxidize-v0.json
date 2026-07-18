@@ -4,5 +4,10 @@
   "inventory": ["subscriptions", "proxies"],
   "control": ["rotate", "rotation_interval"],
   "authentication": "bearer",
-  "affinity": "device"
+  "destinationSafety": "provider_trusted",
+  "providerNetworkScope": "external_public_only",
+  "affinity": "device",
+  "capacityObservation": "provider_inventory",
+  "hardLimitBehavior": "provider_signal_or_proxy_failure",
+  "provisioning": "operator_only"
 }

@@ -1,6 +1,7 @@
 import type { UsageRepository } from "./store.js";
 import { expectEnum, expectIsoTimestamp, expectNonNegativeNumber, expectOptionalString, expectRecord, expectString } from "./decoding.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
+import { ACCOUNTING_POLICY } from "./service-policies.js";
 import type {
   CapacityPressureEvidence,
   ProviderId,
@@ -33,6 +34,12 @@ export interface UsageQuery {
   provider?: UsageProvider;
   userId?: string;
   routeId?: string;
+  jobId?: string;
+  logicalOperationId?: string;
+  sessionMode?: "managed" | "none";
+  destinationDomain?: string;
+  destinationHost?: string;
+  destinationPathTemplate?: string;
   country?: string;
   city?: string;
   outcome?: string;
@@ -133,9 +140,9 @@ export interface UsageVarianceThresholds {
 }
 
 const DEFAULT_VARIANCE_THRESHOLDS: UsageVarianceThresholds = {
-  absoluteFloorUsd: 1,
-  warningRelative: 0.05,
-  errorRelative: 0.15,
+  absoluteFloorUsd: ACCOUNTING_POLICY.varianceAbsoluteFloorUsd,
+  warningRelative: ACCOUNTING_POLICY.varianceWarningRelative,
+  errorRelative: ACCOUNTING_POLICY.varianceErrorRelative,
 };
 
 function periodStart(value: string, interval: UsageInterval): Date {
@@ -163,6 +170,11 @@ function groupValue(record: UsageRecord, groupBy: UsageGroupBy | undefined): str
   if (groupBy === "customer") return record.customerId;
   if (groupBy === "user") return record.userId;
   if (groupBy === "route") return record.routeId;
+  if (groupBy === "job") return record.jobId ?? "Unallocated";
+  if (groupBy === "session_mode") return record.sessionMode ?? "Unallocated";
+  if (groupBy === "destination_domain") return record.destinationDomain ?? "Unknown";
+  if (groupBy === "destination_host") return record.destinationHost ?? "Unknown";
+  if (groupBy === "destination_path_template") return record.destinationPathTemplate ?? "Unknown";
   if (groupBy === "country") return record.country ?? "Unknown";
   if (groupBy === "city") return record.city ?? "Unknown";
   return record.outcome;
@@ -174,6 +186,12 @@ function matches(record: UsageRecord, query: UsageQuery): boolean {
     (query.provider === undefined || record.provider === query.provider) &&
     (query.userId === undefined || record.userId === query.userId) &&
     (query.routeId === undefined || record.routeId === query.routeId) &&
+    (query.jobId === undefined || record.jobId === query.jobId) &&
+    (query.logicalOperationId === undefined || record.logicalOperationId === query.logicalOperationId) &&
+    (query.sessionMode === undefined || record.sessionMode === query.sessionMode) &&
+    (query.destinationDomain === undefined || record.destinationDomain === query.destinationDomain) &&
+    (query.destinationHost === undefined || record.destinationHost === query.destinationHost) &&
+    (query.destinationPathTemplate === undefined || record.destinationPathTemplate === query.destinationPathTemplate) &&
     (query.country === undefined || record.country === query.country) &&
     (query.city === undefined || record.city === query.city) &&
     (query.outcome === undefined || record.outcome === query.outcome)

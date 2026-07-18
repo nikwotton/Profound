@@ -12,17 +12,14 @@ const profile: RouteProfile = {
   allowedProtocols: ["http", "https", "socks5"],
   targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
   rotation: { mode: "manual" },
-  session: { mode: "sticky", id: "logical-session", requireGeographicContinuity: true },
   customerId: "customer",
   userId: "user",
-  isTargetAuthenticated: true,
   allowConnectionRetry: false,
-  isAuthenticated: true,
   shouldRetry: false,
   retryPolicy: { maxAttempts: 1 },
 };
 
-test("active proxy-slot loads are shared across store adapters and released with each connection", async () => {
+test("active proxy-slot loads are shared across callers, durable, and released with each connection", async () => {
   const state = new InMemoryRouteStoreState();
   const firstStore = new InMemoryRouteStore(state);
   try {
@@ -105,6 +102,53 @@ test("concurrent proxy-slot claims atomically include earlier claims in candidat
   }
 });
 
+test("logical-session affinity rebinding uses compare-and-swap so concurrent writers cannot split identity", async () => {
+  const store = new InMemoryRouteStore();
+  try {
+    await store.create("route", profile, "proxidize");
+    await store.createAccessGrant("grant", "route", "user", "credential", "token", "managed", "session");
+    await store.createLogicalSession({
+      id: "session",
+      grantId: "grant",
+      routeId: "route",
+      status: "open",
+      terminateActive: false,
+      bindingVersion: 0,
+      createdAt: at(0),
+      updatedAt: at(0),
+    });
+    const binding = (candidateId: string) => ({
+      id: "session",
+      grantId: "grant",
+      routeId: "route",
+      status: "open" as const,
+      terminateActive: false,
+      bindingVersion: 1,
+      affinity: {
+        provider: "proxidize" as const,
+        providerClass: "device_backed" as const,
+        candidateId,
+        affinityHandle: candidateId,
+        profileFingerprint: "profile-fingerprint",
+        desiredProviderClass: "device_backed" as const,
+        currentProviderClass: "device_backed" as const,
+        degradedFallback: false,
+        boundAt: at(1),
+        lastUsedAt: at(1),
+      },
+      createdAt: at(0),
+      updatedAt: at(1),
+    });
+    const results = await Promise.all([store.saveLogicalSession(binding("slot-a"), 0), store.saveLogicalSession(binding("slot-b"), 0)]);
+    assert.deepEqual(results.toSorted(), [false, true]);
+    const persisted = await store.getLogicalSession("session");
+    assert.equal(persisted.bindingVersion, 1);
+    assert.ok(persisted.affinity?.candidateId === "slot-a" || persisted.affinity?.candidateId === "slot-b");
+  } finally {
+    await store.close();
+  }
+});
+
 test("shared capacity circuits open, back off, half-open exactly one probe, and reset after success", async () => {
   const store = new InMemoryRouteStore();
   try {
@@ -158,14 +202,14 @@ test("route profiles contain no credential verifier and access grants rotate and
   try {
     const route = await store.create("shared-route", profile, "proxidize");
     assert.doesNotMatch(JSON.stringify(route), /tokenSalt|tokenHash/);
-    const first = await store.createAccessGrant("grant-one", route.id, "user-one", "credential-one", "first-token");
-    const second = await store.createAccessGrant("grant-two", route.id, "user-two", "credential-two", "second-token");
-    assert.equal((await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.principalId, "user-one");
-    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.principalId, "user-two");
+    const first = await store.createAccessGrant("grant-one", route.id, "user-one", "credential-one", "first-token", "none");
+    const second = await store.createAccessGrant("grant-two", route.id, "user-two", "credential-two", "second-token", "none");
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.grant.principalId, "user-one");
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.grant.principalId, "user-two");
 
-    const rotated = await store.rotateAccessGrantCredential(first.id, "credential-three", "rotated-token");
+    const rotated = await store.rotateAccessGrantCredential(first.id, "credential-one", "credential-three", "rotated-token");
     assert.equal(
-      (await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.id,
+      (await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.grant.id,
       first.id,
       "ordinary rotation overlaps old and new credentials",
     );
@@ -173,7 +217,7 @@ test("route profiles contain no credential verifier and access grants rotate and
       JSON.stringify(await store.authenticateAccessGrant("pxy_credential-three", "rotated-token")),
       /endpointId|slot|device/,
     );
-    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.id, second.id);
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.grant.id, second.id);
     const [overlappingCredential, activeCredential] = rotated.credentials;
     assert.ok(overlappingCredential);
     assert.ok(activeCredential);
@@ -183,15 +227,15 @@ test("route profiles contain no credential verifier and access grants rotate and
     assert.equal(Date.parse(activeCredential.expiresAt) - Date.parse(activeCredential.createdAt), 30 * 24 * 60 * 60_000);
     assert.equal(Date.parse(activeCredential.expiresAt) - Date.parse(activeCredential.renewalDueAt), 7 * 24 * 60 * 60_000);
 
-    await store.rotateAccessGrantCredential(first.id, "credential-four", "emergency-token", true);
-    assert.equal(await store.authenticateAccessGrant("pxy_credential-one", "first-token"), undefined);
+    await store.rotateAccessGrantCredential(first.id, "credential-three", "credential-four", "emergency-token", true);
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-one", "first-token"))?.grant.id, first.id);
     assert.equal(await store.authenticateAccessGrant("pxy_credential-three", "rotated-token"), undefined);
-    assert.equal((await store.authenticateAccessGrant("pxy_credential-four", "emergency-token"))?.id, first.id);
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-four", "emergency-token"))?.grant.id, first.id);
 
     await store.revokeAccessGrant(first.id);
     await store.revokeAccessGrant(first.id);
     assert.equal(await store.authenticateAccessGrant("pxy_credential-four", "emergency-token"), undefined);
-    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.id, second.id);
+    assert.equal((await store.authenticateAccessGrant("pxy_credential-two", "second-token"))?.grant.id, second.id);
   } finally {
     await store.close();
   }
@@ -210,6 +254,7 @@ test("credential metadata enforces expiration and overlap revocation deadlines w
     credentials: [
       {
         id: "expired",
+        sessionMode: "none",
         tokenSalt: "salt-one",
         tokenHash: "hash-one",
         status: "active",
@@ -219,6 +264,7 @@ test("credential metadata enforces expiration and overlap revocation deadlines w
       },
       {
         id: "overlap-ended",
+        sessionMode: "none",
         tokenSalt: "salt-two",
         tokenHash: "hash-two",
         status: "overlap",

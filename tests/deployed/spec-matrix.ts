@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHzTv3RO7KvbnUJzpaT2Agif3iPkMm82Z8loqxpFhIyXUukfHAIXuhvwa3himLdSrGAV_2mDP-ALFteDFn0m4rzSptkLC-gxVWIjCfs";
+  "ALtnJHz5YzbE2GelCZNB2X_spP7VX0KZ3CRW9Nu8VEJqfVw-kbzi5X83x8n-ZRVo3f8CpaKgi8ZmSxKCC9mmCvG9XNwDahZ0mYMc1cLeW0k";
 
 export interface SpecCoverage {
   id: string;
@@ -13,709 +13,395 @@ export interface SpecCoverage {
 
 export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
-    id: "1.provider-neutral",
+    id: "1.provider-neutral-company-service",
     section: 1,
-    requirement: "Provider-neutral service credentials and adapter-hidden vendor details",
+    requirement:
+      "Authorized company callers use service credentials and provider-neutral HTTP, HTTPS, and SOCKS5 interfaces while adapters hide Bright Data, Proxidize, and future-provider details",
     deployed: [
       "deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI",
       "deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles",
     ],
-    offline: [],
+    offline: ["every adapter satisfies the normalized provider capability contract and its pinned specification"],
   },
   {
-    id: "1.company-wide-access",
-    section: 1,
-    requirement: "Authorized users and services across the company can use the control API, proxy gateways, and dashboard",
-    deployed: [
-      "deployed route management rejects untrusted and malformed requests",
-      "deployed networks isolate the canary and keep status and aggregation private",
-    ],
-    offline: [
-      "control API rejects unauthorized and malformed route requests",
-      "mobile grants share scored proxy-slot capacity and credential rotation creates no affinity",
-    ],
-  },
-  {
-    id: "2.protocol-preservation",
+    id: "2.protocol-scope",
     section: 2,
-    requirement: "Standard HTTP forward proxy, HTTP CONNECT, and authenticated SOCKS5 CONNECT preserve caller behavior",
+    requirement:
+      "The service preserves HTTP forward proxy, HTTP CONNECT, and authenticated SOCKS5 CONNECT while excluding TLS interception, fetch envelopes, SOCKS5 BIND and UDP, and provider-only caller features",
     deployed: [
       "deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body",
       "deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic",
     ],
-    offline: [],
+    offline: ["SOCKS5 rejects unsupported commands", "Effect generates a complete secured OpenAPI contract from the control API"],
   },
   {
-    id: "4.http-buffer-limits",
-    section: 4,
-    requirement: "Plain HTTP buffers complete requests and responses behind centralized limits while CONNECT and SOCKS5 remain streamed",
-    deployed: [],
+    id: "2.attribution",
+    section: 2,
+    requirement: "Requests, performance, usage, and cost remain attributable to user, customer, optional job, and provider path",
+    deployed: ["deployed passive traffic reaches the health aggregator through the product telemetry collector"],
     offline: [
-      "plain HTTP buffers complete requests and rejects oversized bodies before forwarding",
-      "plain HTTP buffers complete responses and rejects oversized bodies before delivery",
-      "plain HTTP body caps do not apply to opaque CONNECT or SOCKS5 tunnels",
-    ],
-  },
-  {
-    id: "2.no-tls-interception",
-    section: 2,
-    requirement: "No TLS interception or post-CONNECT inspection",
-    deployed: ["deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic"],
-    offline: ["HTTPS CONNECT tunnels bytes through the selected provider"],
-  },
-  {
-    id: "2.no-fetch-envelope",
-    section: 2,
-    requirement: "No application-specific fetch API or service envelope",
-    deployed: ["deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body"],
-    offline: ["Effect generates a complete secured OpenAPI contract from the control API"],
-  },
-  {
-    id: "2.no-socks-bind-udp",
-    section: 2,
-    requirement: "SOCKS5 BIND and UDP are rejected",
-    deployed: ["deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic"],
-    offline: ["SOCKS5 rejects unsupported commands"],
-  },
-  {
-    id: "3.component-separation",
-    section: 3,
-    requirement:
-      "Control, data, routing, adapters, telemetry, company-facing dashboard, usage accounting, aggregator, and canary have defined boundaries",
-    deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
-    offline: ["Effect generates a complete secured OpenAPI contract from the control API"],
-  },
-  {
-    id: "3.request-flow",
-    section: 3,
-    requirement: "Credentials load a route, validate target, select candidate, establish upstream, relay, and record attempts",
-    deployed: [
-      "deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body",
-      "deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads",
-    ],
-    offline: [],
-  },
-  {
-    id: "3.usage-accounting",
-    section: 3,
-    requirement: "A durable usage-accounting component owns immutable attempt records and cost rollups",
-    deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
-    offline: [
+      "data-plane attempt logs include attribution and byte counts without request content",
       "HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage records",
-      "accounting worker persists hourly, daily, and customer rollups",
     ],
   },
   {
-    id: "4.route-fields",
-    section: 4,
+    id: "2.v0-delivery-areas",
+    section: 2,
     requirement:
-      "Profile input contains only customer, optional geography/carrier/provider override, target-authenticated intent, and connection-retry intent",
+      "V0 supplies request monitoring, provider-neutral compatibility and failover, passive health, hard geography, shared mobile capacity observation, and basic usage analytics while roadmap work is not a release gate",
     deployed: [
-      "deployed route management rejects untrusted and malformed requests",
-      "deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI",
-    ],
-    offline: [
-      "profile validation accepts only stable requirements and derives routing behavior",
-      "profile validation rejects missing authenticated geography and every non-canonical field",
-    ],
-  },
-  {
-    id: "4.provider-override",
-    section: 4,
-    requirement:
-      "providerOverride is the sole caller-visible provider constraint, is null when unused, and never bypasses compatibility, geography, safety, health, hard-capacity, or circuit gates",
-    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
-    offline: [
-      "provider override is explicit, persisted, compatibility-gated, and never falls back",
-      "profile validation accepts only stable requirements and derives routing behavior",
-    ],
-  },
-  {
-    id: "4.control-contract",
-    section: 4,
-    requirement: "Effect HttpApi schemas generate and publish a versioned, language-neutral OpenAPI control-plane contract",
-    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
-    offline: ["versioned OpenAPI artifact stays synchronized with Effect schemas and excludes data-plane protocols"],
-  },
-  {
-    id: "4.contract-compatibility",
-    section: 4,
-    requirement: "CI validates the generated contract and rejects incompatible control-plane changes before release",
-    deployed: [],
-    offline: ["OpenAPI compatibility check rejects breaking management-contract changes"],
-  },
-  {
-    id: "4.native-data-plane",
-    section: 4,
-    requirement: "OpenAPI covers management operations only; HTTP, HTTPS, and SOCKS5 forwarding remain native data-plane protocols",
-    deployed: [
-      "deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body",
-      "deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic",
-    ],
-    offline: ["versioned OpenAPI artifact stays synchronized with Effect schemas and excludes data-plane protocols"],
-  },
-  {
-    id: "4.trusted-user",
-    section: 4,
-    requirement: "User identity comes from trusted control-plane claims",
-    deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
-    offline: ["access-grant credentials and route requirements are reloaded when the application restarts"],
-  },
-  {
-    id: "4.auth-city",
-    section: 4,
-    requirement: "Authenticated routes require and preserve an exact city",
-    deployed: [
-      "deployed route management rejects untrusted and malformed requests",
+      "deployed health aggregator and status application expose durable capability state and freshness",
       "deployed Proxidize connections share slot capacity and preserve the exact city",
     ],
-    offline: ["authenticated CONNECT failover preserves the route's exact city"],
+    offline: [
+      "accounting worker persists hourly, daily, and customer rollups",
+      "active proxy-slot loads are shared across callers, durable, and released with each connection",
+    ],
   },
   {
-    id: "4.profile-updates",
-    section: 4,
-    requirement: "Profile updates replace routing requirements for new connections while established traffic continues",
-    deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
-    offline: ["profile updates apply to new connections without replacing access-grant credentials or exposing providers"],
-  },
-  {
-    id: "4.credential-lifecycle",
-    section: 4,
+    id: "3.1.explicit-boundaries",
+    section: 3,
     requirement:
-      "Reusable route profiles contain no secrets; independently revocable per-principal grants reveal each secret only on issuance or rotation and use 30-day credentials, seven-day renewal reminders, bounded overlap, immediate compromise rotation, redacted last-use metadata, and idempotent revocation",
+      "Control plane, gateways, routing, adapters, and operational-plane responsibilities communicate through versioned proxy, OpenAPI, adapter, read-model, and OTLP contracts rather than private implementation details",
+    deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
+    offline: [
+      "versioned OpenAPI artifact stays synchronized with Effect schemas and excludes data-plane protocols",
+      "SST isolates AWS resources behind a provider-selected deployment module",
+    ],
+  },
+  {
+    id: "3.2.control-contract",
+    section: 3,
+    requirement:
+      "Effect schemas generate the authoritative OpenAPI for profile, grant, managed-session, stateless-credential, and credential lifecycle operations",
+    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
+    offline: [
+      "Effect generates a complete secured OpenAPI contract from the control API",
+      "OpenAPI compatibility check rejects breaking management-contract changes",
+    ],
+  },
+  {
+    id: "3.2.profile-requirements",
+    section: 3,
+    requirement:
+      "Profiles contain customer, hard hierarchical geography, optional carrier, required connection-retry intent, and an exceptional provider override that never bypasses eligibility gates",
+    deployed: ["deployed route management rejects untrusted and malformed requests"],
+    offline: [
+      "profile validation accepts only stable requirements and derives routing behavior",
+      "profile validation enforces geography hierarchy and rejects every non-canonical field",
+      "provider override is explicit, persisted, compatibility-gated, and never falls back",
+    ],
+  },
+  {
+    id: "3.2.grant-session-model",
+    section: 3,
+    requirement:
+      "Grant creation requires managed or none, supports immutable job attribution, creates best-effort managed affinity or an explicitly stateless credential, and never owns caller application-session state",
+    deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
+    offline: [
+      "logical-session APIs require an explicit mode and support rotation, close, and force-close lifecycle",
+      "managed-session concurrency converges on one binding and ignores soft saturation after placement",
+    ],
+  },
+  {
+    id: "3.2.credential-lifecycle",
+    section: 3,
+    requirement:
+      "Grant-owned bearer credentials reveal passwords only at issuance or rotation, store non-retrievable verifiers, expose only non-secret metadata, and support draining ordinary revocation plus emergency termination",
     deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
     offline: [
       "route profiles contain no credential verifier and access grants rotate and revoke independently",
-      "mobile grants share scored proxy-slot capacity and credential rotation creates no affinity",
-      "routine revocation preserves active work and emergency revocation raises the kill switch",
       "credential metadata is inspectable and each credential can be revoked independently",
+      "routine revocation preserves active work and emergency revocation raises the kill switch",
     ],
   },
   {
-    id: "5.auth-independent-eligibility",
-    section: 5,
-    requirement: "Provider capabilities, not intended use alone, determine authenticated and unauthenticated eligibility",
+    id: "3.3.native-request-flow",
+    section: 3,
+    requirement:
+      "Each new connection resolves service-owned state, validates the destination, establishes a compatible upstream, preserves native proxy semantics, and records the logical operation and every attempt",
+    deployed: ["deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body"],
+    offline: [
+      "plain HTTP preserves method, path, headers, and streamed body",
+      "HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage records",
+    ],
+  },
+  {
+    id: "3.3.streaming",
+    section: 3,
+    requirement: "HTTP bodies and bidirectional tunnels use bounded backpressure without application-level body caps",
+    deployed: ["deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic"],
+    offline: [
+      "plain HTTP forwards request chunks before the caller completes the body",
+      "plain HTTP streams bodies larger than the bounded transport buffer without application caps",
+      "CONNECT and SOCKS5 tunnels stream through the same bounded transport buffer",
+    ],
+  },
+  {
+    id: "3.3.commitment",
+    section: 3,
+    requirement:
+      "Retries and failover stop at the protocol commitment boundary, never replay application bytes, and never treat target HTTP status as a routing failure",
+    deployed: ["deployed target statuses and redirects remain caller-owned and are never replayed"],
+    offline: [
+      "plain HTTP retries connection establishment before consuming a streamed request body",
+      "plain HTTP provider statuses after commitment are returned without replay or failover",
+    ],
+  },
+  {
+    id: "3.4.eligibility-and-preference",
+    section: 3,
+    requirement:
+      "Operational, protocol, safety, geography, carrier, hard-capacity, circuit, and override gates determine eligibility; managed intent prefers device-backed candidates and stateless intent prefers residential candidates",
     deployed: [
-      "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
+      "deployed Bright Data routes support fresh exits and exact-city policies",
       "deployed Proxidize connections share slot capacity and preserve the exact city",
     ],
-    offline: ["authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider"],
-  },
-  {
-    id: "5.availability-and-capacity",
-    section: 5,
-    requirement: "A provider and candidate are eligible only when operational, available, and compatible with every route constraint",
-    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
     offline: [
+      "managed sessions prefer Proxidize while Bright Data remains eligible when it is the compatible provider",
       "an unhealthy mobile slot is excluded while exact-city routing remains mandatory",
-      "profile validation rejects missing authenticated geography and every non-canonical field",
     ],
   },
   {
-    id: "5.provider-class-ordering",
-    section: 5,
+    id: "3.4.v0-load-order",
+    section: 3,
     requirement:
-      "Authenticated routes exhaust device-backed candidates through soft saturation before residential fallback; unauthenticated routes prefer residential for cost but promote compatible unsaturated device-backed capacity ahead of soft-saturated residential overflow",
-    deployed: [
-      "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
-      "deployed Proxidize connections share slot capacity and preserve the exact city",
-    ],
-    offline: [
-      "authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider",
-      "soft-saturated preferred slots remain ahead of the fallback provider class",
-      "unauthenticated residential soft saturation promotes an eligible device-backed fallback",
-      "capability health follows preferred provider classes without penalizing a healthy preferred class",
-    ],
-  },
-  {
-    id: "5.candidate-hierarchy",
-    section: 5,
-    requirement: "Try same-provider candidates before up to three providers with bounded candidate counts",
-    deployed: [],
-    offline: ["unauthenticated CONNECT exhausts residential peers without an incompatible device fallback"],
-  },
-  {
-    id: "5.exact-city-levels",
-    section: 5,
-    requirement: "Exact-city support is guaranteed, verifiable, or unsupported with a three-candidate verification budget",
-    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
-    offline: ["profile validation rejects missing authenticated geography and every non-canonical field"],
-  },
-  {
-    id: "5.rotation-control",
-    section: 5,
-    requirement:
-      "Provider-specific rotation stays internal; provider auto-reassignment is disabled when supported and grants never create provider affinity",
-    deployed: [
-      "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
-      "deployed Proxidize connections share slot capacity and preserve the exact city",
-    ],
-    offline: ["mobile grants share scored proxy-slot capacity and credential rotation creates no affinity"],
-  },
-  {
-    id: "5.commit-boundary",
-    section: 5,
-    requirement: "Failover occurs only before request/tunnel commitment and plain HTTP is not replayed",
-    deployed: ["deployed target statuses and redirects remain caller-owned and are never replayed"],
-    offline: ["plain HTTP provider statuses are returned without failover"],
-  },
-  {
-    id: "5.target-status",
-    section: 5,
-    requirement: "Target HTTP statuses do not trigger failover",
-    deployed: ["deployed target statuses and redirects remain caller-owned and are never replayed"],
-    offline: [],
-  },
-  {
-    id: "5.time-budgets",
-    section: 5,
-    requirement: "Attempts are capped at ten seconds and establishment at thirty seconds",
-    deployed: [],
-    offline: ["candidate establishment enforces per-attempt and overall deadlines without backoff"],
-  },
-  {
-    id: "5.versioned-candidate-scoring",
-    section: 5,
-    requirement:
-      "Every eligible provider and peer, slot, or device candidate uses the versioned weighted reliability, nonlinear headroom, performance, cost-efficiency, and stability score; selection is score-squared within five points of the best candidate in the applicable preference tier or override",
-    deployed: [],
-    offline: [
-      "routing score uses the versioned weighted formula and nonlinear headroom",
-      "top-band selection excludes candidates more than five points behind and weights score squared",
-      "routing evidence excludes target HTTP outcomes and discounts stale or churning evidence",
-    ],
-  },
-  {
-    id: "5.shared-proxy-slots",
-    section: 5,
-    requirement:
-      "Every new upstream connection atomically increments durable liveness-backed load for its scored compatible healthy Proxidize slot; soft-saturated slots remain overflow without binding a grant, while cross-class effects follow the asymmetric authenticated and unauthenticated policy",
-    deployed: [],
-    offline: [
-      "active proxy-slot loads are shared across store adapters and released with each connection",
-      "concurrent proxy-slot claims atomically include earlier claims in candidate load",
-      "concurrent mobile connections persist distinct atomic load claims for scored compatible slots",
-      "mobile grants share scored proxy-slot capacity and credential rotation creates no affinity",
-    ],
-  },
-  {
-    id: "5.capacity-circuits",
-    section: 5,
-    requirement:
-      "TTL-backed provider/candidate circuits open immediately on provider hard limits or after repeated proxy-controlled pre-commit capacity failures, use a 60-second exponential cooldown, permit one half-open probe, and reset after success",
-    deployed: [],
-    offline: [
-      "shared capacity circuits open, back off, half-open exactly one probe, and reset after success",
-      "a provider-reported hard capacity limit opens the shared circuit immediately",
-    ],
-  },
-  {
-    id: "6.bright-data",
-    section: 6,
-    requirement: "Bright Data implements targeting, sessions, rotation, usage dimensions, and opaque assignment evidence",
-    deployed: ["deployed Bright Data routes support fresh exits and authenticated exact-city policies"],
-    offline: ["Bright Data credentials encode targeting and pin each per-request candidate to a unique constant session"],
-  },
-  {
-    id: "6.proxidize",
-    section: 6,
-    requirement:
-      "Proxidize maps account credentials, slot inventory, device/IP/location evidence, connection load, health, and reroutes while hiding vendor details from callers",
+      "V0 preserves an eligible managed binding and otherwise selects the least-loaded eligible candidate using a stable tie-breaker; soft capacity affects order and health without rejecting traffic or moving an eligible session",
     deployed: ["deployed Proxidize connections share slot capacity and preserve the exact city"],
-    offline: ["mobile grants share scored proxy-slot capacity and credential rotation creates no affinity"],
-  },
-  {
-    id: "6.provider-metadata",
-    section: 6,
-    requirement: "Capabilities, health, pricing, usage, and assignment evidence use APIs or versioned configuration",
-    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
-    offline: ["Bright Data health uses the authenticated residential network-status API when configured"],
-  },
-  {
-    id: "6.runtime",
-    section: 6,
-    requirement: "Node.js, TypeScript 7, Effect OpenTelemetry, and configurable OTLP are used",
-    deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
-    offline: ["OpenTelemetry mode keeps console output as an error-only fallback"],
-  },
-  {
-    id: "6.deployment",
-    section: 6,
-    requirement: "Provider-neutral SST deployment modules isolate AWS as the v0 infrastructure provider",
-    deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
-    offline: ["SST isolates AWS resources behind a provider-selected deployment module"],
-  },
-  {
-    id: "6.aws-compute",
-    section: 6,
-    requirement:
-      "AWS v0 uses separate ECS Fargate services, a private proxy NLB with explicit transport settings, durable shared state, and an API Gateway/Lambda canary with packaged GeoIP",
-    deployed: [
-      "deployed ECS components are independent Fargate services with dedicated telemetry collectors",
-      "deployed networks isolate the canary and keep status and aggregation private",
-      "deployed DynamoDB and Axiom datasets preserve durable state and retention",
+    offline: [
+      "concurrent mobile connections claim the least-loaded compatible slots with a stable tie-breaker",
+      "managed-session concurrency converges on one binding and ignores soft saturation after placement",
+      "stateless residential soft saturation promotes an eligible device-backed fallback",
     ],
-    offline: ["SST isolates AWS resources behind a provider-selected deployment module"],
   },
   {
-    id: "7.logical-attempt-telemetry",
-    section: 7,
-    requirement: "Logical operations and upstream attempts carry attribution, assignment, outcomes, latency, failover, and byte counts",
-    deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
-    offline: ["data-plane attempt logs include attribution and byte counts without request content"],
-  },
-  {
-    id: "7.authoritative-usage-ledger",
-    section: 7,
+    id: "3.4.bounded-failover",
+    section: 3,
     requirement:
-      "Every upstream attempt creates an unsampled idempotent record with operation, attribution, provider override, provider, outcome, bytes, proxy-slot/upstream-connection context, routing score, soft pressure, hard/circuit state and failure class, and pricing context",
-    deployed: [],
-    offline: ["usage records are immutable and idempotent"],
+      "Pre-commit failover exhausts same-provider candidates before compatible providers and classes while preserving hard geography and the provisional two-candidate, three-provider, ten-second, thirty-second budget",
+    deployed: ["deployed Proxidize connections share slot capacity and preserve the exact city"],
+    offline: [
+      "managed CONNECT failover preserves the route's exact city",
+      "candidate establishment enforces per-attempt and overall deadlines without backoff",
+      "stateless CONNECT exhausts residential peers without an incompatible device fallback",
+    ],
   },
   {
-    id: "7.cost-semantics",
-    section: 7,
-    requirement: "Usage-priced and device-priced estimates reconcile to provider spend; unassigned capacity is attributed to Unallocated",
+    id: "3.4.assignment-control",
+    section: 3,
+    requirement:
+      "Adapters suppress provider-managed reassignment when possible, record unavoidable identity changes, share device-backed slots company-wide, and reserve no idle-session capacity",
+    deployed: ["deployed Proxidize connections share slot capacity and preserve the exact city"],
+    offline: [
+      "managed sessions rebind opaque provider affinity after an incompatible profile update",
+      "active proxy-slot loads are shared across callers, durable, and released with each connection",
+    ],
+  },
+  {
+    id: "3.5.otel-and-attempt-context",
+    section: 3,
+    requirement:
+      "All components export structured telemetry through configurable OTLP while logs and traces distinguish logical operations, upstream attempts, routing and affinity decisions, commitment, bytes, safety, and assignment evidence",
+    deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
+    offline: [
+      "OpenTelemetry mode keeps console output as an error-only fallback",
+      "data-plane attempt logs include attribution and byte counts without request content",
+      "managed session routing emits provider-neutral affinity, rebind, degradation, and failback telemetry",
+    ],
+  },
+  {
+    id: "3.5.usage-ledger",
+    section: 3,
+    requirement:
+      "Every attempt creates an unsampled idempotent immutable usage record with operation, job, attribution, provider path, outcome, bytes, pricing, destination, and applicable capacity context",
+    deployed: [],
+    offline: [
+      "usage records are immutable and idempotent",
+      "HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage records",
+      "usage destination dimensions omit queries and template identifiers conservatively",
+    ],
+  },
+  {
+    id: "3.5.cost-attribution",
+    section: 3,
+    requirement:
+      "Usage-priced costs use billable bytes, device-slot costs use customer connection-seconds, and idle paid capacity is assigned to Unallocated",
     deployed: [],
     offline: [
       "usage-priced traffic is estimated from billable bytes and historical price",
       "device-priced slot cost is allocated by customer connection-seconds",
-      "provider totals reconcile authoritative spend while grouped attribution stays estimated",
       "idle proxy-slot capacity is attributed to the synthetic Unallocated customer",
     ],
   },
   {
-    id: "7.reconciliation-variance",
-    section: 7,
+    id: "3.5.analytics",
+    section: 3,
     requirement:
-      "Reconciliation durably records variance, posts unexplained differences to Unallocated, and classifies warning/error evidence",
+      "The authorized company dashboard provides overall and per-customer trends and the documented job, provider, user, profile, session-mode, destination, geography, and outcome dimensions without exposing provider details in proxy use",
     deployed: [],
-    offline: [
-      "reconciliation persists variance evidence and posts unexplained differences to Unallocated",
-      "variance thresholds enforce the absolute floor, 5% warning, 15% error, and repeated-warning escalation",
-    ],
+    offline: ["company-facing dashboard supports usage filters and provider-neutral credential and session lifecycle views"],
   },
   {
-    id: "7.billing-boundary",
-    section: 7,
-    requirement: "Accounting outputs are company-only billing inputs and do not execute charges or customer approval",
-    deployed: [],
-    offline: ["accounting worker persists hourly, daily, and customer rollups"],
-  },
-  {
-    id: "7.capacity-utilization",
-    section: 7,
+    id: "3.6.capability-health",
+    section: 3,
     requirement:
-      "Preallocated slot capacity reports current, peak, percentile, concurrency, throughput, prioritized-data, pressure, failure, wait, and time-weighted utilization with versioned recommendations",
-    deployed: [],
-    offline: [
-      "preallocated capacity reports time-weighted and current utilization with unhealthy capacity separated",
-      "capacity recommendations use the versioned v0 policy and suppress location-limited changes",
-      "capacity pressure publishes provider-attributed health evidence and one idempotent planning recommendation per period",
-    ],
-  },
-  {
-    id: "7.destination-resolution",
-    section: 7,
-    requirement:
-      "Traces and logs capture provider and local destination resolution, divergence, verification availability, warnings, and verified unsafe-result rejection",
-    deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
-    offline: [
-      "provider-side DNS remains authoritative while local and provider observations are diagnostic",
-      "verified provider-side private resolution is rejected while unavailable evidence remains best effort",
-    ],
-  },
-  {
-    id: "7.axiom-backend",
-    section: 7,
-    requirement: "Collectors batch, retry, filter, and securely export logs, traces, and metrics to dedicated Axiom datasets",
-    deployed: [
-      "deployed ECS components are independent Fargate services with dedicated telemetry collectors",
-      "deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads",
-    ],
-    offline: ["SST isolates AWS resources behind a provider-selected deployment module"],
-  },
-  {
-    id: "7.trace-sampling",
-    section: 7,
-    requirement: "Version zero exports every trace without sampling while metrics and usage signals remain unsampled",
-    deployed: [
-      "deployed ECS components are independent Fargate services with dedicated telemetry collectors",
-      "deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads",
-    ],
-    offline: ["v0 trace sampling records every trace"],
-  },
-  {
-    id: "7.metric-cardinality",
-    section: 7,
-    requirement: "Metrics exclude peer, device, session, IP, route, and user cardinality",
-    deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
-    offline: [],
-  },
-  {
-    id: "7.telemetry-redaction",
-    section: 7,
-    requirement: "Telemetry omits bodies, raw headers, query strings, credentials, cookies, and tokens",
-    deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
-    offline: ["structured logs redact credentials, cookies, authorization, and URL queries"],
-  },
-  {
-    id: "7.canary-security-schema",
-    section: 7,
-    requirement: "Canary security events use a separate OTLP stream and safe schema",
-    deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
-    offline: ["public canary keeps access events on its security logger"],
-  },
-  {
-    id: "7.log-retention",
-    section: 7,
-    requirement: "Detailed proxy and canary logs retain thirty days by default with explicit retention policy",
-    deployed: ["deployed DynamoDB and Axiom datasets preserve durable state and retention"],
-    offline: [],
-  },
-  {
-    id: "7.public-only",
-    section: 7,
-    requirement:
-      "Public-only enforcement is best effort: explicit unsafe literals and ports are rejected, verified unsafe provider resolutions are rejected, and opaque provider DNS proceeds as though safe",
-    deployed: ["deployed gateways enforce public destinations, ports, and credential-free targets"],
-    offline: [
-      "literal target validation blocks explicit private, metadata, and reserved addresses without using local DNS for routing",
-      "verified provider-side private resolution is rejected while unavailable evidence remains best effort",
-    ],
-  },
-  {
-    id: "7.provider-dns",
-    section: 7,
-    requirement:
-      "Every upstream connection preserves domain targets for provider-side resolution while local DNS remains non-blocking and unavailable provider evidence does not block v0",
-    deployed: [
-      "deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body",
-      "deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and TLS traffic",
-    ],
-    offline: ["provider-side DNS remains authoritative while local and provider observations are diagnostic"],
-  },
-  {
-    id: "7.no-direct-fallback",
-    section: 7,
-    requirement: "Target traffic never falls back to the service's direct connection",
-    deployed: [],
-    offline: [
-      "plain HTTP provider statuses are returned without failover",
-      "provider authentication, rate limiting, and unavailable peers are normalized",
-    ],
-  },
-  {
-    id: "7.redirect-validation",
-    section: 7,
-    requirement: "Redirects remain caller-owned and every follow-up request is independently validated",
-    deployed: [
-      "deployed target statuses and redirects remain caller-owned and are never replayed",
-      "deployed gateways enforce public destinations, ports, and credential-free targets",
-    ],
-    offline: [],
-  },
-  {
-    id: "8.capability-status",
-    section: 8,
-    requirement: "Status exposes four capability names and operational, degraded, or unavailable states",
+      "Provider and passive evidence produce All Traffic, Managed Sessions, and Stateless Traffic rollups with operational, degraded, unavailable, and freshness semantics that feed routing",
     deployed: ["deployed health aggregator and status application expose durable capability state and freshness"],
-    offline: ["capability aggregation keeps freshness separate and requires corroboration for unavailability"],
-  },
-  {
-    id: "8.company-dashboard",
-    section: 8,
-    requirement:
-      "The company-facing dashboard supports usage/cost controls and shows explicit profile overrides plus hard-capacity circuit state, failure class, and cooldown",
-    deployed: [],
-    offline: ["company-facing dashboard supports usage filters and surfaces provider overrides and capacity circuits"],
-  },
-  {
-    id: "8.freshness",
-    section: 8,
-    requirement: "Provider and end-to-end timestamps and stale data are separate from availability",
-    deployed: ["deployed health aggregator and status application expose durable capability state and freshness"],
-    offline: ["status application serves durable snapshots, history, and explicit staleness"],
-  },
-  {
-    id: "8.passive-provider-signals",
-    section: 8,
-    requirement:
-      "Provider status and passive OTel outcomes feed durable aggregation while Axiom receives evidence but does not decide health",
-    deployed: [
-      "deployed passive traffic reaches the health aggregator through the product telemetry collector",
-      "deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads",
-    ],
-    offline: ["health aggregator accepts collector-filtered OTLP JSON passive outcomes"],
-  },
-  {
-    id: "8.synthetic-policy",
-    section: 8,
-    requirement: "Synthetic checks are conflict/on-demand, coalesced, cooled down, controlled, and not sole outage evidence",
-    deployed: ["deployed signed public canary works directly and through the normal proxy path without replay"],
     offline: [
-      "synthetic validation coalesces concurrent requests and shares its cooldown",
-      "capability aggregation keeps freshness separate and requires corroboration for unavailability",
+      "capability health follows preferred provider classes without penalizing a healthy preferred class",
+      "status application serves durable snapshots, history, and explicit staleness",
     ],
   },
   {
-    id: "8.canary-control",
-    section: 8,
+    id: "3.6.webhooks",
+    section: 3,
     requirement:
-      "Signed canary returns observed egress, timestamp, and challenge correlation while direct control distinguishes proxy-path failures",
-    deployed: ["deployed signed public canary works directly and through the normal proxy path without replay"],
-    offline: ["signed synthetic probe uses the normal proxy path and a direct control on proxy failure"],
-  },
-  {
-    id: "8.canary-geoip",
-    section: 8,
-    requirement:
-      "Canary derives approximate geography only for its observed connection source from a local MaxMind GeoLite2 City MMDB and returns version evidence",
-    deployed: ["deployed signed public canary works directly and through the normal proxy path without replay"],
-    offline: [
-      "public canary trusts forwarding headers only from configured load-balancer CIDRs",
-      "local GeoIP resolver activates versioned MaxMind evidence and marks weak data unverifiable",
-      "synthetic GeoIP mismatch degrades expected geography without rewriting it as observed",
-    ],
-  },
-  {
-    id: "8.geoip-refresh",
-    section: 8,
-    requirement: "GeoLite2 City updates are checked twice weekly, validated, and packaged atomically with the canary deployable",
-    deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
-    offline: ["MaxMind updater checks with HEAD, downloads MMDB, and skips the current build"],
-  },
-  {
-    id: "8.deployment-isolation",
-    section: 8,
-    requirement:
-      "Proxy, control, status, aggregator, notification, telemetry, and canary have separate ingress, identities, scaling, and canary network isolation",
-    deployed: [
-      "deployed ECS components are independent Fargate services with dedicated telemetry collectors",
-      "deployed networks isolate the canary and keep status and aggregation private",
-    ],
-    offline: [],
-  },
-  {
-    id: "8.durable-status",
-    section: 8,
-    requirement: "Status survives proxy failure by reading durable snapshots and history",
-    deployed: [
-      "deployed health aggregator and status application expose durable capability state and freshness",
-      "deployed DynamoDB and Axiom datasets preserve durable state and retention",
-    ],
-    offline: [],
-  },
-  {
-    id: "8.alert-finalization",
-    section: 8,
-    requirement: "Finalized capability states create durable alert/recovery episodes with degraded delay",
-    deployed: [],
-    offline: ["alert episodes persist, delay degraded alerts, alert unavailable immediately, and recover"],
-  },
-  {
-    id: "8.webhook-delivery",
-    section: 8,
-    requirement: "Signed webhooks retry, deduplicate, track delivery, and cannot break health evaluation",
+      "Configured signed webhooks notify unavailable immediately, persistent degraded after the policy window, and recovery, with retried deduplicated delivery separated from health classification",
     deployed: [],
     offline: [
+      "alert episodes persist, delay degraded alerts, alert unavailable immediately, and recover",
       "webhook delivery is signed, retried, deduplicated, and tracked",
       "notification failures cannot prevent finalized health persistence",
     ],
   },
   {
-    id: "8.alert-owner",
-    section: 8,
+    id: "3.7.destination-safety",
+    section: 3,
     requirement:
-      "The health aggregator alone classifies capability state, including capacity-pressure degradation; usage accounting owns reconciliation classification, capacity recommendations, and capacity-pressure evidence",
-    deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
+      "Every new connection rejects unsafe literals, local names, malformed destinations, disallowed ports, and observable unsafe provider addresses, never uses direct fallback, and treats provider DNS as authoritative",
+    deployed: ["deployed gateways enforce public destinations, ports, and credential-free targets"],
     offline: [
-      "alert destination configuration is versioned and requires secure operator endpoints",
-      "capability health and recovery alert ownership remains with the service in v0",
-      "health aggregation alone classifies fresh capacity-pressure evidence as degraded capability state",
+      "literal target validation blocks explicit private, metadata, and reserved addresses without using local DNS for routing",
+      "provider-side DNS remains authoritative while local and provider observations are diagnostic",
+      "destination safety is verified with provider evidence and provider-trusted when DNS is opaque",
     ],
   },
   {
-    id: "9.delivery-principles",
-    section: 9,
+    id: "3.7.data-minimization",
+    section: 3,
     requirement:
-      "GitHub Actions builds each reviewed candidate once, authenticates to AWS through OIDC, and promotes the immutable artifact unchanged",
-    deployed: [],
+      "Telemetry and usage omit bodies, raw headers, full URLs, queries, fragments, credentials, cookies, and tokens while retaining only normalized destination and allowlisted assignment metadata",
+    deployed: ["deployed OTLP logs, metrics, traces, and canary security logs arrive in Axiom without sensitive payloads"],
     offline: [
-      "repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates",
-      "AWS delivery workflows build once, promote unchanged, serialize releases, and clean ephemeral stages",
+      "structured logs redact credentials, cookies, authorization, and URL queries",
+      "usage destination dimensions omit queries and template identifiers conservatively",
     ],
   },
   {
-    id: "9.validation",
-    section: 9,
+    id: "3.8.aws-baseline",
+    section: 3,
     requirement:
-      "CI validates formatting, types, OpenAPI compatibility, provider contracts, provider-neutral routing, deployable builds, and targeted live probes",
-    deployed: [],
+      "Provider-neutral SST deploys the gateway on ECS/Fargate behind a private NLB with durable shared state and contract-separated supporting responsibilities",
+    deployed: [
+      "deployed ECS components are independent Fargate services with dedicated telemetry collectors",
+      "deployed DynamoDB and Axiom datasets preserve durable state and retention",
+    ],
     offline: [
-      "repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates",
-      "provider contracts are pinned and checked for freshness",
-      "provider authentication, rate limiting, and unavailable peers are normalized",
+      "SST isolates AWS resources behind a provider-selected deployment module",
+      "managed access-grant credentials, logical sessions, affinity, and route requirements survive a service restart",
     ],
   },
   {
-    id: "9.simulation",
-    section: 9,
+    id: "3.8.delivery-gates",
+    section: 3,
     requirement:
-      "Deterministic provider and destination simulators cover success, outage, geography, capacity, timeout, retry, failover, and pass-through behavior",
+      "GitHub Actions validates contracts, routing, safety, streaming, failover, non-replay, session concurrency, and the deployable while environment-gated live probes supplement simulators",
     deployed: [],
-    offline: [
-      "provider authentication, rate limiting, and unavailable peers are normalized",
-      "developer stages are isolated and destination simulators preserve configurable recipient behavior",
-      "the ephemeral CI transport origin echoes native requests, statuses, redirects, and replay counts",
-    ],
+    offline: ["repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates"],
   },
   {
-    id: "9.migrations",
-    section: 9,
-    requirement:
-      "State evolves through backward-compatible expand-migrate-contract changes, restartable backfills, coexistence checks, and rollback gates",
-    deployed: [],
-    offline: [
-      "migration policy requires exactly one declaration and reports sensitive paths",
-      "migration runner applies every unapplied migration in order and is restartable",
-    ],
-  },
-  {
-    id: "9.promotion",
-    section: 9,
-    requirement: "Production changes are serialized and promote one already validated immutable candidate",
-    deployed: [],
-    offline: [
-      "AWS delivery workflows build once, promote unchanged, serialize releases, and clean ephemeral stages",
-      "release candidate coalescing deploys only the current cumulative main commit",
-    ],
-  },
-  {
-    id: "9.tunnel-drain",
-    section: 9,
-    requirement:
-      "Gateway releases use blue/green traffic shifting and durable tunnel tracking with configurable observation, notification, escalation, termination, and extension policy",
-    deployed: [],
-    offline: [
-      "gateway releases persist active tunnels and enforce the staged drain escalation policy",
-      "deployment coordinator ignores green tunnels and drains blue with durable policy state",
-      "deployment drain policy polls, notifies, escalates, terminates, and honors time-bounded extensions",
-    ],
-  },
-  {
-    id: "10.adapter-extensibility",
-    section: 10,
-    requirement: "New adapters declare normalized protocol, geography, session, DNS, usage, pricing, and health capabilities",
-    deployed: ["deployed control plane exposes provider-neutral liveness, readiness, and OpenAPI"],
-    offline: ["Effect generates a complete secured OpenAPI contract from the control API"],
-  },
-  {
-    id: "10.proxidize-next-ip",
-    section: 10,
-    requirement: "Next-connection reliability of Proxidize's IP field remains open",
+    id: "4.1.geographic-roadmap",
+    section: 4,
+    requirement: "Verified exact-city optimization and the isolated signed public canary are production-roadmap work, not v0 release gates",
     deployed: [],
     offline: [],
     deferred: true,
   },
-] as const;
+  {
+    id: "4.2.advanced-routing-roadmap",
+    section: 4,
+    requirement:
+      "Weighted probabilistic scoring, shared capacity circuits, controlled failback, and generalized N-provider orchestration are production-roadmap work, not v0 selection behavior",
+    deployed: [],
+    offline: [],
+    deferred: true,
+  },
+  {
+    id: "4.3.resource-roadmap",
+    section: 4,
+    requirement:
+      "Multi-dimensional capacity forecasting, recommendations, and optional provider provisioning are production-roadmap work, with Proxidize subscription changes remaining operator-controlled initially",
+    deployed: [],
+    offline: [],
+    deferred: true,
+  },
+  {
+    id: "4.4.health-roadmap",
+    section: 4,
+    requirement:
+      "Dedicated health aggregation, demand-driven synthetic validation, history and geography drill-down, richer subscriptions, and centralized rule ownership are production-roadmap work",
+    deployed: [],
+    offline: [],
+    deferred: true,
+  },
+  {
+    id: "4.5.accounting-roadmap",
+    section: 4,
+    requirement:
+      "Provider reconciliation, variance escalation, richer analytics, and replaceable company-platform read models are production-roadmap work rather than charge execution",
+    deployed: [],
+    offline: [],
+    deferred: true,
+  },
+  {
+    id: "4.6.release-roadmap",
+    section: 4,
+    requirement:
+      "Independent scaling, public-canary Lambda deployment, immutable-artifact promotion, state migration, and blue-green tunnel draining are production-roadmap work",
+    deployed: [],
+    offline: [],
+    deferred: true,
+  },
+  {
+    id: "5.1.provider-extensibility",
+    section: 5,
+    requirement:
+      "The v0 adapter contract declares normalized protocol, geography, continuity, assignment, capacity, DNS, safety, pricing, usage, health, and optional provisioning capabilities for future providers",
+    deployed: [],
+    offline: [
+      "every adapter satisfies the normalized provider capability contract and its pinned specification",
+      "provider contracts are pinned and checked for freshness",
+    ],
+  },
+  {
+    id: "5.2.foundational-unknowns",
+    section: 5,
+    requirement:
+      "Workload, SLO, freshness, accounting-guarantee, and deployment-footprint values remain explicitly unknown until evidence and stakeholder expectations justify architecture commitments",
+    deployed: [],
+    offline: [],
+    deferred: true,
+  },
+  {
+    id: "5.3.v0-policy-hypotheses",
+    section: 5,
+    requirement:
+      "Typed versioned policies centralize provisional 30-day credential lifecycle, two-candidate and three-provider establishment budget, full initial trace export, 30-day log retention, and five-minute degraded alert delay",
+    deployed: [],
+    offline: [
+      "credential metadata enforces expiration and overlap revocation deadlines without exposing verifiers",
+      "candidate establishment enforces per-attempt and overall deadlines without backoff",
+      "v0 trace sampling records every trace",
+      "provisional operational values are typed, versioned policies",
+    ],
+  },
+  {
+    id: "5.3.roadmap-policy-hypotheses",
+    section: 5,
+    requirement:
+      "Scoring, verification, reconciliation, and mobile-capacity numeric hypotheses remain typed roadmap inputs rather than v0 release behavior",
+    deployed: [],
+    offline: [],
+    deferred: true,
+  },
+];

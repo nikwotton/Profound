@@ -9,6 +9,12 @@ export interface ProviderResolutionMetadata {
   resolverCountry?: string;
 }
 
+export type DestinationSafetyClassification = "verified" | "provider_trusted";
+
+export function destinationSafetyClassification(metadata: ProviderResolutionMetadata | undefined): DestinationSafetyClassification {
+  return (metadata?.resolvedDestinationAddresses?.length ?? 0) > 0 ? "verified" : "provider_trusted";
+}
+
 export function resolvedAddressesFromHeader(value: string | string[] | undefined): string[] | undefined {
   const values = (Array.isArray(value) ? value : value === undefined ? [] : [value])
     .flatMap((entry) => entry.split(","))
@@ -45,6 +51,7 @@ export function recordDestinationResolution(options: {
       const localAddresses = [...local.addresses].sort();
       const providerAddresses = [...(options.providerMetadata?.resolvedDestinationAddresses ?? [])].sort();
       const providerStatus = providerAddresses.length === 0 ? "unavailable" : "available";
+      const destinationSafety = destinationSafetyClassification(options.providerMetadata);
       const verificationAvailability = local.status === "available" && providerStatus === "available" ? "available" : "unavailable";
       const divergence =
         verificationAvailability === "available"
@@ -70,6 +77,7 @@ export function recordDestinationResolution(options: {
         "proxy.destination_resolution.divergence": divergence,
         "proxy.destination_resolution.verification_availability": verificationAvailability,
         "proxy.destination_resolution.geography_verification": geographyVerification,
+        "proxy.destination_safety.classification": destinationSafety,
         "proxy.destination_resolution.warning": warning,
         ...(resolverCountry === undefined ? {} : { "proxy.destination_resolution.provider.resolver_country": resolverCountry }),
       } as const;
@@ -83,6 +91,7 @@ export function recordDestinationResolution(options: {
         resolutionDivergence: divergence,
         resolutionVerificationAvailability: verificationAvailability,
         resolutionGeographyVerification: geographyVerification,
+        destinationSafety,
         ...(unsafeLocalAddresses.length === 0 ? {} : { unsafeLocalResolvedAddresses: unsafeLocalAddresses }),
         ...(unsafeProviderAddresses.length === 0 ? {} : { unsafeProviderResolvedAddresses: unsafeProviderAddresses }),
         ...(resolverCountry === undefined ? {} : { providerResolverCountry: resolverCountry }),

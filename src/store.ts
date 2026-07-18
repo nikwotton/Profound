@@ -1,6 +1,8 @@
 import { randomBytes, scryptSync } from "node:crypto";
+import { CREDENTIAL_LIFECYCLE_POLICY } from "./service-policies.js";
 import type {
   ActiveTunnel,
+  AuthenticatedAccessGrant,
   CapabilityHealthSnapshot,
   CapabilityName,
   CapacityCircuitReason,
@@ -13,11 +15,13 @@ import type {
   ProviderHealth,
   ProviderInventorySnapshot,
   PublicAccessGrant,
+  PublicLogicalSession,
   PublicRoute,
   RouteProfile,
   RouteStatus,
   StoredAccessGrant,
   StoredAccessGrantCredential,
+  StoredLogicalSession,
   StoredRoute,
   UsageAlertEvent,
   UsageReconciliation,
@@ -25,9 +29,9 @@ import type {
   UsageRollup,
 } from "./types.js";
 
-export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = 30 * 24 * 60 * 60_000;
-export const ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS = 7 * 24 * 60 * 60_000;
-export const ACCESS_GRANT_CREDENTIAL_OVERLAP_MS = 72 * 60 * 60_000;
+export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = CREDENTIAL_LIFECYCLE_POLICY.lifetimeMs;
+export const ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS = CREDENTIAL_LIFECYCLE_POLICY.renewalWindowMs;
+export const ACCESS_GRANT_CREDENTIAL_OVERLAP_MS = CREDENTIAL_LIFECYCLE_POLICY.overlapMs;
 
 function credentialDates(createdAt: string): { renewalDueAt: string; expiresAt: string } {
   const createdAtMs = Date.parse(createdAt);
@@ -37,10 +41,18 @@ function credentialDates(createdAt: string): { renewalDueAt: string; expiresAt: 
   };
 }
 
-export function createStoredCredential(id: string, token: string, createdAt: string): StoredAccessGrantCredential {
+export function createStoredCredential(
+  id: string,
+  token: string,
+  sessionMode: StoredAccessGrantCredential["sessionMode"],
+  createdAt: string,
+  sessionId?: string,
+): StoredAccessGrantCredential {
   const tokenSalt = randomBytes(16).toString("hex");
   return {
     id,
+    sessionMode,
+    ...(sessionId === undefined ? {} : { sessionId }),
     tokenSalt,
     tokenHash: scryptSync(token, tokenSalt, 32).toString("hex"),
     status: "active",
@@ -58,10 +70,13 @@ export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant
   return {
     grantId: grant.id,
     profileId: grant.routeId,
+    jobId: grant.jobId ?? null,
     status: grant.status,
     credentials: grant.credentials.map((credential) => ({
       credentialId: credential.id,
       username: credentialUsername(credential.id),
+      sessionMode: credential.sessionMode,
+      ...(credential.sessionId === undefined ? {} : { sessionId: credential.sessionId }),
       status:
         grant.status === "revoked" ||
         credential.status === "revoked" ||
@@ -82,6 +97,20 @@ export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant
   };
 }
 
+export function toPublicLogicalSession(session: StoredLogicalSession): PublicLogicalSession {
+  return {
+    sessionId: session.id,
+    grantId: session.grantId,
+    profileId: session.routeId,
+    sessionMode: "managed",
+    status: session.status,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    ...(session.affinity?.lastUsedAt === undefined ? {} : { lastUsedAt: session.affinity.lastUsedAt }),
+    ...(session.closedAt === undefined ? {} : { closedAt: session.closedAt }),
+  };
+}
+
 export function toPublicRoute(route: StoredRoute): PublicRoute {
   return {
     profileId: route.id,
@@ -89,7 +118,6 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
     ...(route.geography === undefined ? {} : { geography: route.geography }),
     ...(route.carrier === undefined ? {} : { carrier: route.carrier }),
     providerOverride: route.providerOverride ?? null,
-    isTargetAuthenticated: route.isTargetAuthenticated,
     allowConnectionRetry: route.allowConnectionRetry,
     status: route.status,
     createdAt: route.createdAt,
@@ -103,19 +131,50 @@ export interface RouteRepository {
   get(id: string, includeRevoked?: boolean): Promise<StoredRoute>;
   list(): Promise<StoredRoute[]>;
   revoke(id: string, terminateActive?: boolean): Promise<void>;
-  shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean>;
+  shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean>;
   setEndpoint(id: string, endpointId?: string): Promise<StoredRoute>;
   setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute>;
 }
 
 export interface AccessGrantRepository {
-  createAccessGrant(id: string, routeId: string, principalId: string, credentialId: string, token: string): Promise<StoredAccessGrant>;
+  createAccessGrant(
+    id: string,
+    routeId: string,
+    principalId: string,
+    credentialId: string,
+    token: string,
+    sessionMode: StoredAccessGrantCredential["sessionMode"],
+    sessionId?: string,
+    jobId?: string,
+  ): Promise<StoredAccessGrant>;
+  addAccessGrantCredential(
+    id: string,
+    credentialId: string,
+    token: string,
+    sessionMode: StoredAccessGrantCredential["sessionMode"],
+    sessionId?: string,
+  ): Promise<StoredAccessGrant>;
   getAccessGrant(id: string, includeRevoked?: boolean): Promise<StoredAccessGrant>;
   listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]>;
-  authenticateAccessGrant(id: string, token: string): Promise<StoredAccessGrant | undefined>;
-  rotateAccessGrantCredential(id: string, credentialId: string, token: string, suspectedCompromise?: boolean): Promise<StoredAccessGrant>;
+  authenticateAccessGrant(id: string, token: string): Promise<AuthenticatedAccessGrant | undefined>;
+  rotateAccessGrantCredential(
+    id: string,
+    previousCredentialId: string,
+    credentialId: string,
+    token: string,
+    suspectedCompromise?: boolean,
+  ): Promise<StoredAccessGrant>;
   revokeAccessGrantCredential(id: string, credentialId: string): Promise<void>;
   revokeAccessGrant(id: string, terminateActive?: boolean): Promise<void>;
+}
+
+export interface LogicalSessionRepository {
+  createLogicalSession(session: StoredLogicalSession): Promise<void>;
+  getLogicalSession(id: string, includeClosed?: boolean): Promise<StoredLogicalSession>;
+  listLogicalSessions(grantId: string): Promise<StoredLogicalSession[]>;
+  saveLogicalSession(session: StoredLogicalSession, expectedBindingVersion: number): Promise<boolean>;
+  closeLogicalSession(id: string, terminateActive?: boolean): Promise<void>;
+  closeLogicalSessions(grantId: string, terminateActive?: boolean): Promise<void>;
 }
 
 export interface ActiveTunnelRepository {
@@ -199,6 +258,7 @@ export interface RouteStore
   extends
     RouteRepository,
     AccessGrantRepository,
+    LogicalSessionRepository,
     ActiveTunnelRepository,
     CapacityCircuitRepository,
     DeploymentRepository,
@@ -214,6 +274,7 @@ export interface RoutingStore
   extends
     RouteRepository,
     AccessGrantRepository,
+    LogicalSessionRepository,
     ActiveTunnelRepository,
     CapacityCircuitRepository,
     DeploymentRepository,

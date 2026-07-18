@@ -13,7 +13,6 @@ export const RouteProfilePayload = Schema.Struct({
   geography: exactOptional(GeographyPayload),
   carrier: exactOptional(Schema.String),
   providerOverride: exactOptional(Schema.NullOr(Schema.Literal("bright_data", "proxidize"))),
-  isTargetAuthenticated: Schema.Boolean,
   allowConnectionRetry: Schema.Boolean,
 }).annotations({ identifier: "RouteProfileInput", parseOptions: { onExcessProperty: "error" } });
 

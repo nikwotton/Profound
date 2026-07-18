@@ -26,15 +26,13 @@ import { v0TraceSampler } from "../src/telemetry.js";
 import type { CapabilityHealthSnapshot, ProviderDescriptor, ProviderHealth, ProviderId, UpstreamEndpoint } from "../src/types.js";
 import { createRoute, startTestApp } from "./helpers.js";
 
-function descriptor(id: ProviderId, authenticatedTraffic: boolean, unauthenticatedTraffic: boolean): ProviderDescriptor {
+function descriptor(id: ProviderId): ProviderDescriptor {
   return {
     id,
     providerClass: id === "bright_data" ? "residential" : "device_backed",
     capabilities: {
       clientProtocols: new Set(["http", "https", "socks5"]),
       upstreamProtocols: new Set(["http"]),
-      authenticatedTraffic,
-      unauthenticatedTraffic,
       geography: new Set(["country", "city"]),
       sessions: true,
       exactCity: "provider_guaranteed",
@@ -45,6 +43,13 @@ function descriptor(id: ProviderId, authenticatedTraffic: boolean, unauthenticat
       rotation: new Set(["manual"]),
       targetPorts: "any_public",
       dnsResolution: { http: "provider_configurable", socks5: "provider_configurable" },
+      destinationSafety: { http: "provider_trusted", socks5: "provider_trusted", providerNetworkScope: "external_public_only" },
+      health: { source: "provider_api_or_probe" },
+      capacity: {
+        observation: "provider_api_or_evidence",
+        hardLimit: "provider_signal_or_proxy_failure",
+        provisioning: "unsupported",
+      },
     },
     pricing: { source: "versioned_config", version: "test", model: "per_gib", amountUsd: 1 },
     usageDimensions: { common: ["bytes_sent", "bytes_received"], providerSpecific: [] },
@@ -62,11 +67,9 @@ class HealthProvider implements ProviderAdapter {
 
   constructor(
     id: ProviderId,
-    authenticated: boolean,
-    unauthenticated: boolean,
     private readonly current: ProviderHealth,
   ) {
-    this.descriptor = descriptor(id, authenticated, unauthenticated);
+    this.descriptor = descriptor(id);
   }
 
   async resolve(): Promise<UpstreamEndpoint> {
@@ -410,7 +413,6 @@ test("signed synthetic probe uses the normal proxy path and a direct control on 
   const route = await createRoute(app.application, {
     name: "health-probe",
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   const proxy = new URL(route.proxyUrls.http);
@@ -468,8 +470,8 @@ test("synthetic GeoIP mismatch degrades expected geography without rewriting it 
   const aggregator = new CapabilityHealthAggregator(
     store,
     [
-      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
+      new HealthProvider("bright_data", { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", { provider: "proxidize", state: "healthy", checkedAt }),
     ],
     {
       passiveValidationMaxAgeMs: 300_000,
@@ -512,8 +514,8 @@ test("capability aggregation keeps freshness separate and requires corroboration
   const aggregator = new CapabilityHealthAggregator(
     store,
     [
-      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "unhealthy", checkedAt }),
+      new HealthProvider("bright_data", { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", { provider: "proxidize", state: "unhealthy", checkedAt }),
     ],
     {
       passiveValidationMaxAgeMs: 300_000,
@@ -524,7 +526,7 @@ test("capability aggregation keeps freshness separate and requires corroboration
   );
   aggregator.recordPassiveSignal({
     provider: "bright_data",
-    capability: "unauthenticated_traffic",
+    capability: "stateless_traffic",
     outcome: "failure",
     observedAt: checkedAt,
     country: "US",
@@ -534,18 +536,18 @@ test("capability aggregation keeps freshness separate and requires corroboration
   const statuses = Object.fromEntries(snapshot.capabilities.map((entry) => [entry.capability, entry.status]));
   assert.deepEqual(statuses, {
     all_traffic: "degraded",
-    authenticated_traffic: "unavailable",
-    unauthenticated_traffic: "degraded",
+    managed_sessions: "degraded",
+    stateless_traffic: "degraded",
     health_verification: "operational",
   });
-  assert.equal(snapshot.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt, checkedAt);
+  assert.equal(snapshot.capabilities.find((entry) => entry.capability === "stateless_traffic")?.endToEndValidatedAt, checkedAt);
   assert.equal(snapshot.geographies[0]?.status, "degraded");
   assert.deepEqual(await store.latestCapabilityHealth(), snapshot);
   const restarted = new CapabilityHealthAggregator(
     store,
     [
-      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "unhealthy", checkedAt }),
+      new HealthProvider("bright_data", { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", { provider: "proxidize", state: "unhealthy", checkedAt }),
     ],
     {
       passiveValidationMaxAgeMs: 300_000,
@@ -554,7 +556,7 @@ test("capability aggregation keeps freshness separate and requires corroboration
     silentLogger,
   );
   const afterRestart = await restarted.refresh();
-  assert.equal(afterRestart.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt, checkedAt);
+  assert.equal(afterRestart.capabilities.find((entry) => entry.capability === "stateless_traffic")?.endToEndValidatedAt, checkedAt);
   assert.equal(afterRestart.capabilities.find((entry) => entry.capability === "health_verification")?.status, "operational");
   assert.equal(afterRestart.geographies.length, 1);
   await store.close();
@@ -571,12 +573,12 @@ test("capability health follows preferred provider classes without penalizing a 
       const aggregator = new CapabilityHealthAggregator(
         store,
         [
-          new HealthProvider("bright_data", true, true, {
+          new HealthProvider("bright_data", {
             provider: "bright_data",
             state: brightDataState,
             checkedAt,
           }),
-          new HealthProvider("proxidize", true, true, {
+          new HealthProvider("proxidize", {
             provider: "proxidize",
             state: proxidizeState,
             checkedAt,
@@ -597,22 +599,22 @@ test("capability health follows preferred provider classes without penalizing a 
   const devicePreferred = await snapshotFor("unhealthy", "healthy");
   assert.deepEqual(Object.fromEntries(devicePreferred.capabilities.slice(0, 3).map((entry) => [entry.capability, entry.status])), {
     all_traffic: "degraded",
-    authenticated_traffic: "operational",
-    unauthenticated_traffic: "degraded",
+    managed_sessions: "operational",
+    stateless_traffic: "degraded",
   });
 
   const residentialPreferred = await snapshotFor("healthy", "unhealthy");
   assert.deepEqual(Object.fromEntries(residentialPreferred.capabilities.slice(0, 3).map((entry) => [entry.capability, entry.status])), {
     all_traffic: "degraded",
-    authenticated_traffic: "degraded",
-    unauthenticated_traffic: "operational",
+    managed_sessions: "degraded",
+    stateless_traffic: "operational",
   });
 
   const unavailable = await snapshotFor("unhealthy", "unhealthy");
   assert.deepEqual(Object.fromEntries(unavailable.capabilities.slice(0, 3).map((entry) => [entry.capability, entry.status])), {
     all_traffic: "unavailable",
-    authenticated_traffic: "unavailable",
-    unauthenticated_traffic: "unavailable",
+    managed_sessions: "unavailable",
+    stateless_traffic: "unavailable",
   });
 });
 
@@ -636,8 +638,8 @@ test("health aggregation alone classifies fresh capacity-pressure evidence as de
       observedAt: checkedAt,
     });
     const providers = [
-      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
+      new HealthProvider("bright_data", { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", { provider: "proxidize", state: "healthy", checkedAt }),
     ];
     const aggregator = new CapabilityHealthAggregator(
       store,
@@ -652,12 +654,12 @@ test("health aggregation alone classifies fresh capacity-pressure evidence as de
     const pressured = await aggregator.refresh();
     assert.deepEqual(Object.fromEntries(pressured.capabilities.slice(0, 3).map((entry) => [entry.capability, entry.status])), {
       all_traffic: "degraded",
-      authenticated_traffic: "degraded",
-      unauthenticated_traffic: "operational",
+      managed_sessions: "degraded",
+      stateless_traffic: "operational",
     });
     assert.equal(pressured.providers.find((provider) => provider.provider === "proxidize")?.state, "healthy");
     assert.match(
-      pressured.capabilities.find((entry) => entry.capability === "authenticated_traffic")?.message ?? "",
+      pressured.capabilities.find((entry) => entry.capability === "managed_sessions")?.message ?? "",
       /capacity-pressure evidence/,
     );
 
@@ -676,7 +678,7 @@ test("health aggregation alone classifies fresh capacity-pressure evidence as de
       observedAt: checkedAt,
     });
     const bothClassesPressured = await aggregator.refresh();
-    assert.equal(bothClassesPressured.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.status, "degraded");
+    assert.equal(bothClassesPressured.capabilities.find((entry) => entry.capability === "stateless_traffic")?.status, "degraded");
     assert.equal(bothClassesPressured.providers.find((provider) => provider.provider === "bright_data")?.state, "healthy");
 
     const afterExpiry = new CapabilityHealthAggregator(
@@ -690,7 +692,7 @@ test("health aggregation alone classifies fresh capacity-pressure evidence as de
       silentLogger,
     );
     const recovered = await afterExpiry.refresh();
-    assert.equal(recovered.capabilities.find((entry) => entry.capability === "authenticated_traffic")?.status, "operational");
+    assert.equal(recovered.capabilities.find((entry) => entry.capability === "managed_sessions")?.status, "operational");
     assert.equal(recovered.capabilities.find((entry) => entry.capability === "all_traffic")?.status, "operational");
   } finally {
     await store.close();
@@ -703,7 +705,7 @@ test("notification failures cannot prevent finalized health persistence", async 
   const checkedAt = "2026-07-15T00:00:00.000Z";
   const aggregator = new CapabilityHealthAggregator(
     store,
-    [new HealthProvider("bright_data", true, true, { provider: "bright_data", state: "healthy", checkedAt })],
+    [new HealthProvider("bright_data", { provider: "bright_data", state: "healthy", checkedAt })],
     {
       passiveValidationMaxAgeMs: 300_000,
       now: () => Date.parse(checkedAt),
@@ -725,8 +727,8 @@ test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", 
   const aggregator = new CapabilityHealthAggregator(
     store,
     [
-      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
-      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
+      new HealthProvider("bright_data", { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", { provider: "proxidize", state: "healthy", checkedAt }),
     ],
     {
       passiveValidationMaxAgeMs: 300_000,
@@ -762,7 +764,7 @@ test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", 
                 attributes: [
                   { key: "event.name", value: { stringValue: "profound.proxy.passive_health" } },
                   { key: "proxy.provider", value: { stringValue: "bright_data" } },
-                  { key: "proxy.capability", value: { stringValue: "unauthenticated_traffic" } },
+                  { key: "proxy.capability", value: { stringValue: "stateless_traffic" } },
                   { key: "proxy.outcome", value: { stringValue: "success" } },
                   { key: "proxy.observed_at", value: { stringValue: checkedAt } },
                   { key: "proxy.country", value: { stringValue: "US" } },
@@ -778,7 +780,7 @@ test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", 
   assert.deepEqual(passiveSignalsFromOtlpJson(payload), [
     {
       provider: "bright_data",
-      capability: "unauthenticated_traffic",
+      capability: "stateless_traffic",
       outcome: "success",
       observedAt: checkedAt,
       country: "US",
@@ -802,7 +804,7 @@ test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", 
   assert.equal(accepted.status, 200);
   assert.deepEqual(await accepted.json(), {});
   const snapshot = await store.latestCapabilityHealth();
-  assert.equal(snapshot?.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.endToEndValidatedAt, checkedAt);
+  assert.equal(snapshot?.capabilities.find((entry) => entry.capability === "stateless_traffic")?.endToEndValidatedAt, checkedAt);
   assert.equal(snapshot?.geographies[0]?.source, "passive");
 });
 

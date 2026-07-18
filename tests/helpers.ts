@@ -6,7 +6,7 @@ import { loadConfig } from "../src/config.js";
 import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
-import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../src/types.js";
+import type { PublicAccessGrant, PublicAccessGrantCredential, PublicLogicalSession, PublicRoute, RouteProfileInput } from "../src/types.js";
 import { InMemoryRouteStore, InMemoryRouteStoreState } from "./in-memory-route-store.js";
 
 export interface TestTarget {
@@ -32,6 +32,7 @@ export interface CreatedRouteResponse {
 export interface IssuedAccessGrantApiResponse {
   grant: PublicAccessGrant;
   credential: PublicAccessGrantCredential & { password: string };
+  session?: PublicLogicalSession;
   endpoints: { http: string; socks5: string };
 }
 
@@ -52,19 +53,21 @@ export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiRespons
   };
 }
 
-type LegacyTestProfileInput = Partial<RouteProfileInput> & {
+type TestProfileInput = Partial<RouteProfileInput> & {
   name?: string;
   targeting?: { country?: string; region?: string; city?: string; carrier?: string; postalCode?: string; asn?: number };
   rotation?: { mode: string; intervalSeconds?: number };
   session?: unknown;
   allowedProtocols?: unknown;
   retryPolicy?: unknown;
-  isAuthenticated?: boolean;
+  sessionMode?: "managed" | "none";
   shouldRetry?: boolean;
 };
 
-function canonicalTestProfile(input: LegacyTestProfileInput): RouteProfileInput {
-  const { targeting, isAuthenticated, shouldRetry, ...profile } = input;
+function canonicalTestProfile(input: TestProfileInput): RouteProfileInput {
+  const { targeting, sessionMode: _sessionMode, shouldRetry, session: _session, ...profile } = input;
+  void _sessionMode;
+  void _session;
   const carrier = profile.carrier ?? targeting?.carrier;
   const geography =
     targeting === undefined
@@ -79,7 +82,6 @@ function canonicalTestProfile(input: LegacyTestProfileInput): RouteProfileInput 
     ...(geography === undefined ? {} : { geography }),
     ...(carrier === undefined ? {} : { carrier }),
     ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
-    isTargetAuthenticated: profile.isTargetAuthenticated ?? isAuthenticated ?? false,
     allowConnectionRetry: profile.allowConnectionRetry ?? shouldRetry ?? false,
   };
 }
@@ -92,11 +94,20 @@ function authenticatedProxyUrl(endpoint: string, username: string, password: str
 }
 
 export async function startHttpTarget(
-  options: { responseBody?: string | Buffer; onRequest?: () => void; host?: "127.0.0.1" | "localhost" } = {},
+  options: {
+    responseBody?: string | Buffer;
+    onRequest?: () => void;
+    onChunk?: (chunk: Buffer) => void;
+    host?: "127.0.0.1" | "localhost";
+  } = {},
 ): Promise<TestTarget> {
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
-    request.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
+    request.on("data", (chunk) => {
+      const buffer = expectBufferChunk(chunk);
+      chunks.push(buffer);
+      options.onChunk?.(buffer);
+    });
     request.on("end", () => {
       options.onRequest?.();
       if (options.responseBody !== undefined) {
@@ -185,7 +196,11 @@ export async function controlRequest(
   });
 }
 
-export async function createRoute(app: RunningApplication, profile: LegacyTestProfileInput): Promise<CreatedRouteResponse> {
+export async function createRoute(
+  app: RunningApplication,
+  profile: TestProfileInput,
+  explicitSessionMode?: "managed" | "none",
+): Promise<CreatedRouteResponse> {
   const response = await controlRequest(app, "/v1/profiles", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -195,7 +210,13 @@ export async function createRoute(app: RunningApplication, profile: LegacyTestPr
   const { profileId } = (await response.json()) as { profileId: string };
   const [profileResponse, grantResponse] = await Promise.all([
     controlRequest(app, `/v1/profiles/${profileId}`),
-    controlRequest(app, `/v1/profiles/${profileId}/grants`, { method: "POST" }),
+    controlRequest(app, `/v1/profiles/${profileId}/grants`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionMode: explicitSessionMode ?? profile.sessionMode ?? "none",
+      }),
+    }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) throw new Error("Profile setup failed");
   const publicProfile = ((await profileResponse.json()) as { profile: Record<string, unknown> }).profile;
@@ -279,15 +300,34 @@ async function readExactly(socket: Socket, length: number): Promise<Buffer> {
       remaining -= chunk.length;
     } else {
       if (socket.readableEnded || socket.destroyed) throw new Error("Socket ended before the expected response arrived");
-      await Promise.race([
-        once(socket, "readable"),
-        once(socket, "end").then(() => {
-          throw new Error("Socket ended before the expected response arrived");
-        }),
-        once(socket, "close").then(() => {
-          throw new Error("Socket closed before the expected response arrived");
-        }),
-      ]);
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = (): void => {
+          socket.off("readable", onReadable);
+          socket.off("end", onEnd);
+          socket.off("close", onClose);
+          socket.off("error", onError);
+        };
+        const onReadable = (): void => {
+          cleanup();
+          resolve();
+        };
+        const onEnd = (): void => {
+          cleanup();
+          reject(new Error("Socket ended before the expected response arrived"));
+        };
+        const onClose = (): void => {
+          cleanup();
+          reject(new Error("Socket closed before the expected response arrived"));
+        };
+        const onError = (error: Error): void => {
+          cleanup();
+          reject(error);
+        };
+        socket.once("readable", onReadable);
+        socket.once("end", onEnd);
+        socket.once("close", onClose);
+        socket.once("error", onError);
+      });
     }
   }
   return Buffer.concat(chunks, length);

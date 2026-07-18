@@ -1,6 +1,8 @@
 import { isIP } from "node:net";
 import { isUnknownRecord } from "./decoding.js";
 import { ValidationError } from "./errors.js";
+import { ROUTING_POLICY } from "./routing-policy.js";
+import { TRANSPORT_POLICY } from "./service-policies.js";
 
 export interface AppConfig {
   providerMode: "mock" | "live";
@@ -21,9 +23,9 @@ export interface AppConfig {
   attemptEstablishmentTimeoutMs: number;
   operationEstablishmentTimeoutMs: number;
   streamIdleTimeoutMs: number;
+  streamBufferBytes: number;
   maxHeaderBytes: number;
-  maxHttpRequestBodyBytes: number;
-  maxHttpResponseBodyBytes: number;
+  blockedTargetHostnames: Set<string>;
   retryDefaults: { maxAttempts: number };
   proxidizeExactCity: "provider_guaranteed" | "verifiable" | "unsupported";
   telemetry: { serviceName: string; serviceVersion: string };
@@ -48,11 +50,20 @@ function integer(value: string | undefined, fallback: number, field: string, min
 }
 
 function targetPorts(value: string | undefined): Set<number> {
-  const parts = (value ?? "80,443").split(",").map((part) => Number(part.trim()));
+  const parts = (value ?? TRANSPORT_POLICY.allowedTargetPorts.join(",")).split(",").map((part) => Number(part.trim()));
   if (parts.some((part) => !Number.isInteger(part) || part < 1 || part > 65_535)) {
     throw new ValidationError("ALLOWED_TARGET_PORTS must contain comma-separated TCP ports");
   }
   return new Set(parts);
+}
+
+function blockedTargetHostnames(value: string | undefined): Set<string> {
+  return new Set(
+    (value ?? TRANSPORT_POLICY.blockedTargetHostnames.join(","))
+      .split(",")
+      .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
+      .filter((host) => host !== ""),
+  );
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -134,20 +145,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     routeTableName,
     deploymentId: env["DEPLOYMENT_ID"]?.trim() || "local",
     allowedTargetPorts: targetPorts(env["ALLOWED_TARGET_PORTS"]),
-    attemptEstablishmentTimeoutMs: integer(env["CONNECT_TIMEOUT_MS"], 10_000, "CONNECT_TIMEOUT_MS", 1, 10_000),
-    operationEstablishmentTimeoutMs: integer(env["OPERATION_TIMEOUT_MS"], 30_000, "OPERATION_TIMEOUT_MS", 1, 30_000),
-    streamIdleTimeoutMs: integer(env["STREAM_IDLE_TIMEOUT_MS"], 60_000, "STREAM_IDLE_TIMEOUT_MS", 1, 3_600_000),
-    maxHeaderBytes: integer(env["MAX_HEADER_BYTES"], 32 * 1024, "MAX_HEADER_BYTES", 1_024, 1_048_576),
-    maxHttpRequestBodyBytes: integer(env["MAX_HTTP_REQUEST_BODY_BYTES"], 10 * 1024 * 1024, "MAX_HTTP_REQUEST_BODY_BYTES", 1, 1_073_741_824),
-    maxHttpResponseBodyBytes: integer(
-      env["MAX_HTTP_RESPONSE_BODY_BYTES"],
-      50 * 1024 * 1024,
-      "MAX_HTTP_RESPONSE_BODY_BYTES",
+    attemptEstablishmentTimeoutMs: integer(
+      env["CONNECT_TIMEOUT_MS"],
+      ROUTING_POLICY.attemptEstablishmentTimeoutMs,
+      "CONNECT_TIMEOUT_MS",
       1,
-      1_073_741_824,
+      ROUTING_POLICY.attemptEstablishmentTimeoutMs,
     ),
+    operationEstablishmentTimeoutMs: integer(
+      env["OPERATION_TIMEOUT_MS"],
+      ROUTING_POLICY.operationEstablishmentTimeoutMs,
+      "OPERATION_TIMEOUT_MS",
+      1,
+      ROUTING_POLICY.operationEstablishmentTimeoutMs,
+    ),
+    streamIdleTimeoutMs: integer(env["STREAM_IDLE_TIMEOUT_MS"], 60_000, "STREAM_IDLE_TIMEOUT_MS", 1, 3_600_000),
+    streamBufferBytes: integer(env["STREAM_BUFFER_BYTES"], TRANSPORT_POLICY.streamBufferBytes, "STREAM_BUFFER_BYTES", 1_024, 1_048_576),
+    maxHeaderBytes: integer(env["MAX_HEADER_BYTES"], TRANSPORT_POLICY.maxHeaderBytes, "MAX_HEADER_BYTES", 1_024, 1_048_576),
+    blockedTargetHostnames: blockedTargetHostnames(env["BLOCKED_TARGET_HOSTNAMES"]),
     retryDefaults: {
-      maxAttempts: integer(env["RETRY_MAX_ATTEMPTS"], 4, "RETRY_MAX_ATTEMPTS", 1, 6),
+      maxAttempts: integer(
+        env["RETRY_MAX_ATTEMPTS"],
+        ROUTING_POLICY.maxProvidersPerOperation * ROUTING_POLICY.maxCandidatesPerProvider,
+        "RETRY_MAX_ATTEMPTS",
+        1,
+        ROUTING_POLICY.maxProvidersPerOperation * ROUTING_POLICY.maxExactCityCandidatesPerProvider,
+      ),
     },
     proxidizeExactCity,
     telemetry: { serviceName: env["OTEL_SERVICE_NAME"] ?? "profound-proxy-router", serviceVersion: "0.3.0" },

@@ -7,7 +7,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer";
 import { Layer } from "effect";
 import { safeErrorMessage } from "./errors.js";
 import { assignmentAttributes } from "./assignment-evidence.js";
-import type { AssignmentEvidence, PassiveHealthSignal, ProviderId } from "./types.js";
+import type { AssignmentEvidence, PassiveHealthSignal, ProviderId, SessionMode } from "./types.js";
 
 export interface TelemetryOptions {
   serviceName: string;
@@ -16,7 +16,7 @@ export interface TelemetryOptions {
 }
 
 export interface PassiveAttemptContext {
-  isAuthenticated: boolean;
+  sessionMode: SessionMode;
   country?: string;
   city?: string;
 }
@@ -149,7 +149,7 @@ export class Telemetry {
       const attemptOutcome = attributes["outcome"];
       this.recordPassiveHealthSignal({
         provider,
-        capability: passive.isAuthenticated ? "authenticated_traffic" : "unauthenticated_traffic",
+        capability: passive.sessionMode === "managed" ? "managed_sessions" : "stateless_traffic",
         outcome: attemptOutcome === "success" || attemptOutcome === "http_error" ? "success" : "failure",
         observedAt: new Date().toISOString(),
         ...(passive.country === undefined ? {} : { country: passive.country }),

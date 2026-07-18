@@ -2,12 +2,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { CAPACITY_POLICY, recommendCapacity, type CapacityRecommendation } from "./capacity-policy.js";
 import type { Logger } from "./logger.js";
 import { ROUTING_POLICY } from "./routing-policy.js";
-import type { RouteStore } from "./store.js";
+import { toPublicAccessGrant, toPublicLogicalSession, type RouteStore } from "./store.js";
 import type {
   CapabilityHealthSnapshot,
   CapacityCircuitState,
   ListenAddress,
   ProviderInventorySnapshot,
+  PublicAccessGrant,
+  PublicLogicalSession,
   StoredRoute,
   UsageGroupBy,
   UsageInterval,
@@ -31,8 +33,8 @@ export interface StatusApplicationOptions {
 
 const LABELS = {
   all_traffic: "All Traffic",
-  authenticated_traffic: "Authenticated Traffic",
-  unauthenticated_traffic: "Unauthenticated Traffic",
+  managed_sessions: "Managed Sessions",
+  stateless_traffic: "Stateless Traffic",
   health_verification: "Health Verification",
 } as const;
 
@@ -101,6 +103,8 @@ function page(
   capacityUsage: readonly UsageRollup[],
   inventory: ProviderInventorySnapshot | undefined,
   profiles: readonly StoredRoute[],
+  accessGrants: readonly PublicAccessGrant[],
+  logicalSessions: readonly PublicLogicalSession[],
   capacityCircuits: readonly CapacityCircuitState[],
   now: number,
   staleAfterMs: number,
@@ -161,6 +165,20 @@ function page(
         `<tr><td>${escaped(circuit.provider)}</td><td>${escaped(circuit.candidateKey)}</td><td>${escaped(circuit.status)}</td><td>${escaped(circuit.reason ?? "None")}</td><td>${escaped(circuit.cooldownUntil ?? "Ready")}</td></tr>`,
     )
     .join("");
+  const credentials = accessGrants
+    .flatMap((grant) =>
+      grant.credentials.map(
+        (credential) =>
+          `<tr><td>${escaped(credential.credentialId)}</td><td>${escaped(grant.profileId)}</td><td>${escaped(credential.sessionMode)}</td><td>${escaped(credential.sessionId ?? "Stateless")}</td><td>${escaped(credential.status)}</td><td>${escaped(credential.lastUsedAt ?? "Never")}</td><td>${escaped(credential.expiresAt)}</td></tr>`,
+      ),
+    )
+    .join("");
+  const sessions = logicalSessions
+    .map(
+      (session) =>
+        `<tr><td>${escaped(session.sessionId)}</td><td>${escaped(session.profileId)}</td><td>${escaped(session.grantId)}</td><td>${escaped(session.sessionMode)}</td><td>${escaped(session.status)}</td><td>${escaped(session.lastUsedAt ?? "Never")}</td><td>${escaped(session.closedAt ?? "Open")}</td></tr>`,
+    )
+    .join("");
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Proxy routing dashboard</title><style>
@@ -183,6 +201,12 @@ table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td
 <div class="metric"><span>Attributed cost</span><strong>$${usageTotal.cost.toFixed(2)}</strong><small>${usageStatus}</small></div>
 <div class="metric"><span>Capacity recommendation</span><strong>${recommendation === undefined ? "No data" : `${recommendation.slotDelta >= 0 ? "+" : ""}${recommendation.slotDelta} slots`}</strong><small>${recommendation?.suppressed === true ? "suppressed by location constraint" : `operator action · ${CAPACITY_POLICY.version}`}</small></div>
 </section><p>Use <code>/api/usage</code> to change the interval, time range, grouping, or filters.</p>
+<h2>Credential and session lifecycle</h2>
+<p>Credentials and logical sessions remain provider-neutral. No provider assignment or provider affinity is exposed here.</p>
+<h3>Credentials</h3>
+<table><thead><tr><th>Credential</th><th>Profile</th><th>Session mode</th><th>Logical session</th><th>Status</th><th>Last used</th><th>Expires</th></tr></thead><tbody>${credentials || '<tr><td colspan="7">No credentials</td></tr>'}</tbody></table>
+<h3>Managed sessions</h3>
+<table><thead><tr><th>Session</th><th>Profile</th><th>Grant</th><th>Session mode</th><th>Status</th><th>Last used</th><th>Closed</th></tr></thead><tbody>${sessions || '<tr><td colspan="7">No managed sessions</td></tr>'}</tbody></table>
 <h2>Capability health</h2>
 <p>Validation freshness is reported separately from availability. Quiet traffic can leave validation stale without creating an outage.</p>
 <section class="grid">${cards}</section><h2>Geography validation</h2>
@@ -197,7 +221,20 @@ table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td
 }
 
 const USAGE_INTERVALS = ["hour", "day", "week", "month"] as const satisfies readonly UsageInterval[];
-const USAGE_GROUPS = ["provider", "customer", "user", "route", "country", "city", "outcome"] as const satisfies readonly UsageGroupBy[];
+const USAGE_GROUPS = [
+  "provider",
+  "customer",
+  "user",
+  "route",
+  "job",
+  "session_mode",
+  "destination_domain",
+  "destination_host",
+  "destination_path_template",
+  "country",
+  "city",
+  "outcome",
+] as const satisfies readonly UsageGroupBy[];
 const USAGE_PROVIDERS = ["bright_data", "proxidize", "unresolved"] as const satisfies readonly UsageProvider[];
 
 function includes<const Values extends readonly string[]>(values: Values, value: string): value is Values[number] {
@@ -216,14 +253,31 @@ function usageQuery(url: URL, now: number): UsageQuery {
   if (groupValue !== undefined && !includes(USAGE_GROUPS, groupValue)) throw new Error("invalid_usage_group");
   const providerValue = url.searchParams.get("provider") ?? undefined;
   if (providerValue !== undefined && !includes(USAGE_PROVIDERS, providerValue)) throw new Error("invalid_usage_provider");
+  const sessionMode = url.searchParams.get("sessionMode") ?? undefined;
+  if (sessionMode !== undefined && sessionMode !== "managed" && sessionMode !== "none") throw new Error("invalid_session_mode");
   return {
     from,
     to,
     interval: intervalValue,
     ...(groupValue === undefined ? {} : { groupBy: groupValue }),
     ...(providerValue === undefined ? {} : { provider: providerValue }),
+    ...(sessionMode === undefined ? {} : { sessionMode }),
     ...Object.fromEntries(
-      (["customerId", "userId", "routeId", "country", "city", "outcome"] as const).flatMap((name) => {
+      (
+        [
+          "customerId",
+          "userId",
+          "routeId",
+          "jobId",
+          "logicalOperationId",
+          "destinationDomain",
+          "destinationHost",
+          "destinationPathTemplate",
+          "country",
+          "city",
+          "outcome",
+        ] as const
+      ).flatMap((name) => {
         const value = url.searchParams.get(name);
         return value === null ? [] : [[name, value]];
       }),
@@ -237,6 +291,12 @@ function canUsePersistedRollups(query: UsageQuery): boolean {
     query.provider === undefined &&
     query.userId === undefined &&
     query.routeId === undefined &&
+    query.jobId === undefined &&
+    query.logicalOperationId === undefined &&
+    query.sessionMode === undefined &&
+    query.destinationDomain === undefined &&
+    query.destinationHost === undefined &&
+    query.destinationPathTemplate === undefined &&
     query.country === undefined &&
     query.city === undefined &&
     query.outcome === undefined
@@ -428,13 +488,18 @@ export class StatusApplicationServer {
         const records = await this.store.listUsageRecords(from, to);
         const usage = storedUsage.length > 0 ? storedUsage : summarizeUsage(records, { from, to, interval: "day" });
         const capacityUsage = summarizeUsage(records, { from, to, interval: "day", provider: "proxidize" });
+        const profiles = await this.store.list();
+        const accessGrants = (await Promise.all(profiles.map(async (profile) => this.store.listAccessGrants(profile.id)))).flat();
+        const logicalSessions = (await Promise.all(accessGrants.map(async (grant) => this.store.listLogicalSessions(grant.id)))).flat();
         const html = Buffer.from(
           page(
             await this.store.latestCapabilityHealth(),
             usage,
             capacityUsage,
             await this.store.latestProviderInventory("proxidize"),
-            await this.store.list(),
+            profiles,
+            accessGrants.map(toPublicAccessGrant),
+            logicalSessions.map(toPublicLogicalSession),
             await this.store.listCapacityCircuits(to),
             now,
             this.options.staleAfterMs,

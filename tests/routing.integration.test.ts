@@ -30,37 +30,7 @@ async function readHttpHead(socket: Socket): Promise<string> {
   return buffer.toString("latin1");
 }
 
-async function requestViaProxyChunks(
-  proxyUrl: string,
-  targetUrl: string,
-  chunks: readonly string[],
-): Promise<{ status: number; body: string }> {
-  const proxy = new URL(proxyUrl);
-  return await new Promise((resolve, reject) => {
-    const request = httpRequest(
-      {
-        host: proxy.hostname,
-        port: Number(proxy.port),
-        method: "POST",
-        path: targetUrl,
-        headers: {
-          "proxy-authorization": basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password)),
-          "content-type": "text/plain",
-        },
-      },
-      (response) => {
-        const responseChunks: Buffer[] = [];
-        response.on("data", (chunk) => responseChunks.push(expectBufferChunk(chunk)));
-        response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(responseChunks).toString("utf8") }));
-      },
-    );
-    request.on("error", reject);
-    for (const chunk of chunks) request.write(chunk);
-    request.end();
-  });
-}
-
-test("unauthenticated profiles use fresh residential exits per request", async (t) => {
+test("stateless profiles use fresh residential exits per request", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -78,7 +48,7 @@ test("unauthenticated profiles use fresh residential exits per request", async (
   assert.notEqual(first.headers["x-mock-exit-ip"], second.headers["x-mock-exit-ip"]);
 });
 
-test("plain HTTP preserves method, path, headers, and buffered body", async (t) => {
+test("plain HTTP preserves method, path, headers, and streamed body", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -87,7 +57,6 @@ test("plain HTTP preserves method, path, headers, and buffered body", async (t) 
   const route = await createRoute(testApp.application, {
     name: "http-transparency",
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   const response = await requestViaProxy(route.proxyUrls.http, target.url, {
@@ -103,63 +72,107 @@ test("plain HTTP preserves method, path, headers, and buffered body", async (t) 
   assert.equal(received["requestBody"], "streamed-request-body");
 });
 
-test("plain HTTP buffers complete requests and rejects oversized bodies before forwarding", async (t) => {
-  let forwardedRequests = 0;
-  const target = await startHttpTarget({ onRequest: () => forwardedRequests++ });
-  const testApp = await startTestApp([target.port], undefined, undefined, {
-    MAX_HTTP_REQUEST_BODY_BYTES: "16",
-    MAX_HTTP_RESPONSE_BODY_BYTES: "16384",
+test("plain HTTP forwards request chunks before the caller completes the body", async (t) => {
+  let observeFirstChunk!: () => void;
+  const firstChunkSeen = new Promise<void>((resolve) => {
+    observeFirstChunk = resolve;
   });
+  const target = await startHttpTarget({ onChunk: observeFirstChunk });
+  const testApp = await startTestApp([target.port], undefined, undefined, { STREAM_BUFFER_BYTES: "1024" });
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(testApp.application, { targeting: { country: "US" } });
+  const proxy = new URL(route.proxyUrls.http);
+  const result = new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const proxyRequest = httpRequest(
+      {
+        host: proxy.hostname,
+        port: Number(proxy.port),
+        method: "POST",
+        path: target.url,
+        headers: {
+          "proxy-authorization": basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password)),
+          "content-type": "text/plain",
+        },
+      },
+      (proxyResponse) => {
+        const chunks: Buffer[] = [];
+        proxyResponse.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
+        proxyResponse.on("end", () => resolve({ status: proxyResponse.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+      },
+    );
+    proxyRequest.on("error", reject);
+    proxyRequest.write("first-");
+    void firstChunkSeen.then(() => proxyRequest.end("second"), reject);
+  });
+  const response = await result;
+  assert.equal(response.status, 200);
+  assert.equal((JSON.parse(response.body) as Record<string, string>)["requestBody"], "first-second");
+});
+
+test("plain HTTP streams bodies larger than the bounded transport buffer without application caps", async (t) => {
+  const payload = "streaming-body-".repeat(20_000);
+  const target = await startHttpTarget({ responseBody: payload });
+  const testApp = await startTestApp([target.port], undefined, undefined, { STREAM_BUFFER_BYTES: "1024" });
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
   const route = await createRoute(testApp.application, { targeting: { country: "US" } });
 
-  const accepted = await requestViaProxy(route.proxyUrls.http, target.url, {
+  const response = await requestViaProxy(route.proxyUrls.http, target.url, {
     method: "POST",
-    headers: { "content-length": "16", "content-type": "text/plain" },
-    body: "0123456789abcdef",
+    headers: { "content-type": "text/plain" },
+    body: payload,
   });
-  assert.equal(accepted.status, 200);
-  assert.equal(forwardedRequests, 1);
-
-  const declaredOversize = await requestViaProxy(route.proxyUrls.http, target.url, {
-    method: "POST",
-    headers: { "content-length": "17", "content-type": "text/plain" },
-    body: "0123456789abcdefg",
-  });
-  assert.equal(declaredOversize.status, 413);
-  assert.equal(expectRecord(parseJson(declaredOversize.body, "proxy error"), "proxy error")["code"], "request_too_large");
-
-  const chunkedOversize = await requestViaProxyChunks(route.proxyUrls.http, target.url, ["0123456789abcdef", "g"]);
-  assert.equal(chunkedOversize.status, 413);
-  assert.equal(expectRecord(parseJson(chunkedOversize.body, "proxy error"), "proxy error")["code"], "request_too_large");
-  assert.equal(forwardedRequests, 1);
+  assert.equal(response.status, 200);
+  assert.equal(response.body, payload);
 });
 
-test("plain HTTP buffers complete responses and rejects oversized bodies before delivery", async (t) => {
-  const target = await startHttpTarget({ responseBody: "0123456789abcdefg" });
-  const testApp = await startTestApp([target.port], undefined, undefined, {
-    MAX_HTTP_REQUEST_BODY_BYTES: "16384",
-    MAX_HTTP_RESPONSE_BODY_BYTES: "16",
-  });
+test("plain HTTP retries connection establishment before consuming a streamed request body", async (t) => {
+  const target = await startHttpTarget();
+  const lines: Array<{ message: string; context?: Record<string, unknown> }> = [];
+  let stopPrimaryAfterSelection: (() => void) | undefined;
+  const logger = {
+    info: (message: string, context?: Record<string, unknown>) => {
+      lines.push({ message, ...(context === undefined ? {} : { context }) });
+      if (message === "Upstream candidate selected" && context?.["provider"] === "bright_data") {
+        stopPrimaryAfterSelection?.();
+        stopPrimaryAfterSelection = undefined;
+      }
+    },
+    warn: (message: string, context?: Record<string, unknown>) => lines.push({ message, ...(context === undefined ? {} : { context }) }),
+    error: (message: string, context?: Record<string, unknown>) => lines.push({ message, ...(context === undefined ? {} : { context }) }),
+  };
+  const testApp = await startTestApp([target.port], undefined, logger);
+  stopPrimaryAfterSelection = () => {
+    void testApp.application.simulators?.brightData.stop();
+  };
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
-  const route = await createRoute(testApp.application, { targeting: { country: "US" } });
-
-  const response = await requestViaProxy(route.proxyUrls.http, target.url);
-  assert.equal(response.status, 502);
-  assert.equal(expectRecord(parseJson(response.body, "proxy error"), "proxy error")["code"], "response_too_large");
-  assert.equal(response.headers["content-type"], "application/problem+json");
+  const route = await createRoute(testApp.application, {
+    targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
+    shouldRetry: true,
+  });
+  const response = await requestViaProxy(route.proxyUrls.http, target.url, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: "stream-once-body",
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ca-1");
+  assert.equal((JSON.parse(response.body) as Record<string, string>)["requestBody"], "stream-once-body");
+  const attempts = lines.filter(({ message }) => message === "Upstream proxy attempt completed");
+  assert.deepEqual(
+    attempts.map(({ context }) => context?.["commitmentState"]),
+    ["pre_commit", "committed"],
+  );
 });
 
-test("plain HTTP body caps do not apply to opaque CONNECT or SOCKS5 tunnels", async (t) => {
+test("CONNECT and SOCKS5 tunnels stream through the same bounded transport buffer", async (t) => {
   const target = await startEchoTarget();
-  const testApp = await startTestApp([target.port], undefined, undefined, {
-    MAX_HTTP_REQUEST_BODY_BYTES: "8",
-    MAX_HTTP_RESPONSE_BODY_BYTES: "8",
-  });
+  const testApp = await startTestApp([target.port], undefined, undefined, { STREAM_BUFFER_BYTES: "1024" });
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
@@ -262,15 +275,22 @@ test("provider-side DNS remains authoritative while local and provider observati
     assert.equal(context?.["providerResolutionStatus"], "available");
     assert.equal(context?.["resolutionDivergence"], "different");
     assert.equal(context?.["resolutionVerificationAvailability"], "available");
+    assert.equal(context?.["destinationSafety"], "verified");
     assert.equal(context?.["resolutionGeographyVerification"], "match");
     assert.equal(context?.["providerResolverCountry"], "US");
     assert.ok(Array.isArray(context?.["providerResolvedAddresses"]));
   }
 });
 
-test("plain HTTP provider statuses are returned without failover", async (t) => {
+test("plain HTTP provider statuses after commitment are returned without replay or failover", async (t) => {
   const target = await startHttpTarget();
-  const testApp = await startTestApp([target.port]);
+  const lines: Array<{ message: string; context?: Record<string, unknown> }> = [];
+  const logger = {
+    info: (message: string, context?: Record<string, unknown>) => lines.push({ message, ...(context === undefined ? {} : { context }) }),
+    warn: (message: string, context?: Record<string, unknown>) => lines.push({ message, ...(context === undefined ? {} : { context }) }),
+    error: (message: string, context?: Record<string, unknown>) => lines.push({ message, ...(context === undefined ? {} : { context }) }),
+  };
+  const testApp = await startTestApp([target.port], undefined, logger);
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
@@ -278,28 +298,33 @@ test("plain HTTP provider statuses are returned without failover", async (t) => 
     name: "public-failover",
     targeting: { country: "US", region: "CA", carrier: "AT&T" },
     rotation: { mode: "manual" },
-    isAuthenticated: false,
     shouldRetry: true,
   });
   testApp.application.simulators?.brightData.setFailure("unavailable");
-  const response = await requestViaProxy(route.proxyUrls.http, target.url);
+  const response = await requestViaProxy(route.proxyUrls.http, target.url, { method: "POST", body: "non-replayable-body" });
   assert.equal(response.status, 502);
   assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
+  const completion = lines.find(({ message }) => message === "Upstream proxy attempt completed");
+  assert.equal(completion?.context?.["commitmentState"], "committed");
+  assert.equal(completion?.context?.["retryIndex"], 0);
 });
 
-test("authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider", async (t) => {
+test("managed sessions prefer Proxidize while Bright Data remains eligible when it is the compatible provider", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
 
-  const preferred = await createRoute(testApp.application, {
-    name: "authenticated-preference",
-    targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
-    isAuthenticated: true,
-    shouldRetry: true,
-  });
+  const preferred = await createRoute(
+    testApp.application,
+    {
+      name: "managed-preference",
+      targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
+      shouldRetry: true,
+    },
+    "managed",
+  );
   const first = await requestViaProxy(preferred.proxyUrls.http, target.url);
   assert.equal(first.headers["x-mock-endpoint-id"], "px-us-ny-1");
 
@@ -308,13 +333,16 @@ test("authenticated routes prefer Proxidize while Bright Data remains eligible w
   assert.equal(failedOver.status, 502);
   testApp.application.simulators?.proxidize.setFailure(null);
 
-  const eligible = await createRoute(testApp.application, {
-    name: "authenticated-bright-data",
-    targeting: { country: "GB", city: "London" },
-    isAuthenticated: true,
-    shouldRetry: false,
-    rotation: { mode: "per_request" },
-  });
+  const eligible = await createRoute(
+    testApp.application,
+    {
+      name: "managed-bright-data",
+      targeting: { country: "GB", city: "London" },
+      shouldRetry: false,
+      rotation: { mode: "per_request" },
+    },
+    "managed",
+  );
   const eligibleFirst = await requestViaProxy(eligible.proxyUrls.http, target.url);
   const eligibleSecond = await requestViaProxy(eligible.proxyUrls.http, target.url);
   assert.equal(eligibleFirst.status, 200);
@@ -322,7 +350,7 @@ test("authenticated routes prefer Proxidize while Bright Data remains eligible w
   assert.equal(
     eligibleFirst.headers["x-mock-exit-ip"],
     eligibleSecond.headers["x-mock-exit-ip"],
-    "authenticated Bright Data traffic uses a stable internal session",
+    "managed Bright Data traffic uses a stable internal session",
   );
 });
 
@@ -336,7 +364,6 @@ test("provider override is explicit, persisted, compatibility-gated, and never f
   const overridden = await createRoute(testApp.application, {
     targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
     providerOverride: "bright_data",
-    isAuthenticated: true,
     shouldRetry: true,
   });
   assert.equal(overridden.profile.providerOverride, "bright_data");
@@ -354,7 +381,6 @@ test("provider override is explicit, persisted, compatibility-gated, and never f
       customerId: "override-incompatible",
       geography: { countryCode: "GB", city: "London" },
       providerOverride: "proxidize",
-      isTargetAuthenticated: true,
       allowConnectionRetry: false,
     }),
   });
@@ -390,15 +416,16 @@ test("soft-saturated preferred slots remain ahead of the fallback provider class
     await store.close();
   }
 
-  const route = await createRoute(testApp.application, {
-    targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
-    isAuthenticated: true,
-  });
+  const route = await createRoute(
+    testApp.application,
+    { targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" } },
+    "managed",
+  );
   const response = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-1");
 });
 
-test("unauthenticated residential soft saturation promotes an eligible device-backed fallback", async (t) => {
+test("stateless residential soft saturation promotes an eligible device-backed fallback", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -435,7 +462,6 @@ test("unauthenticated residential soft saturation promotes an eligible device-ba
 
   const route = await createRoute(testApp.application, {
     targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
-    isAuthenticated: false,
   });
   const response = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(response.status, 200);
@@ -485,7 +511,7 @@ test("a provider-reported hard capacity limit opens the shared circuit immediate
   }
 });
 
-test("unauthenticated CONNECT exhausts residential peers without an incompatible device fallback", async (t) => {
+test("stateless CONNECT exhausts residential peers without an incompatible device fallback", async (t) => {
   const echo = await startEchoTarget();
   const lines: string[] = [];
   const logger = {
@@ -501,7 +527,6 @@ test("unauthenticated CONNECT exhausts residential peers without an incompatible
     name: "hierarchical-failover",
     targeting: { country: "GB", city: "London" },
     rotation: { mode: "manual" },
-    isAuthenticated: false,
     shouldRetry: true,
     retryPolicy: { maxAttempts: 4 },
   });
@@ -509,28 +534,35 @@ test("unauthenticated CONNECT exhausts residential peers without an incompatible
   const exchange = await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "hierarchical-payload");
   assert.deepEqual(exchange, { status: 502, body: "" });
   assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
-  const attempts = lines
-    .map((line) => JSON.parse(line) as { message: string; context?: { provider?: string } })
+  const attemptEntries = lines
+    .map((line) => JSON.parse(line) as { message: string; context?: { provider?: string; commitmentState?: string } })
     .filter((entry) => entry.message === "Proxy tunnel establishment failed" || entry.message === "Proxy tunnel opened")
-    .map((entry) => entry.context?.provider)
-    .filter((provider): provider is string => provider !== undefined);
+    .filter((entry) => entry.context?.provider !== undefined);
+  const attempts = attemptEntries.map((entry) => entry.context?.provider).filter((provider): provider is string => provider !== undefined);
   assert.deepEqual(attempts, ["bright_data", "bright_data"]);
+  assert.deepEqual(
+    attemptEntries.map((entry) => entry.context?.commitmentState),
+    ["pre_commit", "pre_commit"],
+  );
 });
 
-test("authenticated CONNECT failover preserves the route's exact city", async (t) => {
+test("managed CONNECT failover preserves the route's exact city", async (t) => {
   const echo = await startEchoTarget();
   const testApp = await startTestApp([echo.port]);
   t.after(async () => {
     await Promise.all([echo.stop(), testApp.stop()]);
   });
-  const route = await createRoute(testApp.application, {
-    name: "authenticated-city-failover",
-    targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
-    rotation: { mode: "manual" },
-    isAuthenticated: true,
-    shouldRetry: true,
-    retryPolicy: { maxAttempts: 4 },
-  });
+  const route = await createRoute(
+    testApp.application,
+    {
+      name: "managed-city-failover",
+      targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
+      rotation: { mode: "manual" },
+      shouldRetry: true,
+      retryPolicy: { maxAttempts: 4 },
+    },
+    "managed",
+  );
   testApp.application.simulators?.proxidize.setFailure("unavailable");
   const exchange = await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "authenticated-payload");
   assert.deepEqual(exchange, { status: 200, body: "authenticated-payload" });
@@ -550,7 +582,6 @@ test("candidate establishment enforces per-attempt and overall deadlines without
     name: "deadline-budget",
     targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
     rotation: { mode: "manual" },
-    isAuthenticated: false,
     shouldRetry: true,
     retryPolicy: { maxAttempts: 4 },
   });
@@ -563,25 +594,23 @@ test("candidate establishment enforces per-attempt and overall deadlines without
   assert.equal(testApp.application.simulators?.proxidize.lastIdentity(), undefined);
 });
 
-test("concurrent mobile connections persist distinct atomic load claims for scored compatible slots", async (t) => {
+test("concurrent mobile connections claim the least-loaded compatible slots with a stable tie-breaker", async (t) => {
   const target = await startEchoTarget();
   const testApp = await startTestApp([target.port]);
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
 
-  const firstRoute = await createRoute(testApp.application, {
-    name: "mobile-one",
-    isAuthenticated: true,
-    targeting: { country: "US", region: "NY", city: "New York" },
-    rotation: { mode: "manual" },
-  });
-  const secondRoute = await createRoute(testApp.application, {
-    name: "mobile-two",
-    isAuthenticated: true,
-    targeting: { country: "US", region: "NY", city: "New York" },
-    rotation: { mode: "manual" },
-  });
+  const firstRoute = await createRoute(
+    testApp.application,
+    { name: "mobile-one", targeting: { country: "US", region: "NY", city: "New York" }, rotation: { mode: "manual" } },
+    "managed",
+  );
+  const secondRoute = await createRoute(
+    testApp.application,
+    { name: "mobile-two", targeting: { country: "US", region: "NY", city: "New York" }, rotation: { mode: "manual" } },
+    "managed",
+  );
   const openTunnel = async (proxyUrl: string): Promise<Socket> => {
     const proxy = new URL(proxyUrl);
     const socket = connect(Number(proxy.port), proxy.hostname);
@@ -601,6 +630,7 @@ test("concurrent mobile connections persist distinct atomic load claims for scor
     const active = await store.listAllActiveTunnels();
     assert.equal(active.length, 2);
     assert.equal(new Set(active.map((connection) => connection.id)).size, 2);
+    assert.equal(new Set(active.map((connection) => connection.endpointId)).size, 2);
     assert.ok(active.every((connection) => connection.routingPolicyVersion !== undefined && connection.routingScore !== undefined));
   } finally {
     await store.close();
@@ -619,7 +649,6 @@ test("profile updates apply to new connections without replacing access-grant cr
     name: "updatable-profile",
     targeting: { country: "US" },
     rotation: { mode: "per_request" },
-    isAuthenticated: false,
     shouldRetry: true,
   });
   assert.equal((await requestViaProxy(created.proxyUrls.http, target.url)).headers["x-mock-country"], "US");
@@ -630,7 +659,6 @@ test("profile updates apply to new connections without replacing access-grant cr
     body: JSON.stringify({
       customerId: "test-customer",
       geography: { countryCode: "GB" },
-      isTargetAuthenticated: false,
       allowConnectionRetry: true,
     }),
   });
@@ -643,7 +671,70 @@ test("profile updates apply to new connections without replacing access-grant cr
   assert.equal((await requestViaProxy(created.proxyUrls.http, target.url)).headers["x-mock-country"], "GB");
 });
 
-test("mobile grants share scored proxy-slot capacity and credential rotation creates no affinity", async (t) => {
+test("managed sessions rebind opaque provider affinity after an incompatible profile update", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const created = await createRoute(
+    testApp.application,
+    {
+      name: "managed-updatable-profile",
+      targeting: { country: "US" },
+      rotation: { mode: "per_request" },
+      shouldRetry: true,
+    },
+    "managed",
+  );
+  const first = await requestViaProxy(created.proxyUrls.http, target.url);
+  const repeated = await requestViaProxy(created.proxyUrls.http, target.url);
+  assert.equal(repeated.headers["x-mock-session"], first.headers["x-mock-session"]);
+  assert.equal(repeated.headers["x-mock-exit-ip"], first.headers["x-mock-exit-ip"]);
+
+  const update = await controlRequest(testApp.application, `/v1/profiles/${created.profile.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      customerId: "test-customer",
+      geography: { countryCode: "GB" },
+      allowConnectionRetry: true,
+    }),
+  });
+  assert.equal(update.status, 200);
+
+  const rebound = await requestViaProxy(created.proxyUrls.http, target.url);
+  assert.equal(rebound.headers["x-mock-country"], "GB");
+  assert.notEqual(rebound.headers["x-mock-session"], first.headers["x-mock-session"]);
+  assert.notEqual(rebound.headers["x-mock-exit-ip"], first.headers["x-mock-exit-ip"]);
+});
+
+test("emergency profile revocation closes managed sessions and invalidates their grants", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const created = await createRoute(
+    testApp.application,
+    {
+      name: "emergency-managed-profile",
+      targeting: { country: "US" },
+      rotation: { mode: "manual" },
+    },
+    "managed",
+  );
+  assert.ok(created.credential.sessionId);
+  assert.equal((await requestViaProxy(created.proxyUrls.http, target.url)).status, 200);
+
+  await testApp.application.routes.emergencyRevoke(created.profile.id);
+
+  assert.equal((await requestViaProxy(created.proxyUrls.http, target.url)).status, 407);
+  const session = await testApp.application.routes.getLogicalSession(created.accessGrant.id, created.credential.sessionId, "local-dev");
+  assert.equal(session.status, "closed");
+});
+
+test("stateless mobile credentials share least-loaded proxy-slot capacity without affinity", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port], undefined, undefined, {
     CONTROL_API_IDENTITIES_JSON: JSON.stringify({
@@ -656,10 +747,9 @@ test("mobile grants share scored proxy-slot capacity and credential rotation cre
   });
   const first = await createRoute(testApp.application, {
     name: "shared-profile",
-    isAuthenticated: true,
     targeting: { country: "US", region: "NY", city: "New York" },
+    providerOverride: "proxidize",
     rotation: { mode: "manual" },
-    session: { mode: "sticky", id: "shared-session", requireGeographicContinuity: true },
   });
   const issueGrant = async () => {
     const response = await controlRequest(
@@ -667,6 +757,8 @@ test("mobile grants share scored proxy-slot capacity and credential rotation cre
       `/v1/profiles/${first.profile.id}/grants`,
       {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionMode: "none" }),
       },
       true,
     );
@@ -683,9 +775,11 @@ test("mobile grants share scored proxy-slot capacity and credential rotation cre
   const third = await issueGrant();
   assert.equal((await requestViaProxy(third.proxyUrls.http, target.url)).status, 200, "slot capacity is shared rather than reserved");
 
-  const rotateCredential = await controlRequest(testApp.application, `/v1/grants/${first.accessGrant.id}/credentials/rotate`, {
-    method: "POST",
-  });
+  const rotateCredential = await controlRequest(
+    testApp.application,
+    `/v1/grants/${first.accessGrant.id}/credentials/${first.credential.id}/rotate`,
+    { method: "POST" },
+  );
   assert.equal(rotateCredential.status, 200);
   const rotated = materializeIssuedAccessGrant((await rotateCredential.json()) as IssuedAccessGrantApiResponse);
   issuedSecrets.push(decodeURIComponent(new URL(rotated.proxyUrls.http).password));
@@ -698,13 +792,15 @@ test("mobile grants share scored proxy-slot capacity and credential rotation cre
   const rotatedResponse = await requestViaProxy(rotated.proxyUrls.http, target.url);
   assert.equal(rotatedResponse.headers["x-mock-city"], "New York");
 
-  const compromiseRotation = await controlRequest(testApp.application, `/v1/grants/${first.accessGrant.id}/credentials/emergency-rotate`, {
-    method: "POST",
-  });
+  const compromiseRotation = await controlRequest(
+    testApp.application,
+    `/v1/grants/${first.accessGrant.id}/credentials/${rotated.credential.id}/emergency-rotate`,
+    { method: "POST" },
+  );
   assert.equal(compromiseRotation.status, 200);
   const emergency = materializeIssuedAccessGrant((await compromiseRotation.json()) as IssuedAccessGrantApiResponse);
   issuedSecrets.push(decodeURIComponent(new URL(emergency.proxyUrls.http).password));
-  assert.equal((await requestViaProxy(first.proxyUrls.http, target.url)).status, 407);
+  assert.equal((await requestViaProxy(first.proxyUrls.http, target.url)).status, 200);
   assert.equal((await requestViaProxy(rotated.proxyUrls.http, target.url)).status, 407);
   assert.equal((await requestViaProxy(emergency.proxyUrls.http, target.url)).headers["x-mock-city"], "New York");
 
@@ -725,7 +821,7 @@ test("mobile grants share scored proxy-slot capacity and credential rotation cre
   assert.equal(secondList.status, 404);
   const crossPrincipalRotation = await controlRequest(
     testApp.application,
-    `/v1/grants/${first.accessGrant.id}/credentials/rotate`,
+    `/v1/grants/${first.accessGrant.id}/credentials/${first.credential.id}/rotate`,
     { method: "POST" },
     true,
     "second-token",
@@ -745,12 +841,11 @@ test("an unhealthy mobile slot is excluded while exact-city routing remains mand
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
-  const route = await createRoute(testApp.application, {
-    name: "t-mobile-session",
-    isAuthenticated: true,
-    targeting: { country: "US", region: "NY", city: "New York" },
-    rotation: { mode: "manual" },
-  });
+  const route = await createRoute(
+    testApp.application,
+    { name: "t-mobile-session", targeting: { country: "US", region: "NY", city: "New York" }, rotation: { mode: "manual" } },
+    "managed",
+  );
   const before = await requestViaProxy(route.proxyUrls.http, target.url);
   const selected = String(before.headers["x-mock-endpoint-id"]);
   const alternate = selected === "px-us-ny-1" ? "px-us-ny-2" : "px-us-ny-1";
@@ -770,11 +865,11 @@ test("HTTPS CONNECT tunnels bytes through the selected provider", async (t) => {
   t.after(async () => {
     await Promise.all([echo.stop(), testApp.stop()]);
   });
-  const route = await createRoute(testApp.application, {
-    name: "connect-route",
-    isAuthenticated: true,
-    targeting: { country: "US", region: "NY", city: "New York", carrier: "Verizon" },
-  });
+  const route = await createRoute(
+    testApp.application,
+    { name: "connect-route", targeting: { country: "US", region: "NY", city: "New York", carrier: "Verizon" } },
+    "managed",
+  );
   const proxy = new URL(route.proxyUrls.http);
   const echoed = await new Promise<string>((resolve, reject) => {
     const socket = connect(Number(proxy.port), proxy.hostname);
@@ -816,7 +911,6 @@ test("SOCKS5 TCP CONNECT uses the same access-grant credentials and preserves do
   const route = await createRoute(testApp.application, {
     name: "socks5-route",
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   assert.match(route.proxyUrls.socks5, /^socks5h:\/\//);
@@ -834,7 +928,6 @@ test("SOCKS5 rejects unsupported commands", async (t) => {
   const fullRoute = await createRoute(testApp.application, {
     name: "socks-command",
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   const bind = await exchangeViaSocks5(fullRoute.proxyUrls.socks5, "localhost", echo.port, "", 0x02);
@@ -889,6 +982,242 @@ test("access-grant revocation preserves an established tunnel and rejects new co
   socket.destroy();
 });
 
+test("logical-session APIs require an explicit mode and support rotation, close, and force-close lifecycle", async (t) => {
+  const [target, echo] = await Promise.all([startHttpTarget(), startEchoTarget()]);
+  const testApp = await startTestApp([target.port, echo.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), echo.stop(), testApp.stop()]);
+  });
+  const profileResponse = await controlRequest(testApp.application, "/v1/profiles", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      customerId: "managed-lifecycle",
+      geography: { countryCode: "US" },
+      allowConnectionRetry: true,
+    }),
+  });
+  assert.equal(profileResponse.status, 201);
+  const { profileId } = (await profileResponse.json()) as { profileId: string };
+  assert.equal(
+    (await controlRequest(testApp.application, `/v1/profiles/${profileId}/grants`, { method: "POST" })).status,
+    400,
+    "omitting sessionMode is invalid",
+  );
+
+  const managedResponse = await controlRequest(testApp.application, `/v1/profiles/${profileId}/grants`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionMode: "managed", jobId: "job-managed-lifecycle" }),
+  });
+  assert.equal(managedResponse.status, 201);
+  const managedIssued = (await managedResponse.json()) as IssuedAccessGrantApiResponse;
+  assert.equal(managedIssued.credential.sessionMode, "managed");
+  assert.equal(managedIssued.grant.jobId, "job-managed-lifecycle");
+  assert.equal(managedIssued.credential.sessionId, managedIssued.session?.sessionId);
+  assert.ok(managedIssued.session?.sessionId);
+  const managed = materializeIssuedAccessGrant(managedIssued);
+  const [first, second] = await Promise.all([
+    requestViaProxy(managed.proxyUrls.http, target.url),
+    requestViaProxy(managed.proxyUrls.http, target.url),
+  ]);
+  assert.equal(first.headers["x-mock-exit-ip"], second.headers["x-mock-exit-ip"]);
+  const inspectedGrant = await controlRequest(testApp.application, `/v1/grants/${managed.accessGrant.id}`);
+  assert.equal(inspectedGrant.status, 200);
+  assert.equal(((await inspectedGrant.json()) as { grant: { jobId: string | null } }).grant.jobId, "job-managed-lifecycle");
+  const storedUsage = new InMemoryRouteStore(testApp.storeState);
+  try {
+    const usage = await storedUsage.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+    assert.ok(usage.length >= 2);
+    assert.ok(usage.every((record) => record.jobId === "job-managed-lifecycle"));
+    assert.ok(usage.every((record) => record.logicalOperationId.length > 0));
+    assert.ok(usage.every((record) => record.destinationHost === "127.0.0.1"));
+    assert.ok(usage.every((record) => record.destinationPort === target.port));
+  } finally {
+    await storedUsage.close();
+  }
+
+  const rotationResponse = await controlRequest(
+    testApp.application,
+    `/v1/grants/${managed.accessGrant.id}/credentials/${managed.credential.id}/rotate`,
+    { method: "POST" },
+  );
+  assert.equal(rotationResponse.status, 200);
+  const rotatedIssued = (await rotationResponse.json()) as IssuedAccessGrantApiResponse;
+  assert.equal(rotatedIssued.credential.sessionId, managedIssued.session?.sessionId);
+  const rotated = materializeIssuedAccessGrant(rotatedIssued);
+
+  const statelessResponse = await controlRequest(testApp.application, `/v1/grants/${managed.accessGrant.id}/credentials`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionMode: "none" }),
+  });
+  assert.equal(statelessResponse.status, 201);
+  const statelessIssued = (await statelessResponse.json()) as IssuedAccessGrantApiResponse;
+  assert.equal(statelessIssued.credential.sessionMode, "none");
+  assert.equal(statelessIssued.credential.sessionId, undefined);
+  assert.equal(statelessIssued.session, undefined);
+  const stateless = materializeIssuedAccessGrant(statelessIssued);
+
+  const sessionsResponse = await controlRequest(testApp.application, `/v1/grants/${managed.accessGrant.id}/sessions`);
+  assert.equal(sessionsResponse.status, 200);
+  const sessionsText = await sessionsResponse.text();
+  assert.match(sessionsText, new RegExp(managedIssued.session?.sessionId ?? "missing-session"));
+  assert.doesNotMatch(sessionsText, /bright_data|proxidize|device|slot|exitIp|provider/i);
+  const sessionResponse = await controlRequest(
+    testApp.application,
+    `/v1/grants/${managed.accessGrant.id}/sessions/${managedIssued.session?.sessionId ?? "missing"}`,
+  );
+  assert.equal(sessionResponse.status, 200);
+  assert.match(await sessionResponse.text(), new RegExp(managedIssued.session?.sessionId ?? "missing-session"));
+
+  const openTunnel = async (proxyUrl: string): Promise<Socket> => {
+    const proxy = new URL(proxyUrl);
+    const socket = connect(Number(proxy.port), proxy.hostname);
+    socket.on("error", () => undefined);
+    await once(socket, "connect");
+    socket.write(
+      `CONNECT ${echo.url} HTTP/1.1\r\nHost: ${echo.url}\r\n` +
+        `Proxy-Authorization: ${basicAuth(decodeURIComponent(proxy.username), decodeURIComponent(proxy.password))}\r\n\r\n`,
+    );
+    assert.match(await readHttpHead(socket), /^HTTP\/1\.1 200/m);
+    return socket;
+  };
+  const drainingTunnel = await openTunnel(rotated.proxyUrls.http);
+  const closeResponse = await controlRequest(
+    testApp.application,
+    `/v1/grants/${managed.accessGrant.id}/sessions/${managedIssued.session?.sessionId ?? "missing"}`,
+    { method: "DELETE" },
+  );
+  assert.equal(closeResponse.status, 204);
+  drainingTunnel.write("drains-after-close");
+  const [echoed] = (await once(drainingTunnel, "data")) as [Buffer];
+  assert.equal(echoed.toString("utf8"), "drains-after-close");
+  assert.equal((await requestViaProxy(rotated.proxyUrls.http, target.url)).status, 407);
+  assert.equal((await requestViaProxy(stateless.proxyUrls.http, target.url)).status, 200);
+  drainingTunnel.destroy();
+
+  const secondSessionResponse = await controlRequest(testApp.application, `/v1/grants/${managed.accessGrant.id}/sessions`, {
+    method: "POST",
+  });
+  assert.equal(secondSessionResponse.status, 201);
+  const secondSessionIssued = (await secondSessionResponse.json()) as IssuedAccessGrantApiResponse;
+  const secondSession = materializeIssuedAccessGrant(secondSessionIssued);
+  const forceClosedTunnel = await openTunnel(secondSession.proxyUrls.http);
+  const closed = once(forceClosedTunnel, "close");
+  const forceCloseResponse = await controlRequest(
+    testApp.application,
+    `/v1/grants/${managed.accessGrant.id}/sessions/${secondSessionIssued.session?.sessionId ?? "missing"}/force-close`,
+    { method: "POST" },
+  );
+  assert.equal(forceCloseResponse.status, 204);
+  await closed;
+  assert.equal((await requestViaProxy(secondSession.proxyUrls.http, target.url)).status, 407);
+});
+
+test("managed-session concurrency converges on one binding and ignores soft saturation after placement", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(
+    testApp.application,
+    {
+      name: "managed-affinity",
+      shouldRetry: true,
+      targeting: { country: "US", region: "NY", city: "New York" },
+    },
+    "managed",
+  );
+  const initial = await requestViaProxy(route.proxyUrls.http, target.url);
+  const initialSlot = String(initial.headers["x-mock-endpoint-id"]);
+  testApp.application.simulators?.proxidize.setDeviceHealth(initialSlot, false);
+  const rebound = await Promise.all([requestViaProxy(route.proxyUrls.http, target.url), requestViaProxy(route.proxyUrls.http, target.url)]);
+  const reboundSlots = new Set(rebound.map((response) => String(response.headers["x-mock-endpoint-id"])));
+  assert.equal(reboundSlots.size, 1, "concurrent callers observe the winning atomic rebind");
+  const reboundSlot = [...reboundSlots][0];
+  assert.ok(reboundSlot);
+  assert.notEqual(reboundSlot, initialSlot);
+  testApp.application.simulators?.proxidize.setDeviceHealth(initialSlot, true);
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const store = new InMemoryRouteStore(testApp.storeState);
+  try {
+    assert.ok(route.credential.sessionId);
+    const idleSession = await store.getLogicalSession(route.credential.sessionId);
+    assert.equal(idleSession.affinity?.candidateId, reboundSlot, "idle sessions retain their last-known affinity");
+    assert.ok(idleSession.lastDisconnectedAt);
+    assert.equal(
+      (await store.listAllActiveTunnels()).filter((connection) => connection.sessionId === route.credential.sessionId).length,
+      0,
+      "idle affinity does not reserve active capacity",
+    );
+    const now = Date.now();
+    for (let index = 0; index < CAPACITY_POLICY.softConnectionsPerSlot; index += 1) {
+      await store.registerActiveTunnel({
+        id: `soft-pressure-${index}`,
+        deploymentId: "test-pressure",
+        routeId: route.profile.id,
+        accessGrantId: `other-grant-${index}`,
+        protocol: "https",
+        provider: "proxidize",
+        endpointId: reboundSlot,
+        startedAt: new Date(now).toISOString(),
+        lastHeartbeatAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + 120_000).toISOString(),
+      });
+    }
+  } finally {
+    await store.close();
+  }
+  const saturated = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.equal(saturated.headers["x-mock-endpoint-id"], reboundSlot, "soft pressure does not move an existing managed session");
+});
+
+test("managed cross-class fallback fails back only after health stabilization and session quiescence", async (t) => {
+  let clock = Date.parse("2026-07-18T00:00:00.000Z");
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port], undefined, undefined, {}, { now: () => clock });
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const route = await createRoute(
+    testApp.application,
+    {
+      name: "controlled-failback",
+      shouldRetry: true,
+      targeting: { country: "US", region: "NY", city: "New York" },
+    },
+    "managed",
+  );
+  for (const device of testApp.application.simulators?.proxidize.devices() ?? []) {
+    if (device.city === "New York") testApp.application.simulators?.proxidize.setDeviceHealth(device.id, false);
+  }
+  const fallback = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.equal(fallback.headers["x-mock-endpoint-id"], "bright-data-superproxy");
+
+  for (const device of testApp.application.simulators?.proxidize.devices() ?? []) {
+    if (device.city === "New York") testApp.application.simulators?.proxidize.setDeviceHealth(device.id, true);
+  }
+  const stabilizing = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.equal(stabilizing.headers["x-mock-endpoint-id"], "bright-data-superproxy");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  clock += 5 * 60_000 + 31_000;
+  const failedBack = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.match(String(failedBack.headers["x-mock-endpoint-id"]), /^px-us-ny-/);
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const store = new InMemoryRouteStore(testApp.storeState);
+  try {
+    const usage = await store.listUsageRecords("2026-07-17T00:00:00.000Z", "2026-07-19T00:00:00.000Z");
+    assert.ok(usage.some((record) => record.degradedFallback === true));
+    assert.ok(usage.some((record) => record.failbackOutcome === "success"));
+  } finally {
+    await store.close();
+  }
+});
+
 test("control API rejects unauthorized and malformed route requests", async (t) => {
   const target = await startHttpTarget();
   const testApp = await startTestApp([target.port]);
@@ -903,7 +1232,6 @@ test("control API rejects unauthorized and malformed route requests", async (t) 
     body: JSON.stringify({
       customerId: "bad",
       geography: { countryCode: "MX" },
-      isTargetAuthenticated: false,
       allowConnectionRetry: false,
       rotation: { mode: "manual" },
     }),
@@ -943,7 +1271,6 @@ test("credential metadata is inspectable and each credential can be revoked inde
   const route = await createRoute(testApp.application, {
     customerId: "credential-inspection",
     geography: { countryCode: "US" },
-    isTargetAuthenticated: false,
     allowConnectionRetry: false,
   });
   const credentialId = route.credential.id;
@@ -972,7 +1299,6 @@ test("control API can advertise the load balancer hostname from the request", as
   const profileBody = JSON.stringify({
     customerId: "customer-a",
     geography: { countryCode: "US" },
-    isTargetAuthenticated: false,
     allowConnectionRetry: false,
   });
   const requestWithAdvertisedHost = (path: string, body = "") =>
@@ -1007,7 +1333,7 @@ test("control API can advertise the load balancer hostname from the request", as
   const created = await requestWithAdvertisedHost("/v1/profiles", profileBody);
   assert.equal(created.status, 201);
   const { profileId } = JSON.parse(created.body) as { profileId: string };
-  const issuedResponse = await requestWithAdvertisedHost(`/v1/profiles/${profileId}/grants`);
+  const issuedResponse = await requestWithAdvertisedHost(`/v1/profiles/${profileId}/grants`, JSON.stringify({ sessionMode: "none" }));
   assert.equal(issuedResponse.status, 201);
   const issued = JSON.parse(issuedResponse.body) as { endpoints: { http: string; socks5: string }; credential: { password: string } };
   assert.equal(new URL(issued.endpoints.http).hostname, "router.example");

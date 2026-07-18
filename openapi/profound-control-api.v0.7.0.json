@@ -16,6 +16,16 @@
           "grantId": {
             "type": "string"
           },
+          "jobId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "profileId": {
             "type": "string"
           },
@@ -33,6 +43,7 @@
         "required": [
           "grantId",
           "profileId",
+          "jobId",
           "status",
           "credentials",
           "createdAt",
@@ -64,6 +75,16 @@
           "revokeAt": {
             "type": "string"
           },
+          "sessionId": {
+            "type": "string"
+          },
+          "sessionMode": {
+            "enum": [
+              "managed",
+              "none"
+            ],
+            "type": "string"
+          },
           "status": {
             "enum": [
               "active",
@@ -80,6 +101,7 @@
         "required": [
           "credentialId",
           "username",
+          "sessionMode",
           "status",
           "createdAt",
           "renewalDueAt",
@@ -133,6 +155,25 @@
           }
         },
         "required": [],
+        "type": "object"
+      },
+      "GrantIssuanceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "sessionMode": {
+            "enum": [
+              "managed",
+              "none"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionMode"
+        ],
         "type": "object"
       },
       "HttpApiDecodeError": {
@@ -260,6 +301,16 @@
               "revokeAt": {
                 "type": "string"
               },
+              "sessionId": {
+                "type": "string"
+              },
+              "sessionMode": {
+                "enum": [
+                  "managed",
+                  "none"
+                ],
+                "type": "string"
+              },
               "status": {
                 "enum": [
                   "active",
@@ -276,6 +327,7 @@
             "required": [
               "credentialId",
               "username",
+              "sessionMode",
               "status",
               "createdAt",
               "renewalDueAt",
@@ -303,12 +355,64 @@
           },
           "grant": {
             "$ref": "#/components/schemas/AccessGrant"
+          },
+          "session": {
+            "$ref": "#/components/schemas/LogicalSession"
           }
         },
         "required": [
           "grant",
           "credential",
           "endpoints"
+        ],
+        "type": "object"
+      },
+      "LogicalSession": {
+        "additionalProperties": false,
+        "properties": {
+          "closedAt": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "grantId": {
+            "type": "string"
+          },
+          "lastUsedAt": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "sessionMode": {
+            "enum": [
+              "managed"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "closed"
+            ],
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "grantId",
+          "profileId",
+          "sessionMode",
+          "status",
+          "createdAt",
+          "updatedAt"
         ],
         "type": "object"
       },
@@ -391,9 +495,6 @@
           "geography": {
             "$ref": "#/components/schemas/Geography"
           },
-          "isTargetAuthenticated": {
-            "type": "boolean"
-          },
           "profileId": {
             "type": "string"
           },
@@ -428,7 +529,6 @@
           "profileId",
           "customerId",
           "providerOverride",
-          "isTargetAuthenticated",
           "allowConnectionRetry",
           "status",
           "createdAt",
@@ -451,9 +551,6 @@
           "geography": {
             "$ref": "#/components/schemas/Geography"
           },
-          "isTargetAuthenticated": {
-            "type": "boolean"
-          },
           "providerOverride": {
             "anyOf": [
               {
@@ -471,7 +568,6 @@
         },
         "required": [
           "customerId",
-          "isTargetAuthenticated",
           "allowConnectionRetry"
         ],
         "type": "object"
@@ -504,6 +600,22 @@
           "retryable",
           "requestId",
           "_tag"
+        ],
+        "type": "object"
+      },
+      "SessionModeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "sessionMode": {
+            "enum": [
+              "managed",
+              "none"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionMode"
         ],
         "type": "object"
       },
@@ -548,9 +660,9 @@
     }
   },
   "info": {
-    "description": "Manage reusable provider-neutral route profiles, independently revocable access grants, and one-time proxy credentials.",
+    "description": "Manage provider-neutral route profiles, access grants, managed logical sessions, and explicitly stateless credentials.",
     "title": "Profound Proxy Router Control API",
-    "version": "0.6.0"
+    "version": "0.7.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -804,10 +916,9 @@
         ]
       }
     },
-    "/v1/grants/{grantId}/credentials/emergency-rotate": {
+    "/v1/grants/{grantId}/credentials": {
       "post": {
-        "description": "Replace a suspected-compromised credential immediately without overlap; return the replacement secret only in this response",
-        "operationId": "emergencyRotateAccessGrantCredential",
+        "operationId": "createStatelessCredential",
         "parameters": [
           {
             "in": "path",
@@ -818,98 +929,132 @@
             }
           }
         ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IssuedAccessGrant"
-                }
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionModeInput"
               }
-            },
-            "description": "IssuedAccessGrant"
+            }
           },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
-                }
-              }
-            },
-            "description": "The request did not match the expected schema"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
-                }
-              }
-            },
-            "description": "RouteNotFound"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InternalError"
-                }
-              }
-            },
-            "description": "InternalError"
-          }
+          "required": true
         },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "profiles"
-        ]
-      }
-    },
-    "/v1/grants/{grantId}/credentials/rotate": {
-      "post": {
-        "description": "Rotate this grant's bearer credential without creating or changing provider affinity; return the replacement secret only in this response",
-        "operationId": "rotateAccessGrantCredential",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "grantId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssuedAccessGrant"
+                  "additionalProperties": false,
+                  "properties": {
+                    "credential": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "credentialId": {
+                          "type": "string"
+                        },
+                        "expiresAt": {
+                          "type": "string"
+                        },
+                        "lastUsedAt": {
+                          "type": "string"
+                        },
+                        "password": {
+                          "type": "string"
+                        },
+                        "renewalDue": {
+                          "type": "boolean"
+                        },
+                        "renewalDueAt": {
+                          "type": "string"
+                        },
+                        "revokeAt": {
+                          "type": "string"
+                        },
+                        "sessionId": {
+                          "type": "string"
+                        },
+                        "sessionMode": {
+                          "enum": [
+                            "managed",
+                            "none"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "active",
+                            "overlap",
+                            "revoked",
+                            "expired"
+                          ],
+                          "type": "string"
+                        },
+                        "username": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "credentialId",
+                        "username",
+                        "sessionMode",
+                        "status",
+                        "createdAt",
+                        "renewalDueAt",
+                        "renewalDue",
+                        "expiresAt",
+                        "password"
+                      ],
+                      "type": "object"
+                    },
+                    "endpoints": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "http": {
+                          "type": "string"
+                        },
+                        "socks5": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "http",
+                        "socks5"
+                      ],
+                      "type": "object"
+                    },
+                    "grant": {
+                      "$ref": "#/components/schemas/AccessGrant"
+                    },
+                    "session": {
+                      "$ref": "#/components/schemas/LogicalSession"
+                    }
+                  },
+                  "required": [
+                    "grant",
+                    "credential",
+                    "endpoints"
+                  ],
+                  "type": "object"
                 }
               }
             },
-            "description": "IssuedAccessGrant"
+            "description": "Success"
           },
           "400": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/HttpApiDecodeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BadRequest"
+                    }
+                  ]
                 }
               }
             },
@@ -944,6 +1089,16 @@
               }
             },
             "description": "InternalError"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailable"
+                }
+              }
+            },
+            "description": "ServiceUnavailable"
           }
         },
         "security": [
@@ -1069,6 +1224,669 @@
                 }
               }
             },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/v1/grants/{grantId}/credentials/{credentialId}/emergency-rotate": {
+      "post": {
+        "description": "Replace a suspected-compromised credential immediately without overlap; return the replacement secret only in this response",
+        "operationId": "emergencyRotateAccessGrantCredential",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "credentialId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedAccessGrant"
+                }
+              }
+            },
+            "description": "IssuedAccessGrant"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/v1/grants/{grantId}/credentials/{credentialId}/rotate": {
+      "post": {
+        "description": "Rotate one credential without changing its stateless or logical-session scope; return the replacement secret only once",
+        "operationId": "rotateAccessGrantCredential",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "credentialId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedAccessGrant"
+                }
+              }
+            },
+            "description": "IssuedAccessGrant"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/v1/grants/{grantId}/sessions": {
+      "get": {
+        "operationId": "listLogicalSessions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/LogicalSession"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
+        ]
+      },
+      "post": {
+        "operationId": "createLogicalSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "credential": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "credentialId": {
+                          "type": "string"
+                        },
+                        "expiresAt": {
+                          "type": "string"
+                        },
+                        "lastUsedAt": {
+                          "type": "string"
+                        },
+                        "password": {
+                          "type": "string"
+                        },
+                        "renewalDue": {
+                          "type": "boolean"
+                        },
+                        "renewalDueAt": {
+                          "type": "string"
+                        },
+                        "revokeAt": {
+                          "type": "string"
+                        },
+                        "sessionId": {
+                          "type": "string"
+                        },
+                        "sessionMode": {
+                          "enum": [
+                            "managed",
+                            "none"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "active",
+                            "overlap",
+                            "revoked",
+                            "expired"
+                          ],
+                          "type": "string"
+                        },
+                        "username": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "credentialId",
+                        "username",
+                        "sessionMode",
+                        "status",
+                        "createdAt",
+                        "renewalDueAt",
+                        "renewalDue",
+                        "expiresAt",
+                        "password"
+                      ],
+                      "type": "object"
+                    },
+                    "endpoints": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "http": {
+                          "type": "string"
+                        },
+                        "socks5": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "http",
+                        "socks5"
+                      ],
+                      "type": "object"
+                    },
+                    "grant": {
+                      "$ref": "#/components/schemas/AccessGrant"
+                    },
+                    "session": {
+                      "$ref": "#/components/schemas/LogicalSession"
+                    }
+                  },
+                  "required": [
+                    "grant",
+                    "credential",
+                    "endpoints"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/v1/grants/{grantId}/sessions/{sessionId}": {
+      "delete": {
+        "operationId": "closeLogicalSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
+        ]
+      },
+      "get": {
+        "operationId": "getLogicalSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "session": {
+                      "$ref": "#/components/schemas/LogicalSession"
+                    }
+                  },
+                  "required": [
+                    "session"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                }
+              }
+            },
+            "description": "The request did not match the expected schema"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Unauthorized"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteNotFound"
+                }
+              }
+            },
+            "description": "RouteNotFound"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalError"
+                }
+              }
+            },
+            "description": "InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/v1/grants/{grantId}/sessions/{sessionId}/force-close": {
+      "post": {
+        "operationId": "forceCloseLogicalSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
             "description": "Success"
           },
           "400": {
@@ -1628,7 +2446,7 @@
         ]
       },
       "post": {
-        "description": "Issue a proxy credential whose secret is returned only in this response",
+        "description": "Create an explicit managed-session or stateless grant and return its secret once",
         "operationId": "createAccessGrant",
         "parameters": [
           {
@@ -1640,6 +2458,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantIssuanceInput"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "201": {
             "content": {
@@ -1674,6 +2502,16 @@
                         "revokeAt": {
                           "type": "string"
                         },
+                        "sessionId": {
+                          "type": "string"
+                        },
+                        "sessionMode": {
+                          "enum": [
+                            "managed",
+                            "none"
+                          ],
+                          "type": "string"
+                        },
                         "status": {
                           "enum": [
                             "active",
@@ -1690,6 +2528,7 @@
                       "required": [
                         "credentialId",
                         "username",
+                        "sessionMode",
                         "status",
                         "createdAt",
                         "renewalDueAt",
@@ -1717,6 +2556,9 @@
                     },
                     "grant": {
                       "$ref": "#/components/schemas/AccessGrant"
+                    },
+                    "session": {
+                      "$ref": "#/components/schemas/LogicalSession"
                     }
                   },
                   "required": [
@@ -1734,7 +2576,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/HttpApiDecodeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BadRequest"
+                    }
+                  ]
                 }
               }
             },

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { AccessGrantService, type IssuedAccessGrant } from "./access-grant-service.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
@@ -26,7 +26,6 @@ import {
   historicalRoutingEvidence,
   ROUTING_POLICY,
   scoreRoutingCandidate,
-  selectTopBandCandidate,
   type RoutingScoreComponents,
   type ScoredRoutingCandidate,
 } from "./routing-policy.js";
@@ -41,13 +40,17 @@ import type {
   DataPlaneProtocol,
   ListenAddress,
   ProviderDescriptor,
+  ProviderClass,
   ProviderHealth,
   ProviderId,
   ProxyTarget,
   PublicAccessGrant,
   PublicAccessGrantCredential,
+  PublicLogicalSession,
   PublicRoute,
   RetryPolicy,
+  SessionMode,
+  StoredLogicalSession,
   StoredRoute,
   UpstreamEndpoint,
   UsageRecord,
@@ -66,6 +69,43 @@ export interface ResolutionState {
   capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
   establishmentWaitMs: number;
   capacityPolicyVersion?: string;
+  preferredEndpointId?: string;
+  preferredAffinityHandle?: string;
+  sessionAffinityHit?: boolean;
+  sessionRebindCause?: string;
+  desiredProviderClass?: ProviderClass;
+  currentProviderClass?: ProviderClass;
+  degradedFallback?: boolean;
+  failbackOutcome?: "not_attempted" | "success" | "failure";
+  failbackProbe?: boolean;
+  sessionRebindRetries: number;
+}
+
+export function sessionRoutingUsageContext(
+  state: ResolutionState,
+): Pick<
+  UsageRecord,
+  "sessionAffinityHit" | "sessionRebindCause" | "desiredProviderClass" | "currentProviderClass" | "degradedFallback" | "failbackOutcome"
+> {
+  return {
+    ...(state.sessionAffinityHit === undefined ? {} : { sessionAffinityHit: state.sessionAffinityHit }),
+    ...(state.sessionRebindCause === undefined ? {} : { sessionRebindCause: state.sessionRebindCause }),
+    ...(state.desiredProviderClass === undefined ? {} : { desiredProviderClass: state.desiredProviderClass }),
+    ...(state.currentProviderClass === undefined ? {} : { currentProviderClass: state.currentProviderClass }),
+    ...(state.degradedFallback === undefined ? {} : { degradedFallback: state.degradedFallback }),
+    ...(state.failbackOutcome === undefined ? {} : { failbackOutcome: state.failbackOutcome }),
+  };
+}
+
+export function sessionRoutingTelemetryAttributes(state: ResolutionState): Record<string, string | boolean> {
+  return {
+    ...(state.sessionAffinityHit === undefined ? {} : { "proxy.session.affinity_hit": state.sessionAffinityHit }),
+    ...(state.sessionRebindCause === undefined ? {} : { "proxy.session.rebind_cause": state.sessionRebindCause }),
+    ...(state.desiredProviderClass === undefined ? {} : { "proxy.session.desired_provider_class": state.desiredProviderClass }),
+    ...(state.currentProviderClass === undefined ? {} : { "proxy.session.current_provider_class": state.currentProviderClass }),
+    ...(state.degradedFallback === undefined ? {} : { "proxy.session.degraded_fallback": state.degradedFallback }),
+    ...(state.failbackOutcome === undefined ? {} : { "proxy.session.failback_outcome": state.failbackOutcome }),
+  };
 }
 
 export interface RouteServiceDependencies {
@@ -80,7 +120,6 @@ export interface RouteServiceDependencies {
   retryDefaults: RetryPolicy;
   deploymentId: string;
   now?: () => number;
-  random?: () => number;
 }
 
 export interface RouteServiceEffects {
@@ -90,7 +129,7 @@ export interface RouteServiceEffects {
   list(userId: string): Effect.Effect<PublicRoute[], RouteServiceError>;
   get(id: string, userId: string): Effect.Effect<PublicRoute, RouteServiceError>;
   delete(id: string, userId: string): Effect.Effect<void, RouteServiceError>;
-  createAccessGrant(routeId: string, principalId: string): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
+  createAccessGrant(routeId: string, principalId: string, input: unknown): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
   listAccessGrants(routeId: string, principalId: string): Effect.Effect<PublicAccessGrant[], RouteServiceError>;
   getAccessGrant(id: string, principalId: string): Effect.Effect<PublicAccessGrant, RouteServiceError>;
   getAccessGrantCredential(
@@ -100,11 +139,17 @@ export interface RouteServiceEffects {
   ): Effect.Effect<PublicAccessGrantCredential, RouteServiceError>;
   rotateAccessGrantCredential(
     id: string,
+    previousCredentialId: string,
     principalId: string,
     suspectedCompromise?: boolean,
   ): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
   revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Effect.Effect<void, RouteServiceError>;
   revokeAccessGrant(id: string, principalId: string): Effect.Effect<void, RouteServiceError>;
+  createManagedSession(grantId: string, principalId: string): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
+  createStatelessCredential(grantId: string, principalId: string, input: unknown): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
+  listLogicalSessions(grantId: string, principalId: string): Effect.Effect<PublicLogicalSession[], RouteServiceError>;
+  getLogicalSession(grantId: string, sessionId: string, principalId: string): Effect.Effect<PublicLogicalSession, RouteServiceError>;
+  closeLogicalSession(grantId: string, sessionId: string, principalId: string, force?: boolean): Effect.Effect<void, RouteServiceError>;
 }
 
 const MAX_PROVIDERS_PER_OPERATION = 3;
@@ -121,11 +166,42 @@ function canonicalCity(value: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+function profileBindingFingerprint(route: StoredRoute): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        provider: route.provider,
+        providerOverride: route.providerOverride ?? null,
+        allowedProtocols: [...route.allowedProtocols].sort(),
+        targeting: {
+          country: route.targeting.country ?? null,
+          region: route.targeting.region ?? null,
+          city: route.targeting.city ?? null,
+          postalCode: route.targeting.postalCode ?? null,
+          asn: route.targeting.asn ?? null,
+          carrier: route.targeting.carrier ?? null,
+        },
+      }),
+    )
+    .digest("hex");
+}
+
+function rebindAffinitySeed(session: StoredLogicalSession, profileFingerprint: string): string {
+  return `${session.id}:binding-${session.bindingVersion + 1}:${profileFingerprint}`;
+}
+
+function clearPreferredClassHealthWindow(session: StoredLogicalSession): StoredLogicalSession {
+  const cleared = { ...session };
+  delete cleared.preferredClassHealthySince;
+  return cleared;
+}
+
 export class RouteService {
   readonly effects: RouteServiceEffects;
   readonly #providers: ReadonlyMap<ProviderId, ProviderAdapter>;
   readonly #activeByRoute = new Map<string, Set<() => void>>();
   readonly #activeByGrant = new Map<string, Set<() => void>>();
+  readonly #activeBySession = new Map<string, Set<() => void>>();
   readonly #rotationDisabledSlots = new Set<string>();
 
   private readonly store: RoutingStore;
@@ -135,7 +211,6 @@ export class RouteService {
   private readonly retryDefaults: RetryPolicy;
   private readonly deploymentId: string;
   private readonly now: () => number;
-  private readonly random: () => number;
   private readonly accessGrants: AccessGrantService;
   private readonly rotations: RotationCoordinator;
 
@@ -147,7 +222,6 @@ export class RouteService {
     this.retryDefaults = dependencies.retryDefaults;
     this.deploymentId = dependencies.deploymentId;
     this.now = dependencies.now ?? Date.now;
-    this.random = dependencies.random ?? Math.random;
     this.#providers = new Map<ProviderId, ProviderAdapter>([
       [dependencies.brightData.descriptor.id, dependencies.brightData],
       [dependencies.proxidize.descriptor.id, dependencies.proxidize],
@@ -159,6 +233,8 @@ export class RouteService {
         advertisedProxyHost: dependencies.advertisedProxyHost,
         advertisedHttpProxyProtocol: dependencies.advertisedHttpProxyProtocol,
         terminateActiveGrant: (grantId) => this.#terminate(this.#activeByGrant.get(grantId)),
+        terminateActiveSession: (sessionId) => this.#terminate(this.#activeBySession.get(sessionId)),
+        now: this.now,
       },
       this.logger,
     );
@@ -188,16 +264,23 @@ export class RouteService {
       list: (userId) => attempt(() => this.list(userId)),
       get: (id, userId) => attempt(() => this.get(id, userId)),
       delete: (id, userId) => attempt(() => this.delete(id, userId)),
-      createAccessGrant: (routeId, principalId) => attempt(() => this.createAccessGrant(routeId, principalId)),
+      createAccessGrant: (routeId, principalId, input) => attempt(() => this.createAccessGrant(routeId, principalId, input)),
       listAccessGrants: (routeId, principalId) => attempt(() => this.listAccessGrants(routeId, principalId)),
       getAccessGrant: (id, principalId) => attempt(() => this.getAccessGrant(id, principalId)),
       getAccessGrantCredential: (grantId, credentialId, principalId) =>
         attempt(() => this.getAccessGrantCredential(grantId, credentialId, principalId)),
-      rotateAccessGrantCredential: (id, principalId, suspectedCompromise) =>
-        attempt(() => this.rotateAccessGrantCredential(id, principalId, suspectedCompromise)),
+      rotateAccessGrantCredential: (id, previousCredentialId, principalId, suspectedCompromise) =>
+        attempt(() => this.rotateAccessGrantCredential(id, previousCredentialId, principalId, suspectedCompromise)),
       revokeAccessGrantCredential: (grantId, credentialId, principalId) =>
         attempt(() => this.revokeAccessGrantCredential(grantId, credentialId, principalId)),
       revokeAccessGrant: (id, principalId) => attempt(() => this.revokeAccessGrant(id, principalId)),
+      createManagedSession: (grantId, principalId) => attempt(() => this.createManagedSession(grantId, principalId)),
+      createStatelessCredential: (grantId, principalId, input) =>
+        attempt(() => this.createStatelessCredential(grantId, principalId, input)),
+      listLogicalSessions: (grantId, principalId) => attempt(() => this.listLogicalSessions(grantId, principalId)),
+      getLogicalSession: (grantId, sessionId, principalId) => attempt(() => this.getLogicalSession(grantId, sessionId, principalId)),
+      closeLogicalSession: (grantId, sessionId, principalId, force) =>
+        attempt(() => this.closeLogicalSession(grantId, sessionId, principalId, force)),
     };
   }
 
@@ -273,8 +356,8 @@ export class RouteService {
     activeConnections: readonly ActiveTunnel[],
     signal: AbortSignal,
   ): Promise<ProviderAdapter[]> {
-    const preferredClass = preferredProviderClass(route);
-    const scored: Array<ScoredRoutingCandidate<ProviderAdapter>> = [];
+    const preferredClass = preferredProviderClass(route.sessionMode);
+    const scored: Array<ScoredRoutingCandidate<ProviderAdapter> & { activeConnections: number }> = [];
     for (const provider of providers) {
       const providerRecords = recentRecords.filter((record) => record.provider === provider.descriptor.id);
       const providerPressureRecords = recentRecords.filter(
@@ -292,12 +375,13 @@ export class RouteService {
           else state.capacityConstraint = "capacity_circuit";
         }
         if (endpoints.length === 0) continue;
-        const candidates = endpoints.map((endpoint): ScoredRoutingCandidate<string> => {
+        const candidates = endpoints.map((endpoint): ScoredRoutingCandidate<string> & { activeConnections: number } => {
           const load = activeConnections.filter(
             (connection) => connection.provider === "proxidize" && connection.endpointId === endpoint.id,
           ).length;
           return {
             candidate: endpoint.id,
+            activeConnections: load,
             ...this.#scoreCandidate(
               provider,
               providerRecords.filter((record) => record.proxySlotId === endpoint.id),
@@ -308,9 +392,17 @@ export class RouteService {
           };
         });
         const unsaturated = candidates.filter((candidate) => !candidate.saturated);
-        const best = [...(unsaturated.length > 0 ? unsaturated : candidates)].sort((left, right) => right.score - left.score)[0];
+        const best = [...(unsaturated.length > 0 ? unsaturated : candidates)].sort(
+          (left, right) => left.activeConnections - right.activeConnections || left.candidate.localeCompare(right.candidate),
+        )[0];
         if (best !== undefined)
-          scored.push({ candidate: provider, score: best.score, components: best.components, saturated: unsaturated.length === 0 });
+          scored.push({
+            candidate: provider,
+            score: best.score,
+            components: best.components,
+            saturated: unsaturated.length === 0,
+            activeConnections: best.activeConnections,
+          });
       } else {
         if (!(await this.#capacityCircuitEligible(provider.descriptor.id, provider.descriptor.id))) {
           state.capacityConstraint = "capacity_circuit";
@@ -319,6 +411,7 @@ export class RouteService {
         const load = activeConnections.filter((connection) => connection.provider === provider.descriptor.id).length;
         scored.push({
           candidate: provider,
+          activeConnections: load,
           ...this.#scoreCandidate(provider, providerRecords, load, false, providerPressureRecords),
         });
       }
@@ -327,7 +420,7 @@ export class RouteService {
     if (previous !== undefined) {
       const attempts = state.attemptsByProvider.get(previous.candidate.descriptor.id) ?? 0;
       const limit =
-        route.isAuthenticated && previous.candidate.descriptor.capabilities.exactCity === "verifiable"
+        route.targeting.city !== undefined && previous.candidate.descriptor.capabilities.exactCity === "verifiable"
           ? MAX_VERIFICATION_CANDIDATES_PER_PROVIDER
           : MAX_PEERS_PER_PROVIDER;
       if (attempts < limit) {
@@ -335,18 +428,29 @@ export class RouteService {
           previous.candidate,
           ...scored
             .filter((candidate) => candidate !== previous)
-            .sort((a, b) => b.score - a.score)
+            .sort(
+              (left, right) =>
+                left.activeConnections - right.activeConnections ||
+                left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+            )
             .map(({ candidate }) => candidate),
         ];
       }
     }
     const preferredTier = scored.filter(({ candidate }) => candidate.descriptor.providerClass === preferredClass);
     const fallbackTier = scored.filter(({ candidate }) => candidate.descriptor.providerClass !== preferredClass);
-    if (!route.isAuthenticated && preferredTier.length > 0 && preferredTier.every(({ saturated }) => saturated)) {
+    if (route.sessionMode === "none" && preferredTier.length > 0 && preferredTier.every(({ saturated }) => saturated)) {
       const eligibleFallback = fallbackTier.filter(({ saturated }) => !saturated);
       if (eligibleFallback.length > 0) {
-        const selected = selectTopBandCandidate(eligibleFallback, ROUTING_POLICY, this.random);
-        const pressureSource = [...preferredTier].sort((left, right) => right.score - left.score)[0];
+        const orderedFallback = [...eligibleFallback].sort(
+          (left, right) =>
+            left.activeConnections - right.activeConnections || left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+        );
+        const selected = orderedFallback[0];
+        const pressureSource = [...preferredTier].sort(
+          (left, right) =>
+            left.activeConnections - right.activeConnections || left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+        )[0];
         if (pressureSource === undefined) throw new Error("Residential pressure source is unavailable");
         state.capacityDrivenFallback = true;
         state.capacityPressureProvider = pressureSource.candidate.descriptor.id;
@@ -356,14 +460,21 @@ export class RouteService {
         });
         return [
           ...(selected === undefined ? [] : [selected.candidate]),
-          ...eligibleFallback
-            .filter((candidate) => candidate !== selected)
-            .sort((left, right) => right.score - left.score)
+          ...orderedFallback.filter((candidate) => candidate !== selected).map(({ candidate }) => candidate),
+          ...preferredTier
+            .sort(
+              (left, right) =>
+                left.activeConnections - right.activeConnections ||
+                left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+            )
             .map(({ candidate }) => candidate),
-          ...preferredTier.sort((left, right) => right.score - left.score).map(({ candidate }) => candidate),
           ...fallbackTier
             .filter(({ saturated }) => saturated)
-            .sort((left, right) => right.score - left.score)
+            .sort(
+              (left, right) =>
+                left.activeConnections - right.activeConnections ||
+                left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+            )
             .map(({ candidate }) => candidate),
         ];
       }
@@ -371,27 +482,48 @@ export class RouteService {
     const primaryTier = preferredTier.length > 0 ? preferredTier : scored;
     const unsaturatedPrimary = primaryTier.filter(({ saturated }) => !saturated);
     const selectionTier = unsaturatedPrimary.length > 0 ? unsaturatedPrimary : primaryTier;
-    const selected = selectTopBandCandidate(selectionTier, ROUTING_POLICY, this.random);
+    const selected = [...selectionTier].sort(
+      (left, right) =>
+        left.activeConnections - right.activeConnections || left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+    )[0];
     return [
       ...(selected === undefined ? [] : [selected.candidate]),
       ...primaryTier
         .filter((candidate) => candidate !== selected)
-        .sort((left, right) => Number(left.saturated) - Number(right.saturated) || right.score - left.score)
+        .sort(
+          (left, right) =>
+            Number(left.saturated) - Number(right.saturated) ||
+            left.activeConnections - right.activeConnections ||
+            left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+        )
         .map(({ candidate }) => candidate),
       ...scored
         .filter((candidate) => !primaryTier.includes(candidate))
-        .sort((left, right) => Number(left.saturated) - Number(right.saturated) || right.score - left.score)
+        .sort(
+          (left, right) =>
+            Number(left.saturated) - Number(right.saturated) ||
+            left.activeConnections - right.activeConnections ||
+            left.candidate.descriptor.id.localeCompare(right.candidate.descriptor.id),
+        )
         .map(({ candidate }) => candidate),
     ];
   }
 
-  #routeForGrant(route: StoredRoute, grant: { id: string; principalId: string }): AuthenticatedRoute {
+  #routeForCredential(
+    route: StoredRoute,
+    grant: { id: string; principalId: string; jobId?: string },
+    credential: { id: string; sessionMode: SessionMode; sessionId?: string },
+  ): AuthenticatedRoute {
     const { endpointId: _routeEndpointId, ...profile } = route;
     void _routeEndpointId;
     return {
       ...profile,
       userId: grant.principalId,
       accessGrantId: grant.id,
+      credentialId: credential.id,
+      ...(grant.jobId === undefined ? {} : { jobId: grant.jobId }),
+      sessionMode: credential.sessionMode,
+      ...(credential.sessionId === undefined ? {} : { sessionId: credential.sessionId }),
     };
   }
 
@@ -471,9 +603,14 @@ export class RouteService {
             ),
           };
         });
+        const preferred = candidates.find((candidate) => candidate.candidate.id === state.preferredEndpointId);
         const unsaturated = candidates.filter((candidate) => !candidate.saturated);
-        selected = selectTopBandCandidate(unsaturated.length > 0 ? unsaturated : candidates, ROUTING_POLICY, this.random);
-        if (selected === undefined) throw new ProviderUnavailableError("No scored mobile proxy slot is available");
+        selected =
+          preferred ??
+          [...(unsaturated.length > 0 ? unsaturated : candidates)].sort(
+            (left, right) => left.activeConnections - right.activeConnections || left.candidate.id.localeCompare(right.candidate.id),
+          )[0];
+        if (selected === undefined) throw new ProviderUnavailableError("No compatible mobile proxy slot is available");
         return selected.candidate.id;
       },
       (endpointId) => ({
@@ -481,6 +618,7 @@ export class RouteService {
         deploymentId: this.deploymentId,
         routeId: route.id,
         accessGrantId: route.accessGrantId,
+        ...(route.sessionId === undefined ? {} : { sessionId: route.sessionId }),
         protocol,
         provider: "proxidize",
         endpointId,
@@ -543,7 +681,6 @@ export class RouteService {
       customerId: profile.customerId,
       provider,
       ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
-      isTargetAuthenticated: profile.isTargetAuthenticated,
     });
     return toPublicRoute(stored);
   }
@@ -568,8 +705,8 @@ export class RouteService {
     return toPublicRoute(updated);
   }
 
-  async createAccessGrant(routeId: string, principalId: string): Promise<IssuedAccessGrant> {
-    return this.accessGrants.create(routeId, principalId);
+  async createAccessGrant(routeId: string, principalId: string, input: unknown): Promise<IssuedAccessGrant> {
+    return this.accessGrants.create(routeId, principalId, input);
   }
 
   async listAccessGrants(routeId: string, principalId: string): Promise<PublicAccessGrant[]> {
@@ -584,8 +721,33 @@ export class RouteService {
     return this.accessGrants.getCredential(grantId, credentialId, principalId);
   }
 
-  async rotateAccessGrantCredential(id: string, principalId: string, suspectedCompromise = false): Promise<IssuedAccessGrant> {
-    return this.accessGrants.rotateCredential(id, principalId, suspectedCompromise);
+  async rotateAccessGrantCredential(
+    id: string,
+    previousCredentialId: string,
+    principalId: string,
+    suspectedCompromise = false,
+  ): Promise<IssuedAccessGrant> {
+    return this.accessGrants.rotateCredential(id, previousCredentialId, principalId, suspectedCompromise);
+  }
+
+  async createManagedSession(grantId: string, principalId: string): Promise<IssuedAccessGrant> {
+    return this.accessGrants.createManagedSession(grantId, principalId);
+  }
+
+  async createStatelessCredential(grantId: string, principalId: string, input: unknown): Promise<IssuedAccessGrant> {
+    return this.accessGrants.createStatelessCredential(grantId, principalId, input);
+  }
+
+  async listLogicalSessions(grantId: string, principalId: string): Promise<PublicLogicalSession[]> {
+    return this.accessGrants.listLogicalSessions(grantId, principalId);
+  }
+
+  async getLogicalSession(grantId: string, sessionId: string, principalId: string): Promise<PublicLogicalSession> {
+    return this.accessGrants.getLogicalSession(grantId, sessionId, principalId);
+  }
+
+  async closeLogicalSession(grantId: string, sessionId: string, principalId: string, force = false): Promise<void> {
+    await this.accessGrants.closeLogicalSession(grantId, sessionId, principalId, force);
   }
 
   async revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Promise<void> {
@@ -620,6 +782,7 @@ export class RouteService {
   }
 
   async emergencyRevoke(id: string): Promise<void> {
+    for (const grant of await this.store.listAccessGrants(id)) await this.store.revokeAccessGrant(grant.id, true);
     await this.store.revoke(id, true);
     this.#terminate(this.#activeByRoute.get(id));
     this.logger.warn("Route emergency-revoked; active connections terminated", { routeId: id });
@@ -632,6 +795,7 @@ export class RouteService {
   async trackActiveConnection(
     routeId: string,
     accessGrantId: string,
+    sessionId: string | undefined,
     protocol: DataPlaneProtocol,
     upstream: UpstreamEndpoint,
     terminate: () => void,
@@ -643,6 +807,7 @@ export class RouteService {
       deploymentId: this.deploymentId,
       routeId,
       accessGrantId,
+      ...(sessionId === undefined ? {} : { sessionId }),
       protocol,
       provider: upstream.provider,
       endpointId: upstream.endpointId,
@@ -662,13 +827,16 @@ export class RouteService {
     const grantCallbacks = this.#activeByGrant.get(accessGrantId) ?? new Set<() => void>();
     grantCallbacks.add(terminate);
     this.#activeByGrant.set(accessGrantId, grantCallbacks);
+    const sessionCallbacks = sessionId === undefined ? undefined : (this.#activeBySession.get(sessionId) ?? new Set<() => void>());
+    sessionCallbacks?.add(terminate);
+    if (sessionId !== undefined && sessionCallbacks !== undefined) this.#activeBySession.set(sessionId, sessionCallbacks);
     let finished = false;
     let nextTunnelHeartbeatAt = 0;
     let nextDeploymentCheckAt = 0;
     const heartbeatIntervalMs = 30_000;
     const check = async (): Promise<void> => {
       if (finished) return;
-      if (await this.store.shouldTerminateActive(routeId, accessGrantId)) {
+      if (await this.store.shouldTerminateActive(routeId, accessGrantId, sessionId)) {
         terminate();
         return;
       }
@@ -700,7 +868,20 @@ export class RouteService {
       if (routeCallbacks.size === 0) this.#activeByRoute.delete(routeId);
       grantCallbacks.delete(terminate);
       if (grantCallbacks.size === 0) this.#activeByGrant.delete(accessGrantId);
+      sessionCallbacks?.delete(terminate);
+      if (sessionId !== undefined && sessionCallbacks?.size === 0) this.#activeBySession.delete(sessionId);
       void this.store.removeActiveTunnel(activeConnectionId).catch(() => undefined);
+      if (sessionId !== undefined) {
+        void (async () => {
+          const session = await this.store.getLogicalSession(sessionId).catch(() => undefined);
+          if (session === undefined) return;
+          const disconnectedAt = new Date(this.now()).toISOString();
+          await this.store.saveLogicalSession(
+            { ...session, lastDisconnectedAt: disconnectedAt, updatedAt: disconnectedAt },
+            session.bindingVersion,
+          );
+        })().catch(() => undefined);
+      }
     };
   }
 
@@ -730,13 +911,26 @@ export class RouteService {
     if (!/^pxy_[a-zA-Z0-9_-]{1,128}$/.test(id) || token.length === 0 || token.length > 512) {
       throw new AuthenticationError();
     }
-    const grant = await this.store.authenticateAccessGrant(id, token);
-    if (grant === undefined) throw new AuthenticationError();
-    return this.#routeForGrant(await this.store.get(grant.routeId), grant);
+    const authenticated = await this.store.authenticateAccessGrant(id, token);
+    if (authenticated === undefined) throw new AuthenticationError();
+    if (authenticated.credential.sessionMode === "managed") {
+      const sessionId = authenticated.credential.sessionId;
+      if (sessionId === undefined) throw new AuthenticationError();
+      const session = await this.store.getLogicalSession(sessionId).catch(() => undefined);
+      if (
+        session === undefined ||
+        session.grantId !== authenticated.grant.id ||
+        session.routeId !== authenticated.grant.routeId ||
+        session.status !== "open"
+      ) {
+        throw new AuthenticationError();
+      }
+    }
+    return this.#routeForCredential(await this.store.get(authenticated.grant.routeId), authenticated.grant, authenticated.credential);
   }
 
   createResolutionState(): ResolutionState {
-    return { attemptsByProvider: new Map(), excludedEndpointIds: new Set(), establishmentWaitMs: 0 };
+    return { attemptsByProvider: new Map(), excludedEndpointIds: new Set(), establishmentWaitMs: 0, sessionRebindRetries: 0 };
   }
 
   assertProtocolAllowed(route: StoredRoute, protocol: DataPlaneProtocol): void {
@@ -745,11 +939,15 @@ export class RouteService {
     }
   }
 
-  async assertNewConnectionAllowed(routeId: string, accessGrantId: string): Promise<void> {
+  async assertNewConnectionAllowed(routeId: string, accessGrantId: string, sessionId?: string): Promise<void> {
     const current = await this.store.get(routeId);
     if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
     const grant = await this.store.getAccessGrant(accessGrantId);
     if (grant.routeId !== routeId || grant.status !== "ready") throw new AuthenticationError();
+    if (sessionId !== undefined) {
+      const session = await this.store.getLogicalSession(sessionId);
+      if (session.routeId !== routeId || session.grantId !== accessGrantId || session.status !== "open") throw new AuthenticationError();
+    }
   }
 
   async resolve(
@@ -760,22 +958,109 @@ export class RouteService {
     context: ResolutionContext,
   ): Promise<UpstreamEndpoint> {
     const grant = await this.store.getAccessGrant(route.accessGrantId);
-    let current = this.#routeForGrant(await this.store.get(route.id), grant);
+    const credential = grant.credentials.find((candidate) => candidate.id === route.credentialId);
+    if (credential === undefined) throw new AuthenticationError();
+    let current = this.#routeForCredential(await this.store.get(route.id), grant, credential);
     if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
-    current = this.#routeForGrant(
+    current = this.#routeForCredential(
       await this.rotations.applyScheduled(current, context),
       await this.store.getAccessGrant(route.accessGrantId),
+      credential,
     );
     this.assertProtocolAllowed(current, protocol);
     const recentTo = new Date(this.now()).toISOString();
     const recentFrom = new Date(this.now() - ROUTING_POLICY.evidenceWindowMs).toISOString();
     const recentRecords = await this.store.listUsageRecords(recentFrom, recentTo);
     const activeConnections = await this.store.listAllActiveTunnels(recentTo);
+    let logicalSession: StoredLogicalSession | undefined;
+    if (current.sessionMode === "managed") {
+      if (current.sessionId === undefined) throw new AuthenticationError();
+      logicalSession = await this.store.getLogicalSession(current.sessionId);
+      if (logicalSession.grantId !== current.accessGrantId || logicalSession.routeId !== current.id || logicalSession.status !== "open") {
+        throw new AuthenticationError();
+      }
+      const desiredClass = preferredProviderClass(current.sessionMode);
+      const profileFingerprint = profileBindingFingerprint(current);
+      state.desiredProviderClass = desiredClass;
+      state.sessionAffinityHit = false;
+      if (logicalSession.affinity !== undefined) state.currentProviderClass = logicalSession.affinity.currentProviderClass;
+      state.degradedFallback = logicalSession.affinity?.degradedFallback ?? false;
+      state.preferredAffinityHandle = logicalSession.affinity?.affinityHandle ?? logicalSession.id;
+      const existingProvider = logicalSession.affinity === undefined ? undefined : this.#providers.get(logicalSession.affinity.provider);
+      const bindingCompatible =
+        existingProvider !== undefined &&
+        providerCompatible(existingProvider, current, protocol, target, "managed") &&
+        (current.providerOverride === undefined || existingProvider.descriptor.id === current.providerOverride) &&
+        logicalSession.affinity?.profileFingerprint === profileFingerprint &&
+        !state.excludedEndpointIds.has(logicalSession.affinity.candidateId);
+      let preferBinding = bindingCompatible;
+      if (
+        preferBinding &&
+        logicalSession.affinity !== undefined &&
+        logicalSession.affinity.currentProviderClass !== desiredClass &&
+        current.providerOverride === undefined
+      ) {
+        const preferredProviders = [...this.#providers.values()].filter(
+          (provider) =>
+            provider.descriptor.providerClass === desiredClass && providerCompatible(provider, current, protocol, target, "managed"),
+        );
+        const preferredHealthy = (
+          await Promise.all(preferredProviders.map((provider) => provider.health(context.signal).catch(() => undefined)))
+        ).some((health) => health?.state === "healthy");
+        const nowIso = new Date(this.now()).toISOString();
+        if (!preferredHealthy) {
+          if (logicalSession.preferredClassHealthySince !== undefined) {
+            const updated = {
+              ...clearPreferredClassHealthWindow(logicalSession),
+              bindingVersion: logicalSession.bindingVersion + 1,
+              updatedAt: nowIso,
+            };
+            if (await this.store.saveLogicalSession(updated, logicalSession.bindingVersion)) logicalSession = updated;
+          }
+        } else if (logicalSession.preferredClassHealthySince === undefined) {
+          const updated = {
+            ...logicalSession,
+            preferredClassHealthySince: nowIso,
+            bindingVersion: logicalSession.bindingVersion + 1,
+            updatedAt: nowIso,
+          };
+          if (await this.store.saveLogicalSession(updated, logicalSession.bindingVersion)) logicalSession = updated;
+        } else {
+          const activeForSession = activeConnections.filter((connection) => connection.sessionId === logicalSession?.id).length;
+          const stableFor = this.now() - Date.parse(logicalSession.preferredClassHealthySince);
+          const quiescentFor =
+            logicalSession.lastDisconnectedAt === undefined
+              ? Number.POSITIVE_INFINITY
+              : this.now() - Date.parse(logicalSession.lastDisconnectedAt);
+          if (
+            stableFor >= ROUTING_POLICY.preferredClassStabilizationMs &&
+            activeForSession === 0 &&
+            quiescentFor >= ROUTING_POLICY.sessionQuiescenceMs
+          ) {
+            preferBinding = false;
+            state.failbackProbe = true;
+            state.failbackOutcome = "not_attempted";
+          }
+        }
+      }
+      if (preferBinding && logicalSession.affinity !== undefined) {
+        state.previousProvider = logicalSession.affinity.provider;
+        state.previousCandidateId = logicalSession.affinity.candidateId;
+        if (logicalSession.affinity.provider === "proxidize") state.preferredEndpointId = logicalSession.affinity.candidateId;
+        else delete state.preferredEndpointId;
+      } else if (logicalSession.affinity !== undefined && !bindingCompatible) {
+        state.previousProvider = logicalSession.affinity.provider;
+        state.previousCandidateId = logicalSession.affinity.candidateId;
+        delete state.preferredEndpointId;
+        state.preferredAffinityHandle = rebindAffinitySeed(logicalSession, profileFingerprint);
+        state.sessionRebindCause = "binding_ineligible";
+      }
+    }
     const compatibleProviders = (
       await this.#rankProviders(
         [...this.#providers.values()].filter(
           (provider) =>
-            providerCompatible(provider, current, protocol, target) &&
+            providerCompatible(provider, current, protocol, target, current.sessionMode) &&
             (current.providerOverride === undefined || provider.descriptor.id === current.providerOverride),
         ),
         current,
@@ -792,7 +1077,7 @@ export class RouteService {
     for (const provider of compatibleProviders) {
       const attempts = state.attemptsByProvider.get(provider.descriptor.id) ?? 0;
       const attemptLimit =
-        current.isAuthenticated && provider.descriptor.capabilities.exactCity === "verifiable"
+        current.targeting.city !== undefined && provider.descriptor.capabilities.exactCity === "verifiable"
           ? MAX_VERIFICATION_CANDIDATES_PER_PROVIDER
           : MAX_PEERS_PER_PROVIDER;
       if (attempts >= attemptLimit) continue;
@@ -842,6 +1127,8 @@ export class RouteService {
           dataPlaneProtocol: protocol,
           target,
           logicalOperationId: context.logicalOperationId,
+          sessionMode: current.sessionMode,
+          ...(state.preferredAffinityHandle === undefined ? {} : { affinityHandle: state.preferredAffinityHandle }),
           candidateIndex: attempts,
           signal: context.signal,
           excludedEndpointIds: state.excludedEndpointIds,
@@ -873,7 +1160,7 @@ export class RouteService {
       } else if (endpoint.capacityPressure === true) {
         endpoint.capacityPressureProvider = endpoint.provider;
       }
-      if (current.isAuthenticated && provider.descriptor.capabilities.exactCity === "verifiable") {
+      if (current.targeting.city !== undefined && provider.descriptor.capabilities.exactCity === "verifiable") {
         const expected = endpoint.assignment.expectedCity;
         const observed = endpoint.assignment.observedCity;
         if (
@@ -921,6 +1208,7 @@ export class RouteService {
           deploymentId: this.deploymentId,
           routeId: current.id,
           accessGrantId: current.accessGrantId,
+          ...(current.sessionId === undefined ? {} : { sessionId: current.sessionId }),
           protocol,
           provider: endpoint.provider,
           endpointId: endpoint.endpointId,
@@ -940,6 +1228,67 @@ export class RouteService {
       }
       endpoint.assignment.changeReason =
         state.previousProvider === undefined ? "selection" : state.previousProvider === endpoint.provider ? "retry" : "failover";
+      if (logicalSession !== undefined) {
+        const providerClass = provider.descriptor.providerClass;
+        const desiredClass = preferredProviderClass(current.sessionMode);
+        const profileFingerprint = profileBindingFingerprint(current);
+        const affinityHandle = endpoint.assignment.providerSessionId ?? endpoint.endpointId;
+        const previousAffinity = logicalSession.affinity;
+        const sameBinding =
+          previousAffinity?.provider === endpoint.provider &&
+          previousAffinity.candidateId === endpoint.assignment.candidateId &&
+          previousAffinity.affinityHandle === affinityHandle &&
+          previousAffinity.profileFingerprint === profileFingerprint;
+        if (sameBinding) {
+          state.sessionAffinityHit = true;
+          const nowIso = new Date(this.now()).toISOString();
+          const resetFailbackWindow = state.failbackProbe === true && providerClass !== desiredClass;
+          const updated: StoredLogicalSession = {
+            ...(resetFailbackWindow ? clearPreferredClassHealthWindow(logicalSession) : logicalSession),
+            bindingVersion: logicalSession.bindingVersion + 1,
+            affinity: { ...previousAffinity, lastUsedAt: nowIso },
+            updatedAt: nowIso,
+          };
+          if (await this.store.saveLogicalSession(updated, logicalSession.bindingVersion)) logicalSession = updated;
+        } else {
+          const nowIso = new Date(this.now()).toISOString();
+          const updated: StoredLogicalSession = {
+            ...(providerClass === desiredClass ? clearPreferredClassHealthWindow(logicalSession) : logicalSession),
+            bindingVersion: logicalSession.bindingVersion + 1,
+            affinity: {
+              provider: endpoint.provider,
+              providerClass,
+              candidateId: endpoint.assignment.candidateId,
+              affinityHandle,
+              profileFingerprint,
+              desiredProviderClass: desiredClass,
+              currentProviderClass: providerClass,
+              degradedFallback: providerClass !== desiredClass,
+              boundAt: nowIso,
+              lastUsedAt: nowIso,
+            },
+            updatedAt: nowIso,
+          };
+          if (!(await this.store.saveLogicalSession(updated, logicalSession.bindingVersion))) {
+            await this.releaseCandidate(endpoint).catch(() => undefined);
+            if (state.sessionRebindRetries >= 2) {
+              throw new ProviderUnavailableError("Concurrent logical-session rebinding did not converge");
+            }
+            state.sessionRebindRetries += 1;
+            state.sessionRebindCause = "concurrent_rebind";
+            delete state.previousProvider;
+            delete state.previousCandidateId;
+            delete state.preferredEndpointId;
+            return this.resolve(route, protocol, target, state, context);
+          }
+          logicalSession = updated;
+          state.sessionRebindCause ??= previousAffinity === undefined ? "initial_binding" : "candidate_ineligible";
+        }
+        state.desiredProviderClass = desiredClass;
+        state.currentProviderClass = providerClass;
+        state.degradedFallback = providerClass !== desiredClass;
+        if (state.failbackProbe === true) state.failbackOutcome = providerClass === desiredClass ? "success" : "failure";
+      }
       state.previousCandidateId = endpoint.assignment.candidateId;
       state.previousProvider = endpoint.provider;
       return endpoint;

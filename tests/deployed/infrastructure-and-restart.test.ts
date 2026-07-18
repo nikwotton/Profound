@@ -436,13 +436,15 @@ deployedTest("deployed access-grant credentials and route requirements survive a
   const environment = await deployedEnvironment();
   assert.ok(environment.metadata.integrationTarget);
   const proxyService = environment.metadata.services.proxy;
-  const route = await createRoute({
-    name: `restart-persistence-${Date.now()}`,
-    targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
-    rotation: { mode: "manual" },
-    isAuthenticated: true,
-    shouldRetry: false,
-  });
+  const route = await createRoute(
+    {
+      name: `restart-persistence-${Date.now()}`,
+      targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
+      rotation: { mode: "manual" },
+      shouldRetry: false,
+    },
+    "managed",
+  );
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
   const target = new URL("/restart", environment.metadata.integrationTarget.url).toString();
   const before = await requestViaHttpProxy(route.proxyUrls.http, target);

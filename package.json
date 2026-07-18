@@ -1,6 +1,6 @@
 {
   "name": "profound-proxy-router",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Provider-neutral HTTP, HTTPS, and SOCKS5 proxy router",
   "type": "module",
@@ -71,6 +71,7 @@
     "@opentelemetry/sdk-node": "^0.220.0",
     "@opentelemetry/sdk-trace-base": "^2.9.0",
     "effect": "^3.21.4",
-    "tar": "^7.5.20"
+    "tar": "^7.5.20",
+    "tldts": "^7.4.9"
   }
 }

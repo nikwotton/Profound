@@ -23,6 +23,13 @@ function assertNormalizedContract(descriptor: ProviderDescriptor): void {
   assert.ok(descriptor.capabilities.rotation.size > 0);
   assert.ok(["provider_configurable", "provider_remote", "unverified"].includes(descriptor.capabilities.dnsResolution.http));
   assert.ok(["provider_configurable", "provider_remote", "unverified"].includes(descriptor.capabilities.dnsResolution.socks5));
+  assert.ok(["verified", "provider_trusted"].includes(descriptor.capabilities.destinationSafety.http));
+  assert.ok(["verified", "provider_trusted"].includes(descriptor.capabilities.destinationSafety.socks5));
+  assert.equal(descriptor.capabilities.destinationSafety.providerNetworkScope, "external_public_only");
+  assert.ok(["provider_api_or_probe", "provider_inventory"].includes(descriptor.capabilities.health.source));
+  assert.ok(["provider_api_or_evidence", "provider_inventory"].includes(descriptor.capabilities.capacity.observation));
+  assert.equal(descriptor.capabilities.capacity.hardLimit, "provider_signal_or_proxy_failure");
+  assert.ok(["unsupported", "operator_only", "adapter_optional"].includes(descriptor.capabilities.capacity.provisioning));
   assert.match(descriptor.pricing.version, /^\d{4}-\d{2}-\d{2}$/);
   assert.ok(descriptor.pricing.amountUsd > 0);
   assert.deepEqual(descriptor.usageDimensions.common, ["bytes_sent", "bytes_received"]);
@@ -51,12 +58,34 @@ test("every adapter satisfies the normalized provider capability contract and it
     provider: string;
     targeting: string[];
     rotation: string[];
+    destinationSafety: string;
+    providerNetworkScope: string;
+    capacityObservation: string;
+    hardLimitBehavior: string;
+    provisioning: string;
   };
-  const proxidizeSpec = JSON.parse(readFileSync("config/providers/proxidize-v0.json", "utf8")) as { provider: string };
+  const proxidizeSpec = JSON.parse(readFileSync("config/providers/proxidize-v0.json", "utf8")) as {
+    provider: string;
+    destinationSafety: string;
+    providerNetworkScope: string;
+    capacityObservation: string;
+    hardLimitBehavior: string;
+    provisioning: string;
+  };
   assert.equal(brightData.descriptor.id, brightDataSpec.provider);
   assert.deepEqual([...brightData.descriptor.capabilities.geography], brightDataSpec.targeting);
   assert.deepEqual([...brightData.descriptor.capabilities.rotation], brightDataSpec.rotation);
+  assert.equal(brightData.descriptor.capabilities.destinationSafety.http, brightDataSpec.destinationSafety);
+  assert.equal(brightData.descriptor.capabilities.destinationSafety.providerNetworkScope, brightDataSpec.providerNetworkScope);
+  assert.equal(brightData.descriptor.capabilities.capacity.observation, brightDataSpec.capacityObservation);
+  assert.equal(brightData.descriptor.capabilities.capacity.hardLimit, brightDataSpec.hardLimitBehavior);
+  assert.equal(brightData.descriptor.capabilities.capacity.provisioning, brightDataSpec.provisioning);
   assert.equal(proxidize.descriptor.id, proxidizeSpec.provider);
+  assert.equal(proxidize.descriptor.capabilities.destinationSafety.http, proxidizeSpec.destinationSafety);
+  assert.equal(proxidize.descriptor.capabilities.destinationSafety.providerNetworkScope, proxidizeSpec.providerNetworkScope);
+  assert.equal(proxidize.descriptor.capabilities.capacity.observation, proxidizeSpec.capacityObservation);
+  assert.equal(proxidize.descriptor.capabilities.capacity.hardLimit, proxidizeSpec.hardLimitBehavior);
+  assert.equal(proxidize.descriptor.capabilities.capacity.provisioning, proxidizeSpec.provisioning);
 });
 
 test("Proxidize decodes injected control-plane responses and exposes typed, attributed protocol failures", async () => {
