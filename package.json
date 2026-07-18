@@ -39,14 +39,14 @@
     "verify": "pnpm sst install && pnpm format:check && pnpm lint && pnpm check && pnpm test:property && pnpm test:coverage && pnpm openapi:check"
   },
   "devDependencies": {
-    "@effect/vitest": "^0.27.0",
-    "@types/node": "^22.15.30",
+    "@effect/vitest": "^0.30.0",
+    "@types/node": "^26.1.1",
     "fast-check": "^4.0.0",
     "prettier": "^3.0.0",
     "sst": "^4.17.1",
-    "tsx": "^4.20.3",
+    "tsx": "^4.23.1",
     "typescript": "^7.0.2",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1086.0",
