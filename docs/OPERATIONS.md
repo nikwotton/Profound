@@ -378,7 +378,7 @@ curl -sS \
 
 It also returns the typed routing policy and the latest 100 safe candidate-score diagnostics. These diagnostics contain provider, optional provider override and internal proxy-slot identity, policy version, total score, component scores, soft pressure, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and component scores are emitted on internal selection logs, traces, and the durable attempt ledger.
 
-The initial `proxy-routing-v0-2026-07-17` policy scores every eligible provider and peer, slot, or device candidate from 0–100:
+The initial `proxy-routing-v0-2026-07-18` policy scores every eligible provider and peer, slot, or device candidate from 0–100:
 
 `100 × (0.30 reliability + 0.30 headroom + 0.20 performance + 0.15 costEfficiency + 0.05 stability)`
 
@@ -389,7 +389,7 @@ The initial `proxy-routing-v0-2026-07-17` policy scores every eligible provider 
 - Stability discounts stale evidence, logical identity churn, and repeated failover.
 - Signals without fresh evidence start neutral at `0.5`. Candidates within five points of the best candidate in the preference tier are selected randomly with `score²` weighting.
 
-Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options but rank behind any compatible unsaturated fallback. Revalidate and version the policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent when production evidence changes.
+Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options. Authenticated traffic exhausts the eligible device-backed class despite soft saturation. For unauthenticated traffic, residential soft saturation promotes compatible unsaturated device-backed capacity ahead of saturated residential overflow. Revalidate and version the policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent when production evidence changes.
 
 The initial `proxidize-capacity-v0-2026-07-17` policy is centralized in code and carried on durable records and rollups:
 
@@ -432,11 +432,13 @@ Each reconciliation persists estimated total, reported total, variance, source v
 
 Configure these initial thresholds with `USAGE_VARIANCE_ABSOLUTE_FLOOR_USD`, `USAGE_VARIANCE_WARNING_RELATIVE`, and `USAGE_VARIANCE_ERROR_RELATIVE`. Revisit them using observed data.
 
-Usage accounting owns capacity-pressure and reconciliation-variance classification. It persists idempotent warning/error events before emitting aggregate logs. Operators can inspect that durable evidence through the internal `GET /api/usage/alerts` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
+Usage accounting owns reconciliation-variance classification and capacity-planning recommendations derived from usage, cost, and capacity rollups. It persists idempotent warning/error events before emitting aggregate logs. Operators can inspect those non-capability events through the internal `GET /api/usage/events` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
+
+Capacity pressure is also persisted as normalized evidence through the shared service contract and is available at `GET /api/usage/capacity-pressure-evidence`. The health aggregator reads fresh evidence (five minutes by default, configurable with `HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS`) and alone classifies the affected capability as degraded. Usage accounting does not classify capability state or emit capability alerts.
 
 ## Alerting
 
-The health aggregator owns capability alerts and recovery events in v0. `unavailable` alerts are immediate. `degraded` alerts wait five minutes by default. An alerted capability emits one recovery when it returns to `operational`. Geography is context on global events, not a separate subscription.
+The health aggregator owns capability-state classification, capability alerts, and recovery events in v0, including `degraded` states supported by fresh capacity-pressure evidence. `unavailable` alerts are immediate. `degraded` alerts wait five minutes by default. An alerted capability emits one recovery when it returns to `operational`. Geography is context on global events, not a separate subscription.
 
 Configure signed HTTPS webhooks as one versioned secret:
 

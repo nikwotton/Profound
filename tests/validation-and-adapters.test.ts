@@ -252,7 +252,8 @@ test("Bright Data health uses the authenticated residential network-status API w
     apiKey: "api-key",
     fetchImplementation: async (input, init) => {
       const authorization = new Headers(init?.headers).get("authorization") ?? undefined;
-      requested.push({ url: String(input), ...(authorization === undefined ? {} : { authorization }) });
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      requested.push({ url, ...(authorization === undefined ? {} : { authorization }) });
       return Response.json({ status: true });
     },
   });

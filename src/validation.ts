@@ -1,5 +1,5 @@
 import { ValidationError } from "./errors.js";
-import type { ProviderId, RetryPolicy, RouteProfile, RouteProfileInput, Targeting } from "./types.js";
+import type { RetryPolicy, RouteProfile, RouteProfileInput, Targeting } from "./types.js";
 
 const COUNTRY_CODE = /^[A-Za-z]{2}$/;
 const PROFILE_FIELDS = new Set(["customerId", "geography", "carrier", "providerOverride", "isTargetAuthenticated", "allowConnectionRetry"]);
@@ -70,7 +70,7 @@ export function validateRouteProfile(value: unknown, userId: string, retryDefaul
     if (provider !== "bright_data" && provider !== "proxidize") {
       throw new ValidationError("providerOverride must be bright_data, proxidize, or null");
     }
-    return provider as ProviderId;
+    return provider;
   })();
   if (input.isTargetAuthenticated && (geography?.countryCode === undefined || geography.city === undefined)) {
     throw new ValidationError("geography.countryCode and geography.city are required when isTargetAuthenticated is true");

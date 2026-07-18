@@ -6,6 +6,7 @@ import { connect as netConnect, isIP, type Socket } from "node:net";
 import { promisify } from "node:util";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
+import { expectBufferChunk } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
 import type { RouteProfileInput } from "../../src/types.js";
 
@@ -219,13 +220,12 @@ export async function awsJson<T>(args: string[], region = optionalEnvironment("A
 export async function axiomJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = requiredEnvironment("DEPLOYED_AXIOM_QUERY_TOKEN");
   const base = optionalEnvironment("DEPLOYED_AXIOM_API_URL") ?? "https://api.axiom.co";
+  const headers = new Headers(init.headers);
+  if (!headers.has("authorization")) headers.set("authorization", `Bearer ${token}`);
+  if (!headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(new URL(path, `${base.replace(/\/$/, "")}/`), {
     ...init,
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      ...init.headers,
-    },
+    headers,
   });
   const body = await response.text();
   if (!response.ok) {
@@ -276,10 +276,13 @@ async function loadDeployedEnvironment(): Promise<DeployedEnvironment> {
 
 export async function controlRequest(path: string, init: RequestInit = {}, token?: string | null): Promise<Response> {
   const environment = await deployedEnvironment();
-  const authorization = token === null ? {} : { authorization: `Bearer ${token ?? environment.controlToken}` };
+  const headers = new Headers(init.headers);
+  if (token !== null && !headers.has("authorization")) {
+    headers.set("authorization", `Bearer ${token ?? environment.controlToken}`);
+  }
   return fetch(new URL(path, `${environment.metadata.controlApi}/`), {
     ...init,
-    headers: { ...authorization, ...init.headers },
+    headers,
   });
 }
 
@@ -349,7 +352,7 @@ export async function requestViaHttpProxy(
       },
       (response) => {
         const chunks: Buffer[] = [];
-        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
         response.on("end", () =>
           resolve({
             status: response.statusCode ?? 0,
@@ -461,7 +464,7 @@ export async function httpConnectStatus(proxyUrl: string, targetUrl: string): Pr
 
 async function collectHttpResponse(socket: ProxySocket): Promise<ProxyResponse> {
   const chunks: Buffer[] = [];
-  for await (const chunk of socket) chunks.push(Buffer.from(chunk));
+  for await (const chunk of socket) chunks.push(expectBufferChunk(chunk));
   const response = Buffer.concat(chunks);
   const boundary = response.indexOf("\r\n\r\n");
   if (boundary < 0) throw new Error("Target returned an invalid HTTP response");
@@ -536,7 +539,9 @@ async function connectViaSocks5(proxyUrl: string, target: URL, command = 0x01): 
   port.writeUInt16BE(Number(target.port || (target.protocol === "https:" ? 443 : 80)));
   socket.write(Buffer.concat([Buffer.from([0x05, command, 0x00]), address, port]));
   const reply = await readExactly(socket, 4);
-  const addressLength = reply[3] === 0x01 ? 4 : reply[3] === 0x04 ? 16 : reply[3] === 0x03 ? (await readExactly(socket, 1))[0]! : 0;
+  const addressType = reply[3];
+  const addressLengthByte = addressType === 0x03 ? (await readExactly(socket, 1))[0] : undefined;
+  const addressLength = addressType === 0x01 ? 4 : addressType === 0x04 ? 16 : (addressLengthByte ?? 0);
   if (addressLength > 0) await readExactly(socket, addressLength + 2);
   return { socket, reply: reply[1] ?? 0xff };
 }

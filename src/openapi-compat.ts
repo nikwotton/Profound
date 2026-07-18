@@ -30,7 +30,7 @@ export function decodeOpenApiDocument(value: unknown): OpenApiDocument {
   if (componentsRecord?.schemas !== undefined && schemas === undefined) {
     throw new TypeError("OpenAPI components.schemas must be an object");
   }
-  return document as OpenApiDocument;
+  return document;
 }
 
 function records(value: unknown): JsonRecord[] {

@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { connect, type Socket } from "node:net";
 import { test } from "node:test";
 import { basicAuth } from "../src/net-utils.js";
+import { expectBufferChunk, expectRecord, parseJson } from "../src/decoding.js";
 import { CAPACITY_POLICY } from "../src/capacity-policy.js";
 import { SqliteRouteStore } from "../src/store.js";
 import {
@@ -43,7 +44,7 @@ test("unauthenticated profiles use fresh residential exits per request", async (
   const first = await requestViaProxy(rotating.proxyUrls.http, target.url);
   const second = await requestViaProxy(rotating.proxyUrls.http, target.url);
   assert.equal(first.status, 200);
-  assert.equal(JSON.parse(first.body).body, "target-response");
+  assert.equal(expectRecord(parseJson(first.body, "target response"), "target response").body, "target-response");
   assert.notEqual(first.headers["x-mock-exit-ip"], second.headers["x-mock-exit-ip"]);
 });
 
@@ -300,6 +301,69 @@ test("soft-saturated preferred slots remain ahead of the fallback provider class
   assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-1");
 });
 
+test("unauthenticated residential soft saturation promotes an eligible device-backed fallback", async (t) => {
+  const target = await startHttpTarget();
+  const testApp = await startTestApp([target.port]);
+  t.after(async () => {
+    await Promise.all([target.stop(), testApp.stop()]);
+  });
+  const completedAt = new Date(Date.now() - 1_000).toISOString();
+  const store = new SqliteRouteStore(testApp.databasePath);
+  try {
+    await store.recordUsage({
+      kind: "attempt",
+      id: "bright-data-soft-pressure",
+      logicalOperationId: "bright-data-soft-pressure-operation",
+      accessGrantId: "pressure-grant",
+      routeId: "pressure-route",
+      userId: "pressure-user",
+      customerId: "pressure-customer",
+      provider: "bright_data",
+      protocol: "http",
+      outcome: "success",
+      retryIndex: 0,
+      failover: false,
+      bytesSent: 0,
+      bytesReceived: 0,
+      country: "US",
+      city: "New York",
+      capacityPressure: true,
+      capacityPressureProvider: "bright_data",
+      startedAt: completedAt,
+      completedAt,
+    });
+  } finally {
+    await store.close();
+  }
+
+  const route = await createRoute(testApp.application, {
+    targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
+    isAuthenticated: false,
+  });
+  const response = await requestViaProxy(route.proxyUrls.http, target.url);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-1");
+
+  const usageStore = new SqliteRouteStore(testApp.databasePath);
+  try {
+    let records = await usageStore.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+    const deadline = Date.now() + 2_000;
+    while (
+      !records.some((record) => record.id !== "bright-data-soft-pressure" && record.provider === "proxidize") &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      records = await usageStore.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+    }
+    const fallback = records.find((record) => record.id !== "bright-data-soft-pressure" && record.provider === "proxidize");
+    assert.equal(fallback?.failover, true);
+    assert.equal(fallback?.capacityPressure, true);
+    assert.equal(fallback?.capacityPressureProvider, "bright_data");
+  } finally {
+    await usageStore.close();
+  }
+});
+
 test("a provider-reported hard capacity limit opens the shared circuit immediately", async (t) => {
   const echo = await startEchoTarget();
   const testApp = await startTestApp([echo.port]);
@@ -338,7 +402,7 @@ test("unauthenticated CONNECT exhausts residential peers without an incompatible
   });
   const route = await createRoute(testApp.application, {
     name: "hierarchical-failover",
-    targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
+    targeting: { country: "GB", city: "London" },
     rotation: { mode: "manual" },
     isAuthenticated: false,
     shouldRetry: true,
@@ -831,7 +895,7 @@ test("control API can advertise the load balancer hostname from the request", as
         },
         (response) => {
           const chunks: Buffer[] = [];
-          response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          response.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
           response.on("end", () =>
             resolve({
               status: response.statusCode ?? 0,

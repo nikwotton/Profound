@@ -2,6 +2,8 @@ import type { RouteStore } from "./store.js";
 import { expectEnum, expectNumber, expectOptionalString, expectRecord, expectString } from "./decoding.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import type {
+  CapacityPressureEvidence,
+  ProviderId,
   UsageAlertEvent,
   UsageGroupBy,
   UsageInterval,
@@ -448,7 +450,7 @@ export function summarizeUsage(
     if (record.kind === "attempt" && completedAt >= from && completedAt < to) {
       starts.add(periodStart(record.completedAt, query.interval).toISOString());
     }
-    if (windowOverlaps && windowStart !== undefined && windowEnd !== undefined) {
+    if (windowOverlaps) {
       let start = periodStart(new Date(Math.max(from, windowStart)).toISOString(), query.interval);
       while (start.getTime() < Math.min(to, windowEnd)) {
         starts.add(start.toISOString());
@@ -480,9 +482,7 @@ export function summarizeUsage(
         query.groupBy === undefined
           ? periodEntries
           : query.groupBy === "customer"
-            ? periodEntries.filter(
-                (record) => record.kind === "capacity" || (record.kind === "attempt" && record.customerId === groupedValue),
-              )
+            ? periodEntries.filter((record) => record.kind === "capacity" || record.customerId === groupedValue)
             : periodEntries.filter((record) => groupValue(record, query.groupBy) === groupedValue);
       const completedEntries = entries.filter(
         (record) => record.kind === "attempt" && record.completedAt >= periodStartedAt && record.completedAt < periodEndsAt,
@@ -551,12 +551,17 @@ export class UsageAccountingWorker {
   constructor(
     private readonly store: Pick<
       RouteStore,
-      "listUsageRecords" | "saveUsageRollup" | "saveUsageReconciliation" | "listUsageReconciliations" | "saveUsageAlertEvent"
+      | "listUsageRecords"
+      | "saveUsageRollup"
+      | "saveUsageReconciliation"
+      | "listUsageReconciliations"
+      | "saveUsageAlertEvent"
+      | "saveCapacityPressureEvidence"
     >,
     private readonly totals: () => readonly ProviderCostTotal[] = () => [],
     private readonly thresholds: UsageVarianceThresholds = DEFAULT_VARIANCE_THRESHOLDS,
     private readonly onReconciliation: (record: UsageReconciliation) => void = () => undefined,
-    private readonly onCapacityPressure: (rollup: UsageRollup) => void = () => undefined,
+    private readonly onCapacityPressure: (rollup: UsageRollup, provider: ProviderId) => void = () => undefined,
   ) {}
 
   async run(from: string, to: string): Promise<number> {
@@ -683,18 +688,47 @@ export class UsageAccountingWorker {
     }
     for (const rollup of rollups) {
       await this.store.saveUsageRollup(rollup);
-      if (
-        Object.keys(rollup.group).length === 0 &&
-        (rollup.capacityFailureCount > 0 ||
-          rollup.capacityDrivenFallbackCount > 0 ||
-          rollup.concurrencyUtilization > 1 ||
-          rollup.throughputUtilization > 1)
-      ) {
-        const alert: UsageAlertEvent = {
-          id: `capacity:${rollup.id}:${rollup.capacityPolicyVersion}`,
-          kind: "capacity_pressure",
+    }
+    for (const provider of ["bright_data", "proxidize"] as const) {
+      const pressureRecords = records.filter((record) => {
+        if (record.kind === "capacity") return record.provider === provider;
+        if (record.capacityPressure !== true) return false;
+        return (record.capacityPressureProvider ?? (record.provider === "unresolved" ? undefined : record.provider)) === provider;
+      });
+      const pressureRollups = [
+        ...summarizeUsage(pressureRecords, { from, to, interval: "hour" }),
+        ...summarizeUsage(pressureRecords, { from, to, interval: "day" }),
+      ];
+      for (const rollup of pressureRollups) {
+        if (
+          rollup.capacityFailureCount === 0 &&
+          rollup.capacityDrivenFallbackCount === 0 &&
+          rollup.concurrencyUtilization <= 1 &&
+          rollup.throughputUtilization <= 1
+        )
+          continue;
+        const observedAt = new Date().toISOString();
+        const evidence: CapacityPressureEvidence = {
+          id: `capacity:${provider}:${rollup.id}:${rollup.capacityPolicyVersion}`,
+          provider,
+          periodStartedAt: rollup.periodStartedAt,
+          periodEndsAt: rollup.periodEndsAt,
+          relatedRollupId: rollup.id,
+          capacityPolicyVersion: rollup.capacityPolicyVersion,
+          ...(rollup.capacityConstraint === undefined ? {} : { capacityConstraint: rollup.capacityConstraint }),
+          capacityDrivenFallbackCount: rollup.capacityDrivenFallbackCount,
+          capacityFailureCount: rollup.capacityFailureCount,
+          capacityWaitMs: rollup.capacityWaitMs,
+          concurrencyUtilization: rollup.concurrencyUtilization,
+          throughputUtilization: rollup.throughputUtilization,
+          observedAt,
+        };
+        await this.store.saveCapacityPressureEvidence(evidence);
+        const recommendation: UsageAlertEvent = {
+          id: `capacity:${provider}:${rollup.id}:${rollup.capacityPolicyVersion}`,
+          kind: "capacity_recommendation",
           severity: rollup.capacityFailureCount > 0 ? "error" : "warning",
-          provider: "proxidize",
+          provider,
           periodStartedAt: rollup.periodStartedAt,
           periodEndsAt: rollup.periodEndsAt,
           relatedRecordId: rollup.id,
@@ -703,9 +737,9 @@ export class UsageAccountingWorker {
           capacityDrivenFallbackCount: rollup.capacityDrivenFallbackCount,
           capacityFailureCount: rollup.capacityFailureCount,
           capacityWaitMs: rollup.capacityWaitMs,
-          createdAt: new Date().toISOString(),
+          createdAt: observedAt,
         };
-        if (await this.store.saveUsageAlertEvent(alert)) this.onCapacityPressure(rollup);
+        if (await this.store.saveUsageAlertEvent(recommendation)) this.onCapacityPressure(rollup, provider);
       }
     }
     return rollups.length;

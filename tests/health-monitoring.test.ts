@@ -616,6 +616,87 @@ test("capability health follows preferred provider classes without penalizing a 
   });
 });
 
+test("health aggregation alone classifies fresh capacity-pressure evidence as degraded capability state", async () => {
+  const checkedAt = "2026-07-15T00:00:00.000Z";
+  const store = new SqliteRouteStore(":memory:");
+  try {
+    await store.saveCapacityPressureEvidence({
+      id: "capacity:proxidize:hour",
+      provider: "proxidize",
+      periodStartedAt: "2026-07-14T23:00:00.000Z",
+      periodEndsAt: checkedAt,
+      relatedRollupId: "rollup-1",
+      capacityPolicyVersion: "capacity-v1",
+      capacityConstraint: "slot_exhaustion",
+      capacityDrivenFallbackCount: 2,
+      capacityFailureCount: 0,
+      capacityWaitMs: 500,
+      concurrencyUtilization: 1.1,
+      throughputUtilization: 0.8,
+      observedAt: checkedAt,
+    });
+    const providers = [
+      new HealthProvider("bright_data", false, true, { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", true, true, { provider: "proxidize", state: "healthy", checkedAt }),
+    ];
+    const aggregator = new CapabilityHealthAggregator(
+      store,
+      providers,
+      {
+        passiveValidationMaxAgeMs: 300_000,
+        capacityPressureMaxAgeMs: 300_000,
+        now: () => Date.parse(checkedAt),
+      },
+      silentLogger,
+    );
+    const pressured = await aggregator.refresh();
+    assert.deepEqual(Object.fromEntries(pressured.capabilities.slice(0, 3).map((entry) => [entry.capability, entry.status])), {
+      all_traffic: "degraded",
+      authenticated_traffic: "degraded",
+      unauthenticated_traffic: "operational",
+    });
+    assert.equal(pressured.providers.find((provider) => provider.provider === "proxidize")?.state, "healthy");
+    assert.match(
+      pressured.capabilities.find((entry) => entry.capability === "authenticated_traffic")?.message ?? "",
+      /capacity-pressure evidence/,
+    );
+
+    await store.saveCapacityPressureEvidence({
+      id: "capacity:bright-data:hour",
+      provider: "bright_data",
+      periodStartedAt: "2026-07-14T23:00:00.000Z",
+      periodEndsAt: checkedAt,
+      relatedRollupId: "rollup-2",
+      capacityPolicyVersion: "capacity-v1",
+      capacityDrivenFallbackCount: 1,
+      capacityFailureCount: 0,
+      capacityWaitMs: 0,
+      concurrencyUtilization: 0,
+      throughputUtilization: 0,
+      observedAt: checkedAt,
+    });
+    const bothClassesPressured = await aggregator.refresh();
+    assert.equal(bothClassesPressured.capabilities.find((entry) => entry.capability === "unauthenticated_traffic")?.status, "degraded");
+    assert.equal(bothClassesPressured.providers.find((provider) => provider.provider === "bright_data")?.state, "healthy");
+
+    const afterExpiry = new CapabilityHealthAggregator(
+      store,
+      providers,
+      {
+        passiveValidationMaxAgeMs: 300_000,
+        capacityPressureMaxAgeMs: 300_000,
+        now: () => Date.parse(checkedAt) + 300_001,
+      },
+      silentLogger,
+    );
+    const recovered = await afterExpiry.refresh();
+    assert.equal(recovered.capabilities.find((entry) => entry.capability === "authenticated_traffic")?.status, "operational");
+    assert.equal(recovered.capabilities.find((entry) => entry.capability === "all_traffic")?.status, "operational");
+  } finally {
+    await store.close();
+  }
+});
+
 test("notification failures cannot prevent finalized health persistence", async (t) => {
   const store = new SqliteRouteStore(":memory:");
   t.after(() => store.close());

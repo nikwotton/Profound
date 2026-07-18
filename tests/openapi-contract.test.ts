@@ -3,11 +3,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { OpenApi } from "@effect/platform";
 import { ControlApi, CONTROL_API_VERSION } from "../src/control-contract.js";
-import { findBreakingOpenApiChanges, type OpenApiDocument } from "../src/openapi-compat.js";
+import { decodeOpenApiDocument, findBreakingOpenApiChanges } from "../src/openapi-compat.js";
 
 test("versioned OpenAPI artifact stays synchronized with Effect schemas and excludes data-plane protocols", async () => {
-  const artifact = JSON.parse(await readFile(`openapi/profound-control-api.v${CONTROL_API_VERSION}.json`, "utf8")) as OpenApiDocument;
-  const live = OpenApi.fromApi(ControlApi) as unknown as OpenApiDocument;
+  const artifact = decodeOpenApiDocument(JSON.parse(await readFile(`openapi/profound-control-api.v${CONTROL_API_VERSION}.json`, "utf8")));
+  const live = decodeOpenApiDocument(OpenApi.fromApi(ControlApi));
 
   assert.equal(artifact.info?.version, CONTROL_API_VERSION);
   assert.deepEqual(artifact, live);
@@ -19,7 +19,7 @@ test("versioned OpenAPI artifact stays synchronized with Effect schemas and excl
 });
 
 test("OpenAPI compatibility check rejects breaking management-contract changes", () => {
-  const baseline = OpenApi.fromApi(ControlApi) as unknown as OpenApiDocument;
+  const baseline = decodeOpenApiDocument(OpenApi.fromApi(ControlApi));
   const removedPath = structuredClone(baseline);
   delete removedPath.paths?.["/v1/profiles"];
   assert.ok(findBreakingOpenApiChanges(baseline, removedPath).some((change) => change.includes("removed path /v1/profiles")));

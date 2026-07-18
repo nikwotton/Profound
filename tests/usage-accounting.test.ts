@@ -292,7 +292,7 @@ test("reconciliation persists variance evidence and posts unexplained difference
       ).json()) as { data: Array<{ varianceAttribution: string }> };
       assert.equal(evidence.data[0]?.varianceAttribution, "Unallocated");
       const alerts = (await (
-        await fetch(`http://127.0.0.1:${address.port}/api/usage/alerts?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
+        await fetch(`http://127.0.0.1:${address.port}/api/usage/events?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
       ).json()) as { data: Array<{ kind: string }> };
       assert.equal(alerts.data[0]?.kind, "reconciliation_variance");
     } finally {
@@ -303,7 +303,7 @@ test("reconciliation persists variance evidence and posts unexplained difference
   }
 });
 
-test("capacity pressure creates one idempotent durable alert per aggregate period", async () => {
+test("capacity pressure publishes provider-attributed health evidence and one idempotent planning recommendation per period", async () => {
   const store = new SqliteRouteStore(":memory:");
   const from = "2026-07-15T10:00:00.000Z";
   const to = "2026-07-15T12:00:00.000Z";
@@ -333,12 +333,38 @@ test("capacity pressure creates one idempotent durable alert per aggregate perio
         }),
       );
     }
+    await store.recordUsage(
+      record({
+        id: "residential-pressure-fallback",
+        logicalOperationId: "residential-pressure-fallback-operation",
+        provider: "proxidize",
+        proxySlotId: "slot-pressure",
+        failover: true,
+        capacityPressure: true,
+        capacityPressureProvider: "bright_data",
+        connectionStartedAt: "2026-07-15T10:30:00.000Z",
+        connectionEndedAt: "2026-07-15T10:31:00.000Z",
+        completedAt: "2026-07-15T10:31:00.000Z",
+        capacityPolicyVersion: CAPACITY_POLICY.version,
+      }),
+    );
     const worker = new UsageAccountingWorker(store);
     await worker.run(from, to);
     const first = await store.listUsageAlertEvents(from, to);
-    assert.ok(first.some((alert) => alert.kind === "capacity_pressure" && alert.provider === "proxidize"));
+    assert.ok(first.some((event) => event.kind === "capacity_recommendation" && event.provider === "proxidize"));
+    assert.ok(first.some((event) => event.kind === "capacity_recommendation" && event.provider === "bright_data"));
+    const firstEvidence = await store.listCapacityPressureEvidence("2000-01-01T00:00:00.000Z");
+    assert.ok(
+      firstEvidence.some(
+        (evidence) =>
+          evidence.provider === "proxidize" &&
+          (evidence.capacityDrivenFallbackCount > 0 || evidence.concurrencyUtilization > 1 || evidence.throughputUtilization > 1),
+      ),
+    );
+    assert.ok(firstEvidence.some((evidence) => evidence.provider === "bright_data" && evidence.capacityDrivenFallbackCount > 0));
     await worker.run(from, to);
     assert.equal((await store.listUsageAlertEvents(from, to)).length, first.length);
+    assert.equal((await store.listCapacityPressureEvidence("2000-01-01T00:00:00.000Z")).length, firstEvidence.length);
   } finally {
     await store.close();
   }

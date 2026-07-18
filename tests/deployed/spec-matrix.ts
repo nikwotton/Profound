@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHyWHFXa5QZwJMHayu3I_-18X9qjDPmLybKO8OA5IvI3qLdmC9zkc6CZRrkJmkB9FWdAWX2sG6C3L4dj9wV5x15gwU2VoL8N9w77xgw";
+  "ALtnJHxJUHT_UEKKiVJnVdD0kF_p9GvKO55uOSjZkzFjfO7ZKRY1eeIz6SWzlcFeFzxvatURcOD1dThZdh44IsGN3dE-Ot78b5J2FOV7TEs";
 
 export interface SpecCoverage {
   id: string;
@@ -191,7 +191,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "5.provider-class-ordering",
     section: 5,
     requirement:
-      "Authenticated routes exhaust bounded device-backed attempts before residential providers and unauthenticated routes use the reverse order; soft saturation changes ordering only inside the current class",
+      "Authenticated routes exhaust device-backed candidates through soft saturation before residential fallback; unauthenticated routes prefer residential for cost but promote compatible unsaturated device-backed capacity ahead of soft-saturated residential overflow",
     deployed: [
       "deployed Bright Data routes support fresh exits and authenticated exact-city policies",
       "deployed Proxidize connections share slot capacity and preserve the exact city",
@@ -199,6 +199,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [
       "authenticated routes prefer Proxidize while Bright Data remains eligible when it is the compatible provider",
       "soft-saturated preferred slots remain ahead of the fallback provider class",
+      "unauthenticated residential soft saturation promotes an eligible device-backed fallback",
       "capability health follows preferred provider classes without penalizing a healthy preferred class",
     ],
   },
@@ -264,7 +265,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "5.shared-proxy-slots",
     section: 5,
     requirement:
-      "Every new upstream connection atomically increments durable liveness-backed load for its scored compatible healthy Proxidize slot; soft-saturated slots remain overflow behind unsaturated same-class candidates without binding a grant or triggering cross-class fallback",
+      "Every new upstream connection atomically increments durable liveness-backed load for its scored compatible healthy Proxidize slot; soft-saturated slots remain overflow without binding a grant, while cross-class effects follow the asymmetric authenticated and unauthenticated policy",
     deployed: [],
     offline: [
       "active proxy-slot loads are shared across callers, durable, and released with each connection",
@@ -368,7 +369,6 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [
       "reconciliation persists variance evidence and posts unexplained differences to Unallocated",
       "variance thresholds enforce the absolute floor, 5% warning, 15% error, and repeated-warning escalation",
-      "capacity pressure creates one idempotent durable alert per aggregate period",
     ],
   },
   {
@@ -387,6 +387,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [
       "preallocated capacity reports time-weighted and current utilization with unhealthy capacity separated",
       "capacity recommendations use the versioned v0 policy and suppress location-limited changes",
+      "capacity pressure publishes provider-attributed health evidence and one idempotent planning recommendation per period",
     ],
   },
   {
@@ -601,11 +602,13 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "8.alert-owner",
     section: 8,
-    requirement: "The health aggregator owns capability alerts and recovery in v0; Axiom may own only non-capability engineering alerts",
+    requirement:
+      "The health aggregator alone classifies capability state, including capacity-pressure degradation; usage accounting owns reconciliation classification, capacity recommendations, and capacity-pressure evidence",
     deployed: ["deployed ECS components are independent Fargate services with dedicated telemetry collectors"],
     offline: [
       "alert destination configuration is versioned and requires secure operator endpoints",
       "capability health and recovery alert ownership remains with the service in v0",
+      "health aggregation alone classifies fresh capacity-pressure evidence as degraded capability state",
     ],
   },
   {

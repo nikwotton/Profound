@@ -65,6 +65,8 @@ export interface ResolutionState {
   readonly excludedEndpointIds: Set<string>;
   previousCandidateId?: string;
   previousProvider?: ProviderId;
+  capacityDrivenFallback?: boolean;
+  capacityPressureProvider?: ProviderId;
   capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
   establishmentWaitMs: number;
   capacityPolicyVersion?: string;
@@ -96,7 +98,9 @@ function compatible(provider: ProviderAdapter, route: RouteProfile, protocol?: D
   if (route.isAuthenticated ? !capabilities.authenticatedTraffic : !capabilities.unauthenticatedTraffic) return false;
   if (route.session.mode === "sticky" && !capabilities.sessions) return false;
   if (route.isAuthenticated && capabilities.exactCity === "unsupported") return false;
-  if (!capabilities.rotation.has(route.rotation.mode)) return false;
+  const deviceBackedUnauthenticatedOverflow =
+    !route.isAuthenticated && route.rotation.mode === "per_request" && provider.descriptor.providerClass === "device_backed";
+  if (!capabilities.rotation.has(route.rotation.mode) && !deviceBackedUnauthenticatedOverflow) return false;
   if (target !== undefined && capabilities.targetPorts !== "any_public" && !capabilities.targetPorts.has(target.port)) {
     return false;
   }
@@ -164,13 +168,14 @@ export class RouteService {
     records: readonly UsageRecord[],
     activeConnections: number,
     slotCapacity: boolean,
+    pressureRecords: readonly UsageRecord[] = records,
   ): Omit<ScoredRoutingCandidate<never>, "candidate"> {
     const evidence = historicalRoutingEvidence(records, this.now(), ROUTING_POLICY);
     const expectedCostUsd =
       provider.descriptor.pricing.model === "per_gib"
         ? (evidence.expectedBytes / 1024 ** 3) * provider.descriptor.pricing.amountUsd
         : (evidence.expectedConnectionSeconds / SLOT_MONTH_SECONDS) * provider.descriptor.pricing.amountUsd;
-    return scoreRoutingCandidate({
+    const score = scoreRoutingCandidate({
       reliability: evidence.reliability,
       activeConnections,
       softConnections: slotCapacity ? CAPACITY_POLICY.softConnectionsPerSlot : Number.MAX_SAFE_INTEGER,
@@ -182,6 +187,13 @@ export class RouteService {
       expectedCostUsd,
       stability: evidence.stability,
     });
+    const recentCapacityPressure = pressureRecords.some(
+      (record) =>
+        record.kind === "attempt" &&
+        record.capacityPressure === true &&
+        this.now() - Date.parse(record.completedAt) <= ROUTING_POLICY.evidenceFreshnessMs,
+    );
+    return { ...score, saturated: score.saturated || recentCapacityPressure };
   }
 
   async #capacityCircuitEligible(provider: ProviderId, candidateKey: string): Promise<boolean> {
@@ -192,7 +204,7 @@ export class RouteService {
   #capacityFailureReason(error: unknown): CapacityCircuitReason | undefined {
     if (!isRetryableUpstreamFailure(error)) return undefined;
     if (error instanceof AppError && /hard_limit|capacity_limit/.test(error.code)) return "provider_hard_limit";
-    if (error instanceof AppError && /capacity/.test(error.code)) return "capacity_failure";
+    if (error instanceof AppError && error.code.includes("capacity")) return "capacity_failure";
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ETIMEDOUT") return "timeout";
     if (error instanceof ProviderUnavailableError && /timed out|timeout/i.test(error.message)) return "timeout";
     return "establishment_failure";
@@ -227,6 +239,11 @@ export class RouteService {
     const scored: Array<ScoredRoutingCandidate<ProviderAdapter>> = [];
     for (const provider of providers) {
       const providerRecords = recentRecords.filter((record) => record.provider === provider.descriptor.id);
+      const providerPressureRecords = recentRecords.filter(
+        (record) =>
+          record.capacityPressure === true &&
+          (record.capacityPressureProvider ?? (record.provider === "unresolved" ? undefined : record.provider)) === provider.descriptor.id,
+      );
       if (provider.descriptor.id === "proxidize") {
         const compatibleEndpoints = (await this.proxidize.listEndpoints(true, signal)).filter(
           (endpoint) => endpoint.healthy && !state.excludedEndpointIds.has(endpoint.id) && this.proxidize.matches(endpoint, route),
@@ -248,6 +265,7 @@ export class RouteService {
               providerRecords.filter((record) => record.proxySlotId === endpoint.id),
               load,
               true,
+              providerPressureRecords.filter((record) => record.proxySlotId === endpoint.id),
             ),
           };
         });
@@ -261,7 +279,10 @@ export class RouteService {
           continue;
         }
         const load = activeConnections.filter((connection) => connection.provider === provider.descriptor.id).length;
-        scored.push({ candidate: provider, ...this.#scoreCandidate(provider, providerRecords, load, false) });
+        scored.push({
+          candidate: provider,
+          ...this.#scoreCandidate(provider, providerRecords, load, false, providerPressureRecords),
+        });
       }
     }
     const previous = scored.find(({ candidate }) => candidate.descriptor.id === state.previousProvider);
@@ -282,6 +303,33 @@ export class RouteService {
       }
     }
     const preferredTier = scored.filter(({ candidate }) => candidate.descriptor.providerClass === preferredClass);
+    const fallbackTier = scored.filter(({ candidate }) => candidate.descriptor.providerClass !== preferredClass);
+    if (!route.isAuthenticated && preferredTier.length > 0 && preferredTier.every(({ saturated }) => saturated)) {
+      const eligibleFallback = fallbackTier.filter(({ saturated }) => !saturated);
+      if (eligibleFallback.length > 0) {
+        const selected = selectTopBandCandidate(eligibleFallback, ROUTING_POLICY, this.random);
+        const pressureSource = [...preferredTier].sort((left, right) => right.score - left.score)[0];
+        if (pressureSource === undefined) throw new Error("Residential pressure source is unavailable");
+        state.capacityDrivenFallback = true;
+        state.capacityPressureProvider = pressureSource.candidate.descriptor.id;
+        this.logger.info("Residential soft capacity promoted a device-backed fallback", {
+          capacityPressureProvider: state.capacityPressureProvider,
+          routingPolicyVersion: ROUTING_POLICY.version,
+        });
+        return [
+          ...(selected === undefined ? [] : [selected.candidate]),
+          ...eligibleFallback
+            .filter((candidate) => candidate !== selected)
+            .sort((left, right) => right.score - left.score)
+            .map(({ candidate }) => candidate),
+          ...preferredTier.sort((left, right) => right.score - left.score).map(({ candidate }) => candidate),
+          ...fallbackTier
+            .filter(({ saturated }) => saturated)
+            .sort((left, right) => right.score - left.score)
+            .map(({ candidate }) => candidate),
+        ];
+      }
+    }
     const primaryTier = preferredTier.length > 0 ? preferredTier : scored;
     const unsaturatedPrimary = primaryTier.filter(({ saturated }) => !saturated);
     const selectionTier = unsaturatedPrimary.length > 0 ? unsaturatedPrimary : primaryTier;
@@ -853,6 +901,12 @@ export class RouteService {
         endpoint.routingScore = slotSelection.routingScore;
         endpoint.routingScoreComponents = slotSelection.routingScoreComponents;
         endpoint.assignment.providerManagedReassignmentDisabled = slotSelection.rotationDisabled;
+      }
+      if (state.capacityDrivenFallback === true) {
+        endpoint.capacityPressure = true;
+        if (state.capacityPressureProvider !== undefined) endpoint.capacityPressureProvider = state.capacityPressureProvider;
+      } else if (endpoint.capacityPressure === true) {
+        endpoint.capacityPressureProvider = endpoint.provider;
       }
       if (current.isAuthenticated && provider.descriptor.capabilities.exactCity === "verifiable") {
         const expected = endpoint.assignment.expectedCity;

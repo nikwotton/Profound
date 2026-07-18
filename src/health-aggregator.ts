@@ -9,6 +9,7 @@ import type {
   CapabilityHealth,
   CapabilityHealthSnapshot,
   CapabilityName,
+  CapacityPressureEvidence,
   GeographyHealth,
   ListenAddress,
   PassiveHealthSignal,
@@ -54,6 +55,7 @@ export class CooldownSyntheticValidator implements SyntheticValidator {
 
 export interface CapabilityHealthAggregatorOptions {
   passiveValidationMaxAgeMs: number;
+  capacityPressureMaxAgeMs?: number;
   syntheticValidator?: SyntheticValidator;
   alerting?: HealthAlertEvaluator;
   now?: () => number;
@@ -67,11 +69,14 @@ function latestTimestamp(values: Array<string | undefined>): string | undefined 
 function preferredClassStatus(
   providers: Array<{ providerClass: ProviderClass; health: ProviderHealth }>,
   preferredClass: ProviderClass,
+  capacityPressureProviders: ReadonlySet<ProviderHealth["provider"]>,
 ): CapabilityHealth["status"] {
+  const state = ({ health }: { health: ProviderHealth }): ProviderHealth["state"] =>
+    health.state === "healthy" && capacityPressureProviders.has(health.provider) ? "degraded" : health.state;
   const preferred = providers.filter((provider) => provider.providerClass === preferredClass);
-  if (preferred.some((provider) => provider.health.state === "healthy")) return "operational";
-  if (preferred.some((provider) => provider.health.state === "degraded")) return "degraded";
-  return providers.some((provider) => provider.health.state !== "unhealthy") ? "degraded" : "unavailable";
+  if (preferred.some((provider) => state(provider) === "healthy")) return "operational";
+  if (preferred.some((provider) => state(provider) === "degraded")) return "degraded";
+  return providers.some((provider) => state(provider) !== "unhealthy") ? "degraded" : "unavailable";
 }
 
 function combinedTrafficStatus(
@@ -191,6 +196,10 @@ export class CapabilityHealthAggregator {
     const recentPassive = [...this.#passiveSignals.values()].filter(
       (signal) => now - Date.parse(signal.observedAt) <= this.options.passiveValidationMaxAgeMs,
     );
+    const capacityPressureMaxAgeMs = this.options.capacityPressureMaxAgeMs ?? this.options.passiveValidationMaxAgeMs;
+    const capacityPressure = (await this.store.listCapacityPressureEvidence(new Date(now - capacityPressureMaxAgeMs).toISOString())).filter(
+      (evidence) => Date.parse(evidence.observedAt) <= now,
+    );
     const conflict = recentPassive.some((signal) => {
       const provider = providerHealth.find((health) => health.provider === signal.provider);
       return provider !== undefined && (provider.state === "unhealthy") === (signal.outcome === "success");
@@ -201,13 +210,15 @@ export class CapabilityHealthAggregator {
     const previous = await this.store.latestCapabilityHealth();
     const previousGeneratedAt = previous === undefined ? Number.NaN : Date.parse(previous.generatedAt);
     const generatedAt = Number.isFinite(previousGeneratedAt) ? Math.max(now, previousGeneratedAt + 1) : now;
-    const snapshot = this.#buildSnapshot(providerHealth, recentPassive, this.#lastSynthetic, previous, generatedAt);
+    const snapshot = this.#buildSnapshot(providerHealth, recentPassive, capacityPressure, this.#lastSynthetic, previous, generatedAt);
     await this.store.saveCapabilityHealth(snapshot);
     this.logger.info("Capability health snapshot saved", {
       snapshotId: snapshot.id,
       generatedAt: snapshot.generatedAt,
       capabilities: Object.fromEntries(snapshot.capabilities.map((capability) => [capability.capability, capability.status])),
       passiveSignals: recentPassive.length,
+      capacityPressureEvidence: capacityPressure.length,
+      capacityPressureProviders: [...new Set(capacityPressure.map((evidence) => evidence.provider))],
       syntheticOutcome: this.#lastSynthetic?.outcome ?? "not_run",
       syntheticGeoStatus: this.#lastSynthetic?.geoStatus ?? "not_observed",
       syntheticGeographyVerification: this.#lastSynthetic?.geographyVerification ?? "not_run",
@@ -236,6 +247,7 @@ export class CapabilityHealthAggregator {
   #buildSnapshot(
     providerHealth: ProviderHealth[],
     passive: PassiveHealthSignal[],
+    capacityPressure: CapacityPressureEvidence[],
     synthetic: SyntheticValidationResult | undefined,
     previous: CapabilityHealthSnapshot | undefined,
     now: number,
@@ -251,8 +263,9 @@ export class CapabilityHealthAggregator {
         .filter((provider): provider is { providerClass: ProviderClass; health: ProviderHealth } => provider.health !== undefined);
     const authenticatedProviders = providersFor("authenticatedTraffic");
     const unauthenticatedProviders = providersFor("unauthenticatedTraffic");
-    const authenticatedStatus = preferredClassStatus(authenticatedProviders, "device_backed");
-    const unauthenticatedStatus = preferredClassStatus(unauthenticatedProviders, "residential");
+    const capacityPressureProviders = new Set(capacityPressure.map((evidence) => evidence.provider));
+    const authenticatedStatus = preferredClassStatus(authenticatedProviders, "device_backed", capacityPressureProviders);
+    const unauthenticatedStatus = preferredClassStatus(unauthenticatedProviders, "residential", capacityPressureProviders);
     const validationAt = (capability: Exclude<CapabilityName, "health_verification">): string | undefined =>
       latestTimestamp([
         ...passive
@@ -273,11 +286,13 @@ export class CapabilityHealthAggregator {
       if (status === "operational" && (failedPassive || synthetic?.outcome === "proxy_failure")) status = "degraded";
       const providerStatusAt = latestTimestamp(providers.map((health) => health.checkedAt));
       const endToEndValidatedAt = validationAt(name);
+      const capacityConstrained = status === "degraded" && providers.some((provider) => capacityPressureProviders.has(provider.provider));
       return {
         capability: name,
         status,
         ...(providerStatusAt === undefined ? {} : { providerStatusAt }),
         ...(endToEndValidatedAt === undefined ? {} : { endToEndValidatedAt }),
+        ...(capacityConstrained ? { message: "Fresh capacity-pressure evidence constrained this capability" } : {}),
       };
     };
     const previousCanary = previous?.capabilities.find((entry) => entry.capability === "health_verification");

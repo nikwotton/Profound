@@ -134,9 +134,12 @@ deployedTest("deployed Proxidize connections share slot capacity and preserve th
   }
   t.after(async () => Promise.all(routes.map(({ profile }) => revokeRoute(profile.id).catch(() => undefined))));
 
-  const first = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
-  const firstNextConnection = await requestViaHttpProxy(routes[0]!.proxyUrls.http, target);
-  const second = await requestViaHttpProxy(routes[1]!.proxyUrls.http, target);
+  const [firstRoute, secondRoute] = routes;
+  assert.ok(firstRoute);
+  assert.ok(secondRoute);
+  const first = await requestViaHttpProxy(firstRoute.proxyUrls.http, target);
+  const firstNextConnection = await requestViaHttpProxy(firstRoute.proxyUrls.http, target);
+  const second = await requestViaHttpProxy(secondRoute.proxyUrls.http, target);
   for (const response of [first, firstNextConnection, second]) {
     assert.equal(response.status, 200);
     assert.equal(response.headers["x-mock-city"], "New York");

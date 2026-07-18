@@ -416,9 +416,16 @@ export class Socks5ProxyServer {
                       connectionStartedAt: activeUpstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
                       connectionEndedAt: completedAt,
                       selectedSlotLoad: activeUpstream.selectedSlotLoad,
-                      capacityPressure: activeUpstream.capacityPressure,
-                      capacityPolicyVersion: activeUpstream.capacityPolicyVersion,
                     }),
+                ...(activeUpstream.capacityPressure === true
+                  ? {
+                      capacityPressure: true,
+                      capacityPressureProvider: activeUpstream.capacityPressureProvider ?? activeUpstream.provider,
+                      ...(activeUpstream.capacityPolicyVersion === undefined
+                        ? {}
+                        : { capacityPolicyVersion: activeUpstream.capacityPolicyVersion }),
+                    }
+                  : {}),
                 ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
                 ...(activeUpstream.capacityCircuitState === undefined
                   ? {}

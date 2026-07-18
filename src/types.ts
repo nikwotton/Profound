@@ -222,6 +222,7 @@ export interface UpstreamEndpoint {
   upstreamConnectionStartedAt?: string;
   selectedSlotLoad?: number;
   capacityPressure?: boolean;
+  capacityPressureProvider?: ProviderId;
   capacityPolicyVersion?: string;
   activeLoadClaimId?: string;
   capacityCircuitKey?: string;
@@ -332,6 +333,7 @@ export interface UsageRecord {
   connectionEndedAt?: string;
   selectedSlotLoad?: number;
   capacityPressure?: boolean;
+  capacityPressureProvider?: ProviderId;
   capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
   establishmentWaitMs?: number;
   capacityPolicyVersion?: string;
@@ -412,7 +414,7 @@ export interface UsageReconciliation {
 
 export interface UsageAlertEvent {
   id: string;
-  kind: "capacity_pressure" | "reconciliation_variance";
+  kind: "capacity_recommendation" | "reconciliation_variance";
   severity: "warning" | "error";
   provider: ProviderId;
   periodStartedAt: string;
@@ -426,6 +428,22 @@ export interface UsageAlertEvent {
   varianceUsd?: number;
   relativeVariance?: number;
   createdAt: string;
+}
+
+export interface CapacityPressureEvidence {
+  id: string;
+  provider: ProviderId;
+  periodStartedAt: string;
+  periodEndsAt: string;
+  relatedRollupId: string;
+  capacityPolicyVersion: string;
+  capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
+  capacityDrivenFallbackCount: number;
+  capacityFailureCount: number;
+  capacityWaitMs: number;
+  concurrencyUtilization: number;
+  throughputUtilization: number;
+  observedAt: string;
 }
 
 export type HealthState = "healthy" | "degraded" | "unhealthy";

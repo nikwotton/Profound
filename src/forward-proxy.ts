@@ -305,9 +305,14 @@ export class ForwardProxyServer {
                       connectionStartedAt: upstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
                       connectionEndedAt: completedAt,
                       selectedSlotLoad: upstream.selectedSlotLoad,
-                      capacityPressure: upstream.capacityPressure,
-                      capacityPolicyVersion: upstream.capacityPolicyVersion,
                     }),
+                ...(upstream?.capacityPressure === true
+                  ? {
+                      capacityPressure: true,
+                      capacityPressureProvider: upstream.capacityPressureProvider ?? upstream.provider,
+                      ...(upstream.capacityPolicyVersion === undefined ? {} : { capacityPolicyVersion: upstream.capacityPolicyVersion }),
+                    }
+                  : {}),
                 ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
                 ...(upstream?.capacityCircuitState === undefined
                   ? {}
@@ -814,9 +819,16 @@ export class ForwardProxyServer {
                       connectionStartedAt: activeUpstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
                       connectionEndedAt: completedAt,
                       selectedSlotLoad: activeUpstream.selectedSlotLoad,
-                      capacityPressure: activeUpstream.capacityPressure,
-                      capacityPolicyVersion: activeUpstream.capacityPolicyVersion,
                     }),
+                ...(activeUpstream.capacityPressure === true
+                  ? {
+                      capacityPressure: true,
+                      capacityPressureProvider: activeUpstream.capacityPressureProvider ?? activeUpstream.provider,
+                      ...(activeUpstream.capacityPolicyVersion === undefined
+                        ? {}
+                        : { capacityPolicyVersion: activeUpstream.capacityPolicyVersion }),
+                    }
+                  : {}),
                 ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
                 ...(activeUpstream.capacityCircuitState === undefined
                   ? {}

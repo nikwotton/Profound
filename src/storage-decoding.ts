@@ -3,6 +3,7 @@ import type {
   ActiveTunnel,
   CapabilityHealthSnapshot,
   CapacityCircuitState,
+  CapacityPressureEvidence,
   DeploymentDrainState,
   HealthAlertDelivery,
   HealthAlertEvent,
@@ -248,6 +249,7 @@ const UsageRecordSchema = Schema.Struct({
   connectionEndedAt: exactOptional(Schema.String),
   selectedSlotLoad: exactOptional(Schema.Number),
   capacityPressure: exactOptional(Schema.Boolean),
+  capacityPressureProvider: exactOptional(Schema.Literal("bright_data", "proxidize")),
   capacityConstraint: exactOptional(Schema.Literal("slot_exhaustion", "geography", "carrier", "hard_limit", "capacity_circuit")),
   establishmentWaitMs: exactOptional(Schema.Number),
   capacityPolicyVersion: exactOptional(Schema.String),
@@ -330,7 +332,7 @@ const UsageReconciliationSchema = Schema.Struct({
 
 const UsageAlertEventSchema = Schema.Struct({
   id: Schema.String,
-  kind: Schema.Literal("capacity_pressure", "reconciliation_variance"),
+  kind: Schema.Literal("capacity_recommendation", "reconciliation_variance"),
   severity: Schema.Literal("warning", "error"),
   provider: Schema.Literal("bright_data", "proxidize"),
   periodStartedAt: Schema.String,
@@ -344,6 +346,22 @@ const UsageAlertEventSchema = Schema.Struct({
   varianceUsd: exactOptional(Schema.Number),
   relativeVariance: exactOptional(Schema.Number),
   createdAt: Schema.String,
+});
+
+const CapacityPressureEvidenceSchema = Schema.Struct({
+  id: Schema.String,
+  provider: Schema.Literal("bright_data", "proxidize"),
+  periodStartedAt: Schema.String,
+  periodEndsAt: Schema.String,
+  relatedRollupId: Schema.String,
+  capacityPolicyVersion: Schema.String,
+  capacityConstraint: exactOptional(Schema.Literal("slot_exhaustion", "geography", "carrier", "hard_limit", "capacity_circuit")),
+  capacityDrivenFallbackCount: Schema.Number,
+  capacityFailureCount: Schema.Number,
+  capacityWaitMs: Schema.Number,
+  concurrencyUtilization: Schema.Number,
+  throughputUtilization: Schema.Number,
+  observedAt: Schema.String,
 });
 
 const decode = <A, I>(schema: Schema.Schema<A, I>, value: unknown): A => Schema.decodeUnknownSync(schema)(value);
@@ -366,3 +384,4 @@ export const decodeUsageRecord = (value: unknown): UsageRecord => decode(UsageRe
 export const decodeUsageRollup = (value: unknown): UsageRollup => decode(UsageRollupSchema, value);
 export const decodeUsageReconciliation = (value: unknown): UsageReconciliation => decode(UsageReconciliationSchema, value);
 export const decodeUsageAlertEvent = (value: unknown): UsageAlertEvent => decode(UsageAlertEventSchema, value);
+export const decodeCapacityPressureEvidence = (value: unknown): CapacityPressureEvidence => decode(CapacityPressureEvidenceSchema, value);

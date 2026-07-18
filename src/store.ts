@@ -5,6 +5,7 @@ import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capac
 import { NotFoundError } from "./errors.js";
 import {
   decodeActiveTunnel,
+  decodeCapacityPressureEvidence,
   decodeCapacityCircuitState,
   decodeCapabilityHealthSnapshot,
   decodeDeploymentDrainState,
@@ -23,6 +24,7 @@ import {
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
+  CapacityPressureEvidence,
   CapacityCircuitReason,
   CapacityCircuitState,
   ActiveTunnel,
@@ -244,6 +246,8 @@ export interface RouteStore {
   listUsageReconciliations(from: string, to: string): Promise<UsageReconciliation[]>;
   saveUsageAlertEvent(event: UsageAlertEvent): Promise<boolean>;
   listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]>;
+  saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void>;
+  listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]>;
   close(): Promise<void>;
 }
 
@@ -378,6 +382,13 @@ export class SqliteRouteStore implements RouteStore {
       );
       CREATE INDEX IF NOT EXISTS usage_alert_events_period
         ON usage_alert_events(period_started_at);
+      CREATE TABLE IF NOT EXISTS capacity_pressure_evidence (
+        id TEXT PRIMARY KEY,
+        observed_at TEXT NOT NULL,
+        evidence_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS capacity_pressure_evidence_observed
+        ON capacity_pressure_evidence(observed_at);
     `);
   }
 
@@ -1113,6 +1124,22 @@ export class SqliteRouteStore implements RouteStore {
       )
       .all(from, to);
     return rows.map((row) => decodeUsageAlertEvent(jsonColumn(row, "event_json", "SQLite usage-alert event row")));
+  }
+
+  async saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void> {
+    this.#database
+      .prepare(
+        `INSERT INTO capacity_pressure_evidence(id, observed_at, evidence_json) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET observed_at = excluded.observed_at, evidence_json = excluded.evidence_json`,
+      )
+      .run(evidence.id, evidence.observedAt, JSON.stringify(evidence));
+  }
+
+  async listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]> {
+    const rows = this.#database
+      .prepare("SELECT evidence_json FROM capacity_pressure_evidence WHERE observed_at >= ? ORDER BY observed_at")
+      .all(observedAfter);
+    return rows.map((row) => decodeCapacityPressureEvidence(jsonColumn(row, "evidence_json", "SQLite capacity-pressure evidence row")));
   }
 
   async close(): Promise<void> {

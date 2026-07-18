@@ -173,6 +173,7 @@ export async function startHealthAggregatorService(
     providerRuntime.providers,
     {
       passiveValidationMaxAgeMs: integer(env.HEALTH_PASSIVE_MAX_AGE_MS, 300_000, "HEALTH_PASSIVE_MAX_AGE_MS"),
+      capacityPressureMaxAgeMs: integer(env.HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS, 300_000, "HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS"),
       ...(syntheticValidator === undefined ? {} : { syntheticValidator }),
       alerting,
     },
@@ -374,9 +375,10 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
       else if (record.severity === "warning") logger.warn("Usage reconciliation variance exceeded a warning threshold", attributes);
       else logger.info("Usage reconciliation completed", attributes);
     },
-    (rollup) => {
+    (rollup, provider) => {
       const attributes = {
-        "event.name": "profound.usage.capacity_pressure",
+        "event.name": "profound.usage.capacity_recommendation",
+        provider,
         periodStartedAt: rollup.periodStartedAt,
         periodEndsAt: rollup.periodEndsAt,
         provisionedSlots: rollup.provisionedSlots,
@@ -390,8 +392,8 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
         capacityConstraint: rollup.capacityConstraint,
         capacityPolicyVersion: rollup.capacityPolicyVersion,
       };
-      if (rollup.capacityFailureCount > 0) logger.error("Proxy-slot capacity caused connection failures", attributes);
-      else logger.warn("Proxy-slot capacity pressure exceeded policy", attributes);
+      if (rollup.capacityFailureCount > 0) logger.error("Proxy-slot capacity recommendation includes observed failures", attributes);
+      else logger.warn("Proxy-slot capacity recommendation created from pressure evidence", attributes);
     },
   );
   const intervalMs = integer(env.USAGE_ACCOUNTING_INTERVAL_MS, 60_000, "USAGE_ACCOUNTING_INTERVAL_MS", 1_000);

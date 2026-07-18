@@ -25,8 +25,8 @@ export interface RoutingPolicy {
 }
 
 export const ROUTING_POLICY: RoutingPolicy = Object.freeze({
-  version: "proxy-routing-v0-2026-07-17",
-  lastValidatedAt: "2026-07-17",
+  version: "proxy-routing-v0-2026-07-18",
+  lastValidatedAt: "2026-07-18",
   weights: Object.freeze({
     reliability: 0.3,
     headroom: 0.3,

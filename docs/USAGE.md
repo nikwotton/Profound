@@ -108,12 +108,12 @@ The committed [OpenAPI contract](../openapi/profound-control-api.v0.6.0.json) is
 | `geography.city`        | Conditional | Required with country when `isTargetAuthenticated` is true.                                                             |
 | `carrier`               | No          | Carrier constraint.                                                                                                     |
 | `providerOverride`      | No          | `bright_data`, `proxidize`, or `null`; constrains routing without bypassing compatibility, safety, health, or capacity. |
-| `isTargetAuthenticated` | Yes         | Declares whether the target session is authenticated; controls provider-class preference and continuity requirements.   |
+| `isTargetAuthenticated` | Yes         | Declares whether the target session is authenticated; controls provider-class preference and identity requirements.     |
 | `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                               |
 
 Unknown fields are rejected. In particular, profiles do not accept `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
 
-Authenticated targets require exact country and city continuity. They exhaust compatible device-backed candidates before residential candidates. Unauthenticated targets use the reverse order. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain internal.
+Authenticated targets require exact country and city targeting. They exhaust compatible device-backed candidates before residential candidates; device-backed soft saturation does not open residential fallback. Unauthenticated targets normally prefer residential candidates for cost, but residential soft saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain internal.
 
 Replace the stable requirements with `PUT /v1/profiles/{id}`. New connections use the replacement; established requests and tunnels continue under the policy with which they opened.
 
@@ -142,10 +142,10 @@ Provider selection and provider-specific rotation are internal implementation po
 
 `providerOverride` is the one deliberate exception: set it to `bright_data` or `proxidize` only when a workload must constrain the vendor, or leave it `null`/omit it for ordinary provider-neutral routing. An override never bypasses protocol, geography, safety, health, hard-capacity, or circuit checks. If the named provider cannot satisfy the profile, the control plane returns `provider_override_unsatisfied`; the data plane does not fall back to another provider.
 
-Within the applicable provider-preference tier, candidates receive a versioned score from reliability, nonlinear capacity headroom, proxy-controlled establishment performance, expected cost, and stability. The router randomly selects within five points of the best score, weighted by score squared, so similarly qualified traffic is distributed without ignoring material quality differences. A candidate at its soft capacity limit remains an overflow option behind compatible unsaturated candidates in the same provider class; soft pressure alone never crosses to the other provider class.
+Within the applicable provider-preference tier, candidates receive a versioned score from reliability, nonlinear capacity headroom, proxy-controlled establishment performance, expected cost, and stability. The router randomly selects within five points of the best score, weighted by score squared, so similarly qualified traffic is distributed without ignoring material quality differences. A candidate at its soft capacity limit remains an overflow option rather than being rejected. For authenticated traffic, device-backed saturation changes ordering only inside that class. For unauthenticated traffic, residential saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow.
 
 - Unauthenticated operations use fresh residential candidates.
-- Authenticated operations prefer device-backed providers, require exact-city routing, and keep a connection on its selected upstream for its lifetime. Device and IP continuity across connections is best effort.
+- Authenticated operations prefer device-backed providers, require exact-city routing, and keep a connection on its selected upstream for its lifetime. The preference supplies a controlled, coherent identity; device and IP continuity across connections is best effort rather than guaranteed.
 - Bright Data remains eligible for authenticated targets when it satisfies all constraints; Proxidize remains subject to inventory and capacity.
 - Repeated proxy-controlled pre-commit establishment/capacity failures and provider-reported hard limits open a shared capacity circuit. The initial cooldown is 60 seconds, repeated openings back off, and one half-open probe closes the circuit after success.
 - `allowConnectionRetry` only permits retries before target request or tunnel bytes are committed.

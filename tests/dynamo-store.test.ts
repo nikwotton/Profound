@@ -4,6 +4,7 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { DynamoRouteStore } from "../src/dynamo-store.js";
 import type {
   CapabilityHealthSnapshot,
+  CapacityPressureEvidence,
   HealthAlertEvent,
   HealthAlertState,
   ProviderHealth,
@@ -213,7 +214,7 @@ test("DynamoDB persists alert episodes and delivery state", async () => {
   assert.deepEqual(await store.pendingHealthAlertDeliveries("2026-07-15T00:00:02.000Z", 10), []);
   const usageAlert: UsageAlertEvent = {
     id: "capacity:period-1",
-    kind: "capacity_pressure",
+    kind: "capacity_recommendation",
     severity: "warning",
     provider: "proxidize",
     periodStartedAt: "2026-07-15T00:00:00.000Z",
@@ -228,4 +229,20 @@ test("DynamoDB persists alert episodes and delivery state", async () => {
   assert.equal(await store.saveUsageAlertEvent(usageAlert), true);
   assert.equal(await store.saveUsageAlertEvent(usageAlert), false);
   assert.deepEqual(await store.listUsageAlertEvents("2026-07-15T00:00:00.000Z", "2026-07-16T00:00:00.000Z"), [usageAlert]);
+  const capacityEvidence: CapacityPressureEvidence = {
+    id: "capacity:period-1",
+    provider: "proxidize",
+    periodStartedAt: "2026-07-15T00:00:00.000Z",
+    periodEndsAt: "2026-07-15T01:00:00.000Z",
+    relatedRollupId: "period-1",
+    capacityPolicyVersion: "policy-v1",
+    capacityDrivenFallbackCount: 1,
+    capacityFailureCount: 0,
+    capacityWaitMs: 250,
+    concurrencyUtilization: 1.1,
+    throughputUtilization: 0.8,
+    observedAt: "2026-07-15T01:00:00.000Z",
+  };
+  await store.saveCapacityPressureEvidence(capacityEvidence);
+  assert.deepEqual(await store.listCapacityPressureEvidence("2026-07-15T00:59:00.000Z"), [capacityEvidence]);
 });

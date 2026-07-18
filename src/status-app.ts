@@ -295,9 +295,15 @@ export class StatusApplicationServer {
         json(response, 200, { from: query.from, to: query.to, data: await this.store.listUsageReconciliations(query.from, query.to) });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/api/usage/alerts") {
+      if (request.method === "GET" && url.pathname === "/api/usage/events") {
         const query = usageQuery(url, now);
         json(response, 200, { from: query.from, to: query.to, data: await this.store.listUsageAlertEvents(query.from, query.to) });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/usage/capacity-pressure-evidence") {
+        const query = usageQuery(url, now);
+        const data = (await this.store.listCapacityPressureEvidence(query.from)).filter((evidence) => evidence.observedAt < query.to);
+        json(response, 200, { from: query.from, to: query.to, data });
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/capacity") {

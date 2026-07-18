@@ -14,6 +14,7 @@ import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capac
 import { expectRecord } from "./decoding.js";
 import {
   decodeActiveTunnel,
+  decodeCapacityPressureEvidence,
   decodeCapacityCircuitState,
   decodeCapabilityHealthSnapshot,
   decodeDeploymentDrainState,
@@ -33,6 +34,7 @@ import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialU
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
+  CapacityPressureEvidence,
   CapacityCircuitReason,
   CapacityCircuitState,
   ActiveTunnel,
@@ -190,6 +192,14 @@ interface UsageAlertEventItem {
   entity: "usage_alert_event";
   createdAt: string;
   event: UsageAlertEvent;
+}
+
+interface CapacityPressureEvidenceItem {
+  pk: string;
+  sk: "EVIDENCE";
+  entity: "capacity_pressure_evidence";
+  createdAt: string;
+  evidence: CapacityPressureEvidence;
 }
 
 function routeKey(id: string): { pk: string; sk: string } {
@@ -1334,6 +1344,33 @@ export class DynamoRouteStore implements RouteStore {
     return items
       .map((item) => decodeUsageAlertEvent(itemField(item, "event", "DynamoDB usage-alert event item")))
       .filter((event) => event.periodStartedAt >= from && event.periodStartedAt < to);
+  }
+
+  async saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void> {
+    await this.#client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          pk: `CAPACITY_PRESSURE#${evidence.id}`,
+          sk: "EVIDENCE",
+          entity: "capacity_pressure_evidence",
+          createdAt: evidence.observedAt,
+          evidence,
+        } satisfies CapacityPressureEvidenceItem,
+      }),
+    );
+  }
+
+  async listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]> {
+    const items = await this.#queryAll({
+      TableName: this.tableName,
+      IndexName: ENTITY_INDEX,
+      KeyConditionExpression: "#entity = :entity AND #createdAt >= :observedAfter",
+      ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
+      ExpressionAttributeValues: { ":entity": "capacity_pressure_evidence", ":observedAfter": observedAfter },
+      ScanIndexForward: true,
+    });
+    return items.map((item) => decodeCapacityPressureEvidence(itemField(item, "evidence", "DynamoDB capacity-pressure evidence item")));
   }
 
   async close(): Promise<void> {

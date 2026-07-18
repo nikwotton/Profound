@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
+import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
-import type { RouteProfileInput } from "../src/types.js";
+import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../src/types.js";
 
 export interface TestTarget {
   url: string;
@@ -24,61 +25,28 @@ export interface TestApp {
 }
 
 export interface CreatedRouteResponse {
-  profile: {
-    id: string;
-    status: string;
-    providerOverride: "bright_data" | "proxidize" | null;
-  };
-  accessGrant: {
-    id: string;
-    routeId: string;
-    principalId: string;
-    status: string;
-    credentials: Array<{
-      id: string;
-      status: string;
-      createdAt: string;
-      renewalDueAt: string;
-      renewalDue: boolean;
-      expiresAt: string;
-      revokeAt?: string;
-      lastUsedAt?: string;
-    }>;
-  };
-  credential: {
-    id: string;
-    status: string;
-    createdAt: string;
-    renewalDueAt: string;
-    renewalDue: boolean;
-    expiresAt: string;
-  };
+  profile: PublicRoute & { id: string };
+  accessGrant: PublicAccessGrant & { id: string; routeId: string };
+  credential: PublicAccessGrantCredential & { id: string };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
 }
 
 export interface IssuedAccessGrantApiResponse {
-  grant: {
-    grantId: string;
-    profileId: string;
-    status: string;
-    credentials: Array<Record<string, unknown> & { credentialId: string }>;
-    createdAt: string;
-    updatedAt: string;
-  };
-  credential: Record<string, unknown> & { credentialId: string; username: string; password: string };
+  grant: PublicAccessGrant;
+  credential: PublicAccessGrantCredential & { password: string };
   endpoints: { http: string; socks5: string };
 }
 
-export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiResponse) {
+export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiResponse): Omit<CreatedRouteResponse, "profile"> {
   return {
     accessGrant: {
       ...issued.grant,
       id: issued.grant.grantId,
       routeId: issued.grant.profileId,
       credentials: issued.grant.credentials.map((credential) => ({ ...credential, id: credential.credentialId })),
-    } as unknown as CreatedRouteResponse["accessGrant"],
-    credential: { ...issued.credential, id: issued.credential.credentialId } as unknown as CreatedRouteResponse["credential"],
+    },
+    credential: { ...issued.credential, id: issued.credential.credentialId },
     proxyUsername: issued.credential.username,
     proxyUrls: {
       http: authenticatedProxyUrl(issued.endpoints.http, issued.credential.username, issued.credential.password),
@@ -129,7 +97,7 @@ function authenticatedProxyUrl(endpoint: string, username: string, password: str
 export async function startHttpTarget(): Promise<TestTarget> {
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
-    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
     request.on("end", () => {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
@@ -207,12 +175,11 @@ export async function controlRequest(
   authorized = true,
   bearerToken = "test-admin-token",
 ): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (authorized && !headers.has("authorization")) headers.set("authorization", `Bearer ${bearerToken}`);
   return fetch(`http://127.0.0.1:${app.controlAddress.port}${path}`, {
     ...init,
-    headers: {
-      ...(authorized ? { authorization: `Bearer ${bearerToken}` } : {}),
-      ...init.headers,
-    },
+    headers,
   });
 }
 
@@ -257,7 +224,7 @@ export async function requestViaProxy(
       },
       (response) => {
         const chunks: Buffer[] = [];
-        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
         response.on("end", () =>
           resolve({
             status: response.statusCode ?? 0,
@@ -350,9 +317,10 @@ export async function exchangeViaSocks5(
     port.writeUInt16BE(targetPort);
     socket.write(Buffer.concat([Buffer.from([0x05, command, 0x00]), address, port]));
     const reply = await readExactly(socket, 10);
-    if (reply[1] !== 0x00 || payload === "") return { replyCode: reply[1]!, body: "" };
+    const replyCode = reply[1] ?? 0xff;
+    if (replyCode !== 0x00 || payload === "") return { replyCode, body: "" };
     socket.write(payload);
-    return { replyCode: reply[1]!, body: (await readExactly(socket, Buffer.byteLength(payload))).toString("utf8") };
+    return { replyCode, body: (await readExactly(socket, Buffer.byteLength(payload))).toString("utf8") };
   } finally {
     socket.destroy();
   }
@@ -368,7 +336,7 @@ export async function socks5AuthenticationStatus(proxyUrl: string): Promise<numb
     const username = Buffer.from(decodeURIComponent(proxy.username));
     const password = Buffer.from(decodeURIComponent(proxy.password));
     socket.write(Buffer.concat([Buffer.from([0x01, username.length]), username, Buffer.from([password.length]), password]));
-    return (await readExactly(socket, 2))[1]!;
+    return (await readExactly(socket, 2))[1] ?? 0xff;
   } finally {
     socket.destroy();
   }
