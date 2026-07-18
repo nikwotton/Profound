@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS build
+FROM node:26-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb AS build
 
 ARG INCLUDE_DEV_TOOLS=false
 
@@ -17,7 +17,7 @@ COPY src ./src
 RUN if [ "$INCLUDE_DEV_TOOLS" = "true" ]; then pnpm build:dev; else pnpm build; fi \
     && pnpm prune --prod
 
-FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
+FROM node:26-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app
