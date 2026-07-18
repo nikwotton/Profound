@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHwXt0oKzvEWY5OpJujNOHv3H45Hq4IsB3vNEAjPk-f-0UpFzo97QFjGpKHME5yBCylducT-m2-1lyZg6lknJUqnYOwJqzwHB6tKAas";
+  "ALtnJHxjldR8I_GNR7blctLkB81sEyuFnOZyOhvMOwKEN_SlTF0twTTksAFFFgLgl3flgiAfojCbaupps2tAIpZwSqcojkdPiD1-KSS9Boc";
 
 export interface SpecCoverage {
   id: string;
@@ -56,6 +56,19 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: [
       "accounting worker persists hourly, daily, and customer rollups",
       "active proxy-slot loads are shared across callers, durable, and released with each connection",
+    ],
+  },
+  {
+    id: "2.delivery-evidence-and-maturity",
+    section: 2,
+    requirement:
+      "The caller-visible v0 contract stays distinct from its separable production operating envelope: deterministic offline evidence validates the core, deployed and live-provider suites validate external transports separately, and roadmap mechanisms cannot control traffic without an explicit release gate",
+    deployed: [],
+    offline: [
+      "local demo exercises the principal flows with no external services",
+      "SST isolates AWS resources behind a provider-selected deployment module",
+      "concurrent mobile connections claim the least-loaded compatible slots with a stable tie-breaker",
+      "repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates",
     ],
   },
   {
