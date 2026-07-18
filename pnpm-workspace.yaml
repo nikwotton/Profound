@@ -1,5 +1,8 @@
 packages:
   - .
+  - tools/lint
+
+sharedWorkspaceLockfile: false
 
 confirmModulesPurge: false
 

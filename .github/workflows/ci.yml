@@ -33,7 +33,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Install SST providers and generated types
         run: pnpm sst install
-      - run: pnpm --dir tools/lint install --frozen-lockfile
       - name: Prettier
         run: pnpm format:check
       - name: Type-aware ESLint (TypeScript 6 toolchain)

@@ -23,6 +23,8 @@ Install dependencies without starting a service:
 pnpm install
 ```
 
+This installs both the application workspace and the isolated `tools/lint` workspace.
+
 The repository explicitly allows the required `esbuild` install script and ignores understood optional native build scripts. Resolve new package-manager warnings rather than documenting around them.
 
 ## Start and build
