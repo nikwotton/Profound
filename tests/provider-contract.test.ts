@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ProviderProtocolError, ProviderUnavailableError, providerIdFromError } from "../src/errors.js";
+import {
+  ProviderAuthenticationError,
+  ProviderProtocolError,
+  ProviderRateLimitError,
+  ProviderUnavailableError,
+  providerIdFromError,
+} from "../src/errors.js";
 import { BrightDataAdapter } from "../src/providers/bright-data.js";
 import { ProxidizeAdapter } from "../src/providers/proxidize.js";
 import type { ProviderDescriptor } from "../src/types.js";
@@ -88,6 +94,7 @@ test("Proxidize decodes injected control-plane responses and exposes typed, attr
   await assert.rejects(malformed.listEndpoints(true), (error: unknown) => {
     assert.ok(error instanceof ProviderProtocolError);
     assert.equal(error.code, "provider_protocol_error");
+    assert.equal(error.retryable, false);
     assert.equal(providerIdFromError(error), "proxidize");
     return true;
   });
@@ -98,11 +105,41 @@ test("Proxidize decodes injected control-plane responses and exposes typed, attr
     apiToken: "token",
     requestTimeoutMs: 1_000,
     exactCity: "provider_guaranteed",
-    fetchImplementation: () => Promise.resolve(new Response(undefined, { status: 429 })),
+    fetchImplementation: () => Promise.resolve(new Response(undefined, { status: 429, headers: { "retry-after": "2" } })),
   });
   await assert.rejects(rateLimited.listEndpoints(true), (error: unknown) => {
-    assert.ok(error instanceof ProviderProtocolError);
+    assert.ok(error instanceof ProviderRateLimitError);
     assert.match(error.message, /HTTP 429/);
+    assert.equal(error.retryable, true);
+    assert.equal(error.retryAfterMs, 2_000);
+    assert.equal(providerIdFromError(error), "proxidize");
+    return true;
+  });
+
+  const unauthorized = new ProxidizeAdapter({
+    apiBaseUrl: "https://proxidize.invalid",
+    apiToken: "token",
+    requestTimeoutMs: 1_000,
+    exactCity: "provider_guaranteed",
+    fetchImplementation: () => Promise.resolve(new Response(undefined, { status: 401 })),
+  });
+  await assert.rejects(unauthorized.listEndpoints(true), (error: unknown) => {
+    assert.ok(error instanceof ProviderAuthenticationError);
+    assert.equal(error.retryable, false);
+    assert.equal(providerIdFromError(error), "proxidize");
+    return true;
+  });
+
+  const serviceUnavailable = new ProxidizeAdapter({
+    apiBaseUrl: "https://proxidize.invalid",
+    apiToken: "token",
+    requestTimeoutMs: 1_000,
+    exactCity: "provider_guaranteed",
+    fetchImplementation: () => Promise.resolve(new Response(undefined, { status: 503 })),
+  });
+  await assert.rejects(serviceUnavailable.listEndpoints(true), (error: unknown) => {
+    assert.ok(error instanceof ProviderUnavailableError);
+    assert.equal(error.retryable, true);
     assert.equal(providerIdFromError(error), "proxidize");
     return true;
   });

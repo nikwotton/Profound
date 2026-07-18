@@ -6,12 +6,13 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
   type QueryCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { NotFoundError } from "./errors.js";
 import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capacity-circuit.js";
-import { expectRecord } from "./decoding.js";
+import { expectInteger, expectIsoTimestamp, expectNonEmptyString, expectRecord } from "./decoding.js";
 import {
   decodeActiveTunnel,
   decodeCapacityPressureEvidence,
@@ -57,6 +58,7 @@ import type {
 
 const ENTITY_INDEX = "EntityCreatedAt";
 const ASSIGNMENT_INDEX = "EndpointAssignments";
+const ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS = 5 * 60_000;
 
 function itemField(item: unknown, field: string, context: string): unknown {
   return expectRecord(item, context)[field];
@@ -84,6 +86,16 @@ interface AccessGrantItem {
   grant: StoredAccessGrant;
   gsi1pk?: string;
   gsi1sk?: string;
+}
+
+interface CredentialLookupItem {
+  pk: string;
+  sk: "LOOKUP";
+  entity: "credential_lookup";
+  createdAt: string;
+  expiresAtSeconds: number;
+  grantId: string;
+  credentialId: string;
 }
 
 interface HealthItem {
@@ -210,12 +222,18 @@ function accessGrantKey(id: string): { pk: string; sk: "STATE" } {
   return { pk: `ACCESS_GRANT#${id}`, sk: "STATE" };
 }
 
+function credentialLookupKey(username: string): { pk: string; sk: "LOOKUP" } {
+  return { pk: `CREDENTIAL#${username}`, sk: "LOOKUP" };
+}
+
 function capacityCircuitKey(provider: StoredRoute["provider"], candidateKey: string): { pk: string; sk: "STATE" } {
   return { pk: `CAPACITY_CIRCUIT#${provider}#${candidateKey}`, sk: "STATE" };
 }
 
 function conditionalNotFound(error: unknown): never {
-  if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw new NotFoundError();
+  if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) {
+    throw new NotFoundError();
+  }
   throw error;
 }
 
@@ -236,6 +254,34 @@ function grantItem(grant: StoredAccessGrant): AccessGrantItem {
     routeId: grant.routeId,
     principalId: grant.principalId,
     grant,
+  };
+}
+
+function credentialLookupItem(grantId: string, credential: StoredAccessGrantCredential): CredentialLookupItem {
+  return {
+    ...credentialLookupKey(credentialUsername(credential.id)),
+    entity: "credential_lookup",
+    createdAt: credential.createdAt,
+    expiresAtSeconds: Math.ceil(Date.parse(credential.expiresAt) / 1_000),
+    grantId,
+    credentialId: credential.id,
+  };
+}
+
+function decodeCredentialLookup(item: unknown): { grantId: string; credentialId: string } {
+  const record = expectRecord(item, "DynamoDB credential-lookup item");
+  const expectedKeys = new Set(["pk", "sk", "entity", "createdAt", "expiresAtSeconds", "grantId", "credentialId"]);
+  if (Object.keys(record).some((key) => !expectedKeys.has(key))) {
+    throw new TypeError("DynamoDB credential-lookup item has unexpected fields");
+  }
+  expectNonEmptyString(record["pk"], "DynamoDB credential-lookup item pk");
+  if (record["sk"] !== "LOOKUP") throw new TypeError("DynamoDB credential-lookup item has an invalid sort key");
+  if (record["entity"] !== "credential_lookup") throw new TypeError("DynamoDB credential-lookup item has an invalid entity");
+  expectIsoTimestamp(record["createdAt"], "DynamoDB credential-lookup item createdAt");
+  expectInteger(record["expiresAtSeconds"], "DynamoDB credential-lookup item expiresAtSeconds", 1);
+  return {
+    grantId: expectNonEmptyString(record["grantId"], "DynamoDB credential-lookup item grantId"),
+    credentialId: expectNonEmptyString(record["credentialId"], "DynamoDB credential-lookup item credentialId"),
   };
 }
 
@@ -429,21 +475,35 @@ export class DynamoRouteStore implements RouteStore {
   ): Promise<StoredAccessGrant> {
     await this.get(routeId);
     const now = new Date().toISOString();
+    const credential = createStoredCredential(credentialId, token, now);
     const grant: StoredAccessGrant = {
       id,
       routeId,
       principalId,
-      credentials: [createStoredCredential(credentialId, token, now)],
+      credentials: [credential],
       status: "ready",
       terminateActive: false,
       createdAt: now,
       updatedAt: now,
     };
     await this.#client.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: grantItem(grant),
-        ConditionExpression: "attribute_not_exists(pk)",
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: grantItem(grant),
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: credentialLookupItem(grant.id, credential),
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+        ],
       }),
     );
     return grant;
@@ -481,29 +541,27 @@ export class DynamoRouteStore implements RouteStore {
   }
 
   async authenticateAccessGrant(username: string, token: string): Promise<StoredAccessGrant | undefined> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
-      ExpressionAttributeNames: { "#entity": "entity" },
-      ExpressionAttributeValues: { ":entity": "access_grant" },
-    });
-    const grant = items
-      .map((item) => decodeStoredAccessGrant(itemField(item, "grant", "DynamoDB access-grant item")))
-      .find(
-        (candidate) =>
-          candidate.status !== "revoked" && candidate.credentials.some((credential) => credentialUsername(credential.id) === username),
-      );
-    if (grant === undefined) return undefined;
+    const lookupResult = await this.#client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: credentialLookupKey(username),
+        ConsistentRead: true,
+      }),
+    );
+    if (lookupResult.Item === undefined) return undefined;
+    const lookup = decodeCredentialLookup(lookupResult.Item);
+    let grant: StoredAccessGrant;
     try {
+      grant = await this.getAccessGrant(lookup.grantId);
       await this.get(grant.routeId);
-    } catch {
-      return undefined;
+    } catch (error) {
+      if (error instanceof NotFoundError) return undefined;
+      throw error;
     }
     const now = new Date().toISOString();
     const nowMs = Date.parse(now);
     const credentialIndex = grant.credentials.findIndex((candidateCredential) => {
-      if (credentialUsername(candidateCredential.id) !== username) return false;
+      if (candidateCredential.id !== lookup.credentialId || credentialUsername(candidateCredential.id) !== username) return false;
       if (!credentialUsable(candidateCredential, nowMs)) return false;
       const candidate = scryptSync(token, candidateCredential.tokenSalt, 32);
       const expected = Buffer.from(candidateCredential.tokenHash, "hex");
@@ -512,6 +570,8 @@ export class DynamoRouteStore implements RouteStore {
     if (credentialIndex < 0) return undefined;
     const credential = grant.credentials[credentialIndex];
     if (credential === undefined) throw new Error("Matched access-grant credential disappeared");
+    const lastUsedAtMs = credential.lastUsedAt === undefined ? undefined : Date.parse(credential.lastUsedAt);
+    if (lastUsedAtMs !== undefined && nowMs - lastUsedAtMs < ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS) return grant;
     credential.lastUsedAt = now;
     grant.updatedAt = now;
     await this.#client.send(
@@ -552,16 +612,30 @@ export class DynamoRouteStore implements RouteStore {
         revokeAt: new Date(Math.min(Date.parse(credential.expiresAt), overlapLimit)).toISOString(),
       };
     });
-    grant.credentials.push(createStoredCredential(credentialId, token, now));
+    const newCredential = createStoredCredential(credentialId, token, now);
+    grant.credentials.push(newCredential);
     grant.updatedAt = now;
     try {
       await this.#client.send(
-        new PutCommand({
-          TableName: this.tableName,
-          Item: grantItem(grant),
-          ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
-          ExpressionAttributeNames: { "#status": "status" },
-          ExpressionAttributeValues: { ":revoked": "revoked" },
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: grantItem(grant),
+                ConditionExpression: "attribute_exists(pk) AND #status <> :revoked",
+                ExpressionAttributeNames: { "#status": "status" },
+                ExpressionAttributeValues: { ":revoked": "revoked" },
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: credentialLookupItem(grant.id, newCredential),
+                ConditionExpression: "attribute_not_exists(pk)",
+              },
+            },
+          ],
         }),
       );
       return grant;

@@ -21,31 +21,59 @@ test("DynamoDB persistence survives store replacement and excludes caller-facing
   const commands: CapturedCommand[] = [];
   let routeItem: Record<string, unknown> | undefined;
   let accessGrantItem: Record<string, unknown> | undefined;
+  const credentialLookupItems = new Map<string, Record<string, unknown>>();
   let healthItem: Record<string, unknown> | undefined;
   let inventoryItem: Record<string, unknown> | undefined;
   const capabilityItems: Record<string, unknown>[] = [];
   let destroyed = false;
+  const recordItem = (item: Record<string, unknown>): void => {
+    if (item["entity"] === "route") routeItem = item;
+    if (item["entity"] === "access_grant") accessGrantItem = item;
+    if (item["entity"] === "credential_lookup") credentialLookupItems.set(String(item["pk"]), item);
+    if (item["entity"] === "health") healthItem = item;
+    if (item["entity"] === "provider_inventory") inventoryItem = item;
+    if (item["entity"] === "capability_health") capabilityItems.unshift(item);
+  };
   const client = {
     send: async (raw: unknown): Promise<Record<string, unknown>> => {
       const command = raw as CapturedCommand;
       commands.push(command);
       if (command.constructor.name === "PutCommand") {
         const item = command.input["Item"] as Record<string, unknown>;
-        if (item["entity"] === "route") routeItem = item;
-        if (item["entity"] === "access_grant") accessGrantItem = item;
-        if (item["entity"] === "health") healthItem = item;
-        if (item["entity"] === "provider_inventory") inventoryItem = item;
-        if (item["entity"] === "capability_health") capabilityItems.unshift(item);
+        recordItem(item);
+        return {};
+      }
+      if (command.constructor.name === "TransactWriteCommand") {
+        const transactItems = command.input["TransactItems"] as Array<{ Put?: { Item?: Record<string, unknown> } }>;
+        for (const transactItem of transactItems) {
+          if (transactItem.Put?.Item !== undefined) recordItem(transactItem.Put.Item);
+        }
         return {};
       }
       if (command.constructor.name === "GetCommand") {
         const key = command.input["Key"] as { pk?: string };
-        const item = key.pk?.startsWith("ACCESS_GRANT#")
-          ? accessGrantItem
-          : key.pk?.startsWith("PROVIDER_INVENTORY#")
-            ? inventoryItem
-            : routeItem;
+        const item = key.pk?.startsWith("CREDENTIAL#")
+          ? credentialLookupItems.get(key.pk)
+          : key.pk?.startsWith("ACCESS_GRANT#")
+            ? accessGrantItem
+            : key.pk?.startsWith("PROVIDER_INVENTORY#")
+              ? inventoryItem
+              : routeItem;
         return item === undefined ? {} : { Item: item };
+      }
+      if (command.constructor.name === "UpdateCommand") {
+        const key = command.input["Key"] as { pk?: string };
+        if (key.pk?.startsWith("ACCESS_GRANT#") && accessGrantItem !== undefined) {
+          const grant = accessGrantItem["grant"] as { credentials: Array<Record<string, unknown>>; updatedAt: string };
+          const index = /credentials\[(\d+)\]/.exec(String(command.input["UpdateExpression"]))?.[1];
+          const values = command.input["ExpressionAttributeValues"] as Record<string, unknown>;
+          const credential = index === undefined ? undefined : grant.credentials[Number(index)];
+          if (credential !== undefined && typeof values[":now"] === "string") {
+            credential["lastUsedAt"] = values[":now"];
+            grant.updatedAt = values[":now"];
+          }
+        }
+        return {};
       }
       if (command.constructor.name === "QueryCommand") {
         const values = command.input["ExpressionAttributeValues"] as Record<string, unknown>;
@@ -88,7 +116,21 @@ test("DynamoDB persistence survives store replacement and excludes caller-facing
   const grant = await store.createAccessGrant("grant-1", "route-1", "user-a", "credential-1", token);
   assert.notEqual(grant.credentials[0]?.tokenHash, token);
   assert.doesNotMatch(JSON.stringify(accessGrantItem), new RegExp(token));
+  assert.doesNotMatch(JSON.stringify([...credentialLookupItems.values()]), /tokenHash|tokenSalt/);
+  const authenticationStartedAt = commands.length;
   assert.equal((await store.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
+  const authenticationCommands = commands.slice(authenticationStartedAt);
+  assert.equal(
+    authenticationCommands.some((command) => command.constructor.name === "QueryCommand"),
+    false,
+  );
+  assert.equal(
+    authenticationCommands.some(
+      (command) =>
+        command.constructor.name === "GetCommand" && JSON.stringify(command.input["Key"]).includes("CREDENTIAL#pxy_credential-1"),
+    ),
+    true,
+  );
   assert.equal(await store.authenticateAccessGrant("pxy_credential-1", "incorrect"), undefined);
   assert.deepEqual(
     (await store.list()).map((route) => route.id),
@@ -96,7 +138,17 @@ test("DynamoDB persistence survives store replacement and excludes caller-facing
   );
   const replacement = new DynamoRouteStore("route-state", client);
   assert.equal((await replacement.get("route-1")).customerId, "customer-a");
+  const replacementAuthenticationStartedAt = commands.length;
   assert.equal((await replacement.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
+  assert.equal(
+    commands.slice(replacementAuthenticationStartedAt).some((command) => command.constructor.name === "UpdateCommand"),
+    false,
+    "recent last-used metadata avoids a DynamoDB write per request",
+  );
+  await replacement.rotateAccessGrantCredential("grant-1", "credential-2", "rotated-token");
+  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
+  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-2", "rotated-token"))?.id, "grant-1");
+  assert.equal(credentialLookupItems.size, 2);
 
   const health: ProviderHealth = {
     provider: "proxidize",

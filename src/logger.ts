@@ -2,8 +2,39 @@ import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import { isUnknownRecord } from "./decoding.js";
 
 const REDACTED_KEYS = new Set(["authorization", "proxy-authorization", "cookie", "set-cookie", "password", "token", "proxyurl"]);
+const EMBEDDED_URL = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
+const LABELED_SECRET = /\b(authorization|proxy-authorization|cookie|set-cookie|password|token)\s*[:=]\s*([^\s,;]+)/gi;
 
-function sanitize(value: unknown, key?: string): unknown {
+function sanitizeString(value: string): string {
+  return value
+    .replace(EMBEDDED_URL, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        return `${url.protocol}//${url.host}${url.pathname}`;
+      } catch {
+        return candidate;
+      }
+    })
+    .replace(LABELED_SECRET, "$1=[REDACTED]");
+}
+
+function sanitizeError(error: Error, seen: WeakSet<object>): Record<string, unknown> {
+  if (seen.has(error)) return { name: error.name, cause: "[Circular]" };
+  seen.add(error);
+  const code = "code" in error && (typeof error.code === "string" || typeof error.code === "number") ? error.code : undefined;
+  const retryable = "retryable" in error && typeof error.retryable === "boolean" ? error.retryable : undefined;
+  const retryAfterMs = "retryAfterMs" in error && typeof error.retryAfterMs === "number" ? error.retryAfterMs : undefined;
+  return {
+    name: error.name,
+    message: sanitizeString(error.message),
+    ...(code === undefined ? {} : { code }),
+    ...(retryable === undefined ? {} : { retryable }),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    ...(error.cause === undefined ? {} : { cause: sanitize(error.cause, "cause", seen) }),
+  };
+}
+
+function sanitize(value: unknown, key?: string, seen = new WeakSet<object>()): unknown {
   if (key !== undefined) {
     const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
     if (
@@ -20,23 +51,23 @@ function sanitize(value: unknown, key?: string): unknown {
   if (value instanceof URL) {
     return `${value.origin}${value.pathname}`;
   }
-  if (typeof value === "string" && /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
-    try {
-      const url = new URL(value);
-      return `${url.protocol}//${url.host}${url.pathname}`;
-    } catch {
-      return value;
-    }
-  }
+  if (value instanceof Error) return sanitizeError(value, seen);
+  if (typeof value === "string") return sanitizeString(value);
   if (Array.isArray(value)) {
-    return value.map((item) => sanitize(item));
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    return value.map((item) => sanitize(item, undefined, seen));
   }
-  if (isUnknownRecord(value)) return sanitizeRecord(value);
+  if (isUnknownRecord(value)) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    return sanitizeRecord(value, seen);
+  }
   return value;
 }
 
-function sanitizeRecord(value: Readonly<Record<string, unknown>>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, sanitize(child, childKey)]));
+function sanitizeRecord(value: Readonly<Record<string, unknown>>, seen = new WeakSet<object>()): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, sanitize(child, childKey, seen)]));
 }
 
 export interface Logger {
@@ -62,7 +93,7 @@ export function createLogger(options?: LoggerOptions | ((line: string) => void))
     typeof options === "function" ? "profound-proxy-router" : (options?.instrumentationScope ?? "profound-proxy-router"),
   );
   const log = (level: string, message: string, context?: Record<string, unknown>): void => {
-    const safeContext = context === undefined ? undefined : sanitizeRecord(context);
+    const safeContext = context === undefined ? undefined : sanitizeRecord(context, new WeakSet<object>([context]));
     const time = new Date().toISOString();
     if (consoleMode === "all" || (consoleMode === "errors" && level === "error")) {
       write(

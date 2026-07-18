@@ -1,4 +1,10 @@
-import { ProviderProtocolError, ProviderUnavailableError, attributeProvider } from "../errors.js";
+import {
+  ProviderAuthenticationError,
+  ProviderProtocolError,
+  ProviderRateLimitError,
+  ProviderUnavailableError,
+  attributeProvider,
+} from "../errors.js";
 import {
   expectArray,
   expectBoolean,
@@ -21,9 +27,19 @@ export interface ProxidizeConfig {
   fetchImplementation?: typeof fetch;
 }
 
-function providerError<ErrorType extends ProviderProtocolError | ProviderUnavailableError>(error: ErrorType): ErrorType {
+type ProxidizeProviderError = ProviderAuthenticationError | ProviderProtocolError | ProviderRateLimitError | ProviderUnavailableError;
+
+function providerError<ErrorType extends ProxidizeProviderError>(error: ErrorType): ErrorType {
   attributeProvider(error, "proxidize");
   return error;
+}
+
+function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (value === null) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1_000);
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : undefined;
 }
 
 function normalized(value: string): string {
@@ -102,7 +118,17 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
         throw providerError(new ProviderUnavailableError("Proxidize control API is unavailable"));
       }
       if (!response.ok) {
-        throw providerError(new ProviderProtocolError(`Proxidize control API returned HTTP ${response.status}`));
+        const message = `Proxidize control API returned HTTP ${response.status}`;
+        if (response.status === 401 || response.status === 403) {
+          throw providerError(new ProviderAuthenticationError(message));
+        }
+        if (response.status === 429) {
+          throw providerError(new ProviderRateLimitError(message, retryAfterMs(response.headers.get("retry-after"))));
+        }
+        if (response.status === 408 || response.status >= 500) {
+          throw providerError(new ProviderUnavailableError(message));
+        }
+        throw providerError(new ProviderProtocolError(message));
       }
       if (response.status === 204) return undefined;
       try {
@@ -169,7 +195,14 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
       this.#cacheExpiresAt = Date.now() + (this.config.cacheTtlMs ?? 5_000);
       return endpoints;
     } catch (error) {
-      if (error instanceof ProviderProtocolError || error instanceof ProviderUnavailableError) throw error;
+      if (
+        error instanceof ProviderAuthenticationError ||
+        error instanceof ProviderProtocolError ||
+        error instanceof ProviderRateLimitError ||
+        error instanceof ProviderUnavailableError
+      ) {
+        throw error;
+      }
       throw providerError(new ProviderProtocolError("Proxidize control API returned malformed data"));
     }
   }
