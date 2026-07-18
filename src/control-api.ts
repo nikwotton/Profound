@@ -59,6 +59,8 @@ function createError(error: RouteServiceError): RouteCreateError {
     case "validation":
       return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
     case "provider_unavailable":
+    case "provider_authentication":
+    case "provider_rate_limit":
     case "provider_protocol":
     case "provider_capacity_limit":
     case "provider_override_unsatisfied":
@@ -80,6 +82,8 @@ function readError(error: RouteServiceError): RouteReadError {
     case "validation":
     case "authentication":
     case "provider_unavailable":
+    case "provider_authentication":
+    case "provider_rate_limit":
     case "provider_protocol":
     case "provider_capacity_limit":
     case "provider_override_unsatisfied":
@@ -100,6 +104,8 @@ function accessGrantCreateError(error: RouteServiceError): AccessGrantCreateErro
     case "not_found":
       return readError(error);
     case "provider_unavailable":
+    case "provider_authentication":
+    case "provider_rate_limit":
     case "provider_protocol":
     case "provider_capacity_limit":
     case "provider_override_unsatisfied":

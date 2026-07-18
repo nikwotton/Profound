@@ -1,5 +1,6 @@
-import { expectRecord } from "./decoding.js";
+import { expectInteger, expectIsoTimestamp, expectNonEmptyString, expectRecord } from "./decoding.js";
 import { NotFoundError } from "./errors.js";
+import { credentialUsername } from "./store.js";
 import type {
   ActiveTunnel,
   CapabilityHealthSnapshot,
@@ -24,6 +25,7 @@ import type {
 
 export const ENTITY_INDEX = "EntityCreatedAt";
 export const ASSIGNMENT_INDEX = "EndpointAssignments";
+export const ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS = 5 * 60_000;
 
 export function itemField(item: unknown, field: string, context: string): unknown {
   return expectRecord(item, context)[field];
@@ -51,6 +53,16 @@ export interface AccessGrantItem {
   grant: StoredAccessGrant;
   gsi1pk?: string;
   gsi1sk?: string;
+}
+
+export interface CredentialLookupItem {
+  pk: string;
+  sk: "LOOKUP";
+  entity: "credential_lookup";
+  createdAt: string;
+  expiresAtSeconds: number;
+  grantId: string;
+  credentialId: string;
 }
 
 export interface HealthItem {
@@ -177,12 +189,18 @@ export function accessGrantKey(id: string): { pk: string; sk: "STATE" } {
   return { pk: `ACCESS_GRANT#${id}`, sk: "STATE" };
 }
 
+export function credentialLookupKey(username: string): { pk: string; sk: "LOOKUP" } {
+  return { pk: `CREDENTIAL#${username}`, sk: "LOOKUP" };
+}
+
 export function capacityCircuitKey(provider: StoredRoute["provider"], candidateKey: string): { pk: string; sk: "STATE" } {
   return { pk: `CAPACITY_CIRCUIT#${provider}#${candidateKey}`, sk: "STATE" };
 }
 
 export function conditionalNotFound(error: unknown): never {
-  if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw new NotFoundError();
+  if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) {
+    throw new NotFoundError();
+  }
   throw error;
 }
 
@@ -203,5 +221,33 @@ export function grantItem(grant: StoredAccessGrant): AccessGrantItem {
     routeId: grant.routeId,
     principalId: grant.principalId,
     grant,
+  };
+}
+
+export function credentialLookupItem(grantId: string, credential: StoredAccessGrantCredential): CredentialLookupItem {
+  return {
+    ...credentialLookupKey(credentialUsername(credential.id)),
+    entity: "credential_lookup",
+    createdAt: credential.createdAt,
+    expiresAtSeconds: Math.ceil(Date.parse(credential.expiresAt) / 1_000),
+    grantId,
+    credentialId: credential.id,
+  };
+}
+
+export function decodeCredentialLookup(item: unknown): { grantId: string; credentialId: string } {
+  const record = expectRecord(item, "DynamoDB credential-lookup item");
+  const expectedKeys = new Set(["pk", "sk", "entity", "createdAt", "expiresAtSeconds", "grantId", "credentialId"]);
+  if (Object.keys(record).some((key) => !expectedKeys.has(key))) {
+    throw new TypeError("DynamoDB credential-lookup item has unexpected fields");
+  }
+  expectNonEmptyString(record["pk"], "DynamoDB credential-lookup item pk");
+  if (record["sk"] !== "LOOKUP") throw new TypeError("DynamoDB credential-lookup item has an invalid sort key");
+  if (record["entity"] !== "credential_lookup") throw new TypeError("DynamoDB credential-lookup item has an invalid entity");
+  expectIsoTimestamp(record["createdAt"], "DynamoDB credential-lookup item createdAt");
+  expectInteger(record["expiresAtSeconds"], "DynamoDB credential-lookup item expiresAtSeconds", 1);
+  return {
+    grantId: expectNonEmptyString(record["grantId"], "DynamoDB credential-lookup item grantId"),
+    credentialId: expectNonEmptyString(record["credentialId"], "DynamoDB credential-lookup item credentialId"),
   };
 }

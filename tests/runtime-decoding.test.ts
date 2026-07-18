@@ -84,7 +84,10 @@ test("buffered logs and typed error metadata fail closed", () => {
   const error = attributeAssignment(new Error("failed"), evidence);
   assert.deepEqual(assignmentFromError(error), evidence);
   assert.equal(assignmentFromError({ assignmentEvidence: evidence }), undefined);
-  assert.equal(toRouteServiceError(new Error("secret detail")).code, "internal_error");
+  const cause = new Error("secret detail");
+  const normalized = toRouteServiceError(cause);
+  assert.equal(normalized.code, "internal_error");
+  assert.equal(normalized.cause, cause);
 });
 
 test("persistence decoders fail closed on invalid records", () => {
