@@ -8,6 +8,7 @@
 - Do not identify unfamiliar UI controls from icon appearance alone. Verify their behavior or consult current official documentation, and state uncertainty when verification is unavailable.
 - When a problem reproduces across unrelated projects or tasks, investigate app-, account-, or workspace-level causes before attributing it to repository state.
 - When auditing a collaborative document, read its unresolved comments and replies as well as its body before requesting clarification or declaring the audit complete.
+- After each design-to-implementation audit pass, verify that user-facing documentation, setup and deployment guides, examples, API references, and operational notes remain accurate and complete.
 - Keep provider capabilities separate from routing preferences and intended use cases; do not encode a preferred use case as a technical incompatibility without evidence.
 - During pre-v0 development, represent only the current design; do not preserve compatibility or migrations for earlier document or code revisions, and reset disposable data instead.
 - When a task requires resolving discrepancies, implement and verify discovered discrepancies before reporting the audit complete.
