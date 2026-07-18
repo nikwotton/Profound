@@ -5,6 +5,7 @@ import { GeographyPayload as Geography, RouteProfilePayload } from "./route-prof
 export { RouteProfilePayload } from "./route-profile-schema.js";
 
 export const CONTROL_API_VERSION = "0.7.0";
+const exactOptional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
 
 export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
   "Unauthorized",
@@ -51,8 +52,8 @@ export class AdminAuthorization extends HttpApiMiddleware.Tag<AdminAuthorization
 export const PublicRouteSchema = Schema.Struct({
   profileId: Schema.String,
   customerId: Schema.String,
-  geography: Schema.optional(Geography),
-  carrier: Schema.optional(Schema.String),
+  geography: exactOptional(Geography),
+  carrier: exactOptional(Schema.String),
   providerOverride: Schema.NullOr(Schema.Literal("bright_data", "proxidize")),
   allowConnectionRetry: Schema.Boolean,
   status: Schema.Literal("ready", "rotating", "failed", "revoked"),
@@ -64,14 +65,14 @@ export const PublicAccessGrantCredentialSchema = Schema.Struct({
   credentialId: Schema.String,
   username: Schema.String,
   sessionMode: Schema.Literal("managed", "none"),
-  sessionId: Schema.optional(Schema.String),
+  sessionId: exactOptional(Schema.String),
   status: Schema.Literal("active", "overlap", "revoked", "expired"),
   createdAt: Schema.String,
   renewalDueAt: Schema.String,
   renewalDue: Schema.Boolean,
   expiresAt: Schema.String,
-  revokeAt: Schema.optional(Schema.String),
-  lastUsedAt: Schema.optional(Schema.String),
+  revokeAt: exactOptional(Schema.String),
+  lastUsedAt: exactOptional(Schema.String),
 }).annotations({ identifier: "AccessGrantCredential" });
 
 export const PublicAccessGrantSchema = Schema.Struct({
@@ -79,7 +80,7 @@ export const PublicAccessGrantSchema = Schema.Struct({
   profileId: Schema.String,
   jobId: Schema.NullOr(Schema.String),
   status: Schema.Literal("ready", "revoked"),
-  credentials: Schema.Array(PublicAccessGrantCredentialSchema),
+  credentials: Schema.mutable(Schema.Array(PublicAccessGrantCredentialSchema)),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 }).annotations({ identifier: "AccessGrant" });
@@ -92,8 +93,8 @@ export const PublicLogicalSessionSchema = Schema.Struct({
   status: Schema.Literal("open", "closed"),
   createdAt: Schema.String,
   updatedAt: Schema.String,
-  lastUsedAt: Schema.optional(Schema.String),
-  closedAt: Schema.optional(Schema.String),
+  lastUsedAt: exactOptional(Schema.String),
+  closedAt: exactOptional(Schema.String),
 }).annotations({ identifier: "LogicalSession" });
 
 const SessionModePayload = Schema.Struct({ sessionMode: Schema.Literal("managed", "none") }).annotations({
@@ -109,7 +110,7 @@ const GrantIssuancePayload = Schema.Struct({
 export const IssuedAccessGrantSchema = Schema.Struct({
   grant: PublicAccessGrantSchema,
   credential: Schema.extend(PublicAccessGrantCredentialSchema, Schema.Struct({ password: Schema.String })),
-  session: Schema.optional(PublicLogicalSessionSchema),
+  session: exactOptional(PublicLogicalSessionSchema),
   endpoints: Schema.Struct({ http: Schema.String, socks5: Schema.String }),
 }).annotations({ identifier: "IssuedAccessGrant" });
 

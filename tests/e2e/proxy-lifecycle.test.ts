@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { Schema } from "effect";
+import { IssuedAccessGrantSchema } from "../../src/control-contract.js";
 import {
   bestEffortDeleteProfile,
   controlRequest,
@@ -8,7 +10,6 @@ import {
   e2eEnvironment,
   e2eTest,
   issuedProxyEndpoint,
-  type IssuedAccessGrantResponse,
   proxyWithCredentials,
   requestViaHttpProxy,
   requestViaSocks5,
@@ -90,7 +91,7 @@ e2eTest("a grant credential can be rotated and independently revoked", async (t)
     { method: "POST" },
   );
   assert.equal(rotationResponse.status, 200);
-  const rotated = (await rotationResponse.json()) as IssuedAccessGrantResponse;
+  const rotated = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await rotationResponse.json());
   const rotatedUrl = issuedProxyEndpoint(rotated, "http");
   assert.equal(
     rotated.grant.credentials.find((credential) => credential.credentialId === route.credential.credentialId)?.status,

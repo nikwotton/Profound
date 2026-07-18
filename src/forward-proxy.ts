@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { createConnection, type Socket } from "node:net";
-import { Transform, type Duplex } from "node:stream";
+import type { Duplex } from "node:stream";
 import { assignmentAttributes, assignmentLogContext } from "./assignment-evidence.js";
 import { assertSafeProviderResolution, recordDestinationResolution, resolvedAddressesFromHeader } from "./destination-resolution.js";
 import { abortReason, beginAttemptBudget, operationDeadline } from "./establishment-budget.js";
@@ -15,13 +15,14 @@ import {
 } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "./net-utils.js";
-import { RouteService, sessionRoutingTelemetryAttributes, sessionRoutingUsageContext } from "./route-service.js";
+import { attemptUsageRecord } from "./proxy-attempt-accounting.js";
+import { RouteService, sessionRoutingTelemetryAttributes } from "./route-service.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
 import { establishTunnel } from "./tunnel-operation.js";
+import { byteCounter } from "./stream-utils.js";
 import { type AuthenticatedRoute, type ListenAddress, type UpstreamEndpoint, type UsageOutcome } from "./types.js";
-import { usageDestination } from "./usage-destination.js";
 
 export interface ForwardProxyOptions {
   host: string;
@@ -60,16 +61,6 @@ function responseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   delete result["transfer-encoding"];
   result.connection = "close";
   return result;
-}
-
-function counter(onBytes: (bytes: number) => void, highWaterMark: number): Transform {
-  return new Transform({
-    highWaterMark,
-    transform(chunk: Buffer, _encoding, callback) {
-      onBytes(chunk.length);
-      callback(null, chunk);
-    },
-  });
 }
 
 function headerBytes(headers: IncomingHttpHeaders): number {
@@ -237,7 +228,6 @@ export class ForwardProxyServer {
         throw new AppError("Target URLs must not contain credentials", "target_forbidden", 403);
       }
       const port = target.port === "" ? 80 : Number(target.port);
-      const destination = usageDestination(target.hostname, port, target.pathname);
       initialBudget = beginAttemptBudget(establishmentDeadline, this.options.attemptEstablishmentTimeoutMs, callerController.signal);
       const targetValidation = await this.options.targetValidator(target.hostname, port, initialBudget.signal);
       const maxAttempts = route.shouldRetry ? route.retryPolicy.maxAttempts : 1;
@@ -316,67 +306,23 @@ export class ForwardProxyServer {
           });
           if (route !== undefined) {
             const completedAt = new Date().toISOString();
-            const latencyMs = Math.max(0, Date.parse(completedAt) - attemptStartedAt);
             void this.routes
-              .recordUsage({
-                id: attemptId,
-                logicalOperationId: operationId,
-                ...(route.jobId === undefined ? {} : { jobId: route.jobId }),
-                accessGrantId: route.accessGrantId,
-                sessionMode: route.sessionMode,
-                ...(route.sessionId === undefined ? {} : { sessionId: route.sessionId }),
-                routeId: route.id,
-                userId: route.userId,
-                customerId: route.customerId,
-                provider,
-                protocol: "http",
-                outcome: usageOutcome(outcome),
-                retryIndex: attemptIndex,
-                failover: provider !== "unresolved" && provider !== route.provider,
-                bytesSent,
-                bytesReceived,
-                latencyMs,
-                ...destination,
-                ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
-                ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-                ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
-                ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
-                ...(upstream?.proxySlotId === undefined
-                  ? {}
-                  : {
-                      proxySlotId: upstream.proxySlotId,
-                      ...(upstream.upstreamConnectionId === undefined ? {} : { upstreamConnectionId: upstream.upstreamConnectionId }),
-                      connectionStartedAt: upstream.upstreamConnectionStartedAt ?? new Date(attemptStartedAt).toISOString(),
-                      connectionEndedAt: completedAt,
-                      selectedSlotLoad: upstream.selectedSlotLoad,
-                    }),
-                ...(upstream?.capacityPressure === true
-                  ? {
-                      capacityPressure: true,
-                      capacityPressureProvider: upstream.capacityPressureProvider ?? upstream.provider,
-                      ...(upstream.capacityPolicyVersion === undefined ? {} : { capacityPolicyVersion: upstream.capacityPolicyVersion }),
-                    }
-                  : {}),
-                ...(resolutionState.capacityConstraint === undefined ? {} : { capacityConstraint: resolutionState.capacityConstraint }),
-                ...(upstream?.capacityCircuitState === undefined
-                  ? {}
-                  : {
-                      capacityCircuitState: upstream.capacityCircuitState,
-                      capacityCircuitReason: upstream.capacityCircuitReason,
-                      capacityCircuitCooldownUntil: upstream.capacityCircuitCooldownUntil,
-                    }),
-                ...(upstream?.routingPolicyVersion === undefined
-                  ? {}
-                  : {
-                      routingPolicyVersion: upstream.routingPolicyVersion,
-                      routingScore: upstream.routingScore,
-                      routingScoreComponents: upstream.routingScoreComponents,
-                    }),
-                establishmentWaitMs: resolutionState.establishmentWaitMs,
-                ...sessionRoutingUsageContext(resolutionState),
-                startedAt: new Date(attemptStartedAt).toISOString(),
-                completedAt,
-              })
+              .recordUsage(
+                attemptUsageRecord(route, resolutionState, {
+                  attemptId,
+                  operationId,
+                  protocol: "http",
+                  outcome: usageOutcome(outcome),
+                  attemptIndex,
+                  attemptStartedAt,
+                  completedAt,
+                  provider,
+                  bytesSent,
+                  bytesReceived,
+                  target: { host: target.hostname, port, path: target.pathname },
+                  ...(upstream === undefined ? {} : { upstream }),
+                }),
+              )
               .catch((usageError: unknown) => this.options.logger.error("Usage record persistence failed", { error: usageError }));
           }
         };
@@ -524,7 +470,7 @@ export class ForwardProxyServer {
               upstreamResponse.once("error", responseStreamError);
               upstreamResponse
                 .pipe(
-                  counter((bytes) => {
+                  byteCounter((bytes) => {
                     bytesReceived += bytes;
                   }, this.options.streamBufferBytes),
                 )
@@ -555,7 +501,7 @@ export class ForwardProxyServer {
           bytesSent += outboundHeaderBytes;
           request
             .pipe(
-              counter((bytes) => {
+              byteCounter((bytes) => {
                 bytesSent += bytes;
               }, this.options.streamBufferBytes),
             )

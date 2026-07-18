@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { AccessGrantService, type IssuedAccessGrant } from "./access-grant-service.js";
+import { ActiveConnectionTracker } from "./active-connection-tracker.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import { capacityCircuitAllowsCandidate } from "./capacity-circuit.js";
 import {
@@ -21,7 +22,6 @@ import type { Logger } from "./logger.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import { preferredProviderClass, providerCompatible, selectCompatibleProvider } from "./provider-selection.js";
 import { RotationCoordinator, type RotationContext } from "./route-rotation.js";
-import { DEPLOYMENT_POLL_INTERVAL_MS } from "./release-policy.js";
 import {
   historicalRoutingEvidence,
   ROUTING_POLICY,
@@ -31,7 +31,6 @@ import {
 } from "./routing-policy.js";
 import { toPublicRoute, type RoutingStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
-import { ACTIVE_CONNECTION_TTL_MS } from "./types.js";
 import type {
   AuthenticatedRoute,
   ActiveTunnel,
@@ -55,6 +54,7 @@ import type {
   UpstreamEndpoint,
   UsageRecord,
 } from "./types.js";
+import { ACTIVE_CONNECTION_TTL_MS } from "./types.js";
 import { validateRouteProfile } from "./validation.js";
 
 export type { IssuedAccessGrant } from "./access-grant-service.js";
@@ -199,9 +199,6 @@ function clearPreferredClassHealthWindow(session: StoredLogicalSession): StoredL
 export class RouteService {
   readonly effects: RouteServiceEffects;
   readonly #providers: ReadonlyMap<ProviderId, ProviderAdapter>;
-  readonly #activeByRoute = new Map<string, Set<() => void>>();
-  readonly #activeByGrant = new Map<string, Set<() => void>>();
-  readonly #activeBySession = new Map<string, Set<() => void>>();
   readonly #rotationDisabledSlots = new Set<string>();
 
   private readonly store: RoutingStore;
@@ -213,6 +210,7 @@ export class RouteService {
   private readonly now: () => number;
   private readonly accessGrants: AccessGrantService;
   private readonly rotations: RotationCoordinator;
+  private readonly connections: ActiveConnectionTracker;
 
   constructor(dependencies: RouteServiceDependencies) {
     this.store = dependencies.store;
@@ -226,14 +224,15 @@ export class RouteService {
       [dependencies.brightData.descriptor.id, dependencies.brightData],
       [dependencies.proxidize.descriptor.id, dependencies.proxidize],
     ]);
+    this.connections = new ActiveConnectionTracker(this.store, this.deploymentId, this.now);
     this.accessGrants = new AccessGrantService(
       this.store,
       {
         proxyAddresses: dependencies.proxyAddresses,
         advertisedProxyHost: dependencies.advertisedProxyHost,
         advertisedHttpProxyProtocol: dependencies.advertisedHttpProxyProtocol,
-        terminateActiveGrant: (grantId) => this.#terminate(this.#activeByGrant.get(grantId)),
-        terminateActiveSession: (sessionId) => this.#terminate(this.#activeBySession.get(sessionId)),
+        terminateActiveGrant: (grantId) => this.connections.terminateGrant(grantId),
+        terminateActiveSession: (sessionId) => this.connections.terminateSession(sessionId),
         now: this.now,
       },
       this.logger,
@@ -784,12 +783,8 @@ export class RouteService {
   async emergencyRevoke(id: string): Promise<void> {
     for (const grant of await this.store.listAccessGrants(id)) await this.store.revokeAccessGrant(grant.id, true);
     await this.store.revoke(id, true);
-    this.#terminate(this.#activeByRoute.get(id));
+    this.connections.terminateRoute(id);
     this.logger.warn("Route emergency-revoked; active connections terminated", { routeId: id });
-  }
-
-  #terminate(callbacks: Set<() => void> | undefined): void {
-    for (const terminate of [...(callbacks ?? [])]) terminate();
   }
 
   async trackActiveConnection(
@@ -800,96 +795,11 @@ export class RouteService {
     upstream: UpstreamEndpoint,
     terminate: () => void,
   ): Promise<() => void> {
-    const activeConnectionId = upstream.activeLoadClaimId ?? randomUUID();
-    const now = new Date(this.now()).toISOString();
-    const connection: ActiveTunnel = {
-      id: activeConnectionId,
-      deploymentId: this.deploymentId,
-      routeId,
-      accessGrantId,
-      ...(sessionId === undefined ? {} : { sessionId }),
-      protocol,
-      provider: upstream.provider,
-      endpointId: upstream.endpointId,
-      ...(upstream.routingPolicyVersion === undefined ? {} : { routingPolicyVersion: upstream.routingPolicyVersion }),
-      ...(upstream.routingScore === undefined ? {} : { routingScore: upstream.routingScore }),
-      startedAt: now,
-      lastHeartbeatAt: now,
-      expiresAt: new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString(),
-    };
-    if (upstream.activeLoadClaimId === undefined) await this.store.registerActiveTunnel(connection);
-    else await this.store.heartbeatActiveTunnel(activeConnectionId, now, connection.expiresAt);
-    upstream.upstreamConnectionId = activeConnectionId;
-    upstream.upstreamConnectionStartedAt = now;
-    const routeCallbacks = this.#activeByRoute.get(routeId) ?? new Set<() => void>();
-    routeCallbacks.add(terminate);
-    this.#activeByRoute.set(routeId, routeCallbacks);
-    const grantCallbacks = this.#activeByGrant.get(accessGrantId) ?? new Set<() => void>();
-    grantCallbacks.add(terminate);
-    this.#activeByGrant.set(accessGrantId, grantCallbacks);
-    const sessionCallbacks = sessionId === undefined ? undefined : (this.#activeBySession.get(sessionId) ?? new Set<() => void>());
-    sessionCallbacks?.add(terminate);
-    if (sessionId !== undefined && sessionCallbacks !== undefined) this.#activeBySession.set(sessionId, sessionCallbacks);
-    let finished = false;
-    let nextTunnelHeartbeatAt = 0;
-    let nextDeploymentCheckAt = 0;
-    const heartbeatIntervalMs = 30_000;
-    const check = async (): Promise<void> => {
-      if (finished) return;
-      if (await this.store.shouldTerminateActive(routeId, accessGrantId, sessionId)) {
-        terminate();
-        return;
-      }
-      if (this.now() >= nextDeploymentCheckAt) {
-        nextDeploymentCheckAt = this.now() + DEPLOYMENT_POLL_INTERVAL_MS;
-        if (await this.store.shouldTerminateDeployment(this.deploymentId)) {
-          terminate();
-          return;
-        }
-      }
-      if (this.now() >= nextTunnelHeartbeatAt) {
-        nextTunnelHeartbeatAt = this.now() + 30_000;
-        const heartbeat = new Date(this.now()).toISOString();
-        await this.store.heartbeatActiveTunnel(
-          activeConnectionId,
-          heartbeat,
-          new Date(this.now() + ACTIVE_CONNECTION_TTL_MS).toISOString(),
-        );
-      }
-    };
-    void check().catch(() => terminate());
-    const interval = setInterval(() => void check().catch(() => terminate()), Math.min(1_000, heartbeatIntervalMs));
-    interval.unref();
-    return () => {
-      if (finished) return;
-      finished = true;
-      clearInterval(interval);
-      routeCallbacks.delete(terminate);
-      if (routeCallbacks.size === 0) this.#activeByRoute.delete(routeId);
-      grantCallbacks.delete(terminate);
-      if (grantCallbacks.size === 0) this.#activeByGrant.delete(accessGrantId);
-      sessionCallbacks?.delete(terminate);
-      if (sessionId !== undefined && sessionCallbacks?.size === 0) this.#activeBySession.delete(sessionId);
-      void this.store.removeActiveTunnel(activeConnectionId).catch(() => undefined);
-      if (sessionId !== undefined) {
-        void (async () => {
-          const session = await this.store.getLogicalSession(sessionId).catch(() => undefined);
-          if (session === undefined) return;
-          const disconnectedAt = new Date(this.now()).toISOString();
-          await this.store.saveLogicalSession(
-            { ...session, lastDisconnectedAt: disconnectedAt, updatedAt: disconnectedAt },
-            session.bindingVersion,
-          );
-        })().catch(() => undefined);
-      }
-    };
+    return this.connections.track(routeId, accessGrantId, sessionId, protocol, upstream, terminate);
   }
 
   async releaseCandidate(upstream: UpstreamEndpoint | undefined): Promise<void> {
-    if (upstream?.activeLoadClaimId === undefined) return;
-    const claimId = upstream.activeLoadClaimId;
-    delete upstream.activeLoadClaimId;
-    await this.store.removeActiveTunnel(claimId);
+    await this.connections.release(upstream);
   }
 
   async recordUsage(record: Omit<UsageRecord, "kind" | "pricingVersion" | "pricingModel" | "priceUsd">): Promise<boolean> {

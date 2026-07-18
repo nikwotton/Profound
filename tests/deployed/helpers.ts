@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
 import { Schema } from "effect";
-import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema } from "../../src/control-contract.js";
+import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema, PublicRouteSchema } from "../../src/control-contract.js";
 import { expectBufferChunk, parseJson } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
 import type { RouteProfileInput } from "../../src/types.js";
@@ -105,7 +105,6 @@ export interface DeployedEnvironment {
   metadata: DeployedMetadata;
 }
 
-const mutableArray = <S extends Schema.Schema.Any>(schema: S) => Schema.mutable(Schema.Array(schema));
 const optional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
 
 const ServiceMetadataSchema: Schema.Schema<ServiceMetadata> = Schema.Struct({
@@ -190,50 +189,15 @@ const DeployedMetadataSchema: Schema.Schema<DeployedMetadata> = Schema.Struct({
 });
 
 export interface CreatedRouteResponse {
-  profile: PublicRoute & { id: string };
-  accessGrant: PublicAccessGrant & { id: string; routeId: string };
-  credential: PublicAccessGrantCredential & { id: string };
+  profile: typeof PublicRouteSchema.Type & { id: string };
+  accessGrant: typeof IssuedAccessGrantSchema.Type.grant & { id: string; routeId: string };
+  credential: typeof IssuedAccessGrantSchema.Type.credential & { id: string };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
 }
 
-export interface PublicAccessGrant {
-  grantId: string;
-  profileId: string;
-  status: "ready" | "revoked";
-  credentials: PublicAccessGrantCredential[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface PublicAccessGrantCredential {
-  credentialId: string;
-  username: string;
-  status: "active" | "overlap" | "revoked" | "expired";
-  createdAt: string;
-  renewalDueAt: string;
-  renewalDue: boolean;
-  expiresAt: string;
-  revokeAt?: string;
-  lastUsedAt?: string;
-}
-
-export interface IssuedAccessGrantResponse {
-  grant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential & { password: string };
-  endpoints: { http: string; socks5: string };
-}
-
-export interface PublicRoute {
-  profileId: string;
-  status: "ready" | "rotating" | "failed" | "revoked";
-  customerId: string;
-  geography?: { countryCode?: string; regionCode?: string; city?: string };
-  carrier?: string;
-  allowConnectionRetry: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
+export type IssuedAccessGrantResponse = typeof IssuedAccessGrantSchema.Type;
+export type PublicRoute = typeof PublicRouteSchema.Type;
 
 type LegacyTestProfileInput = Partial<RouteProfileInput> & {
   name?: string;
@@ -285,11 +249,7 @@ function optionalEnvironment(name: string): string | undefined {
   return value ? value : undefined;
 }
 
-export async function awsJson<A, I>(
-  args: string[],
-  schema: Schema.Schema<A, I, never>,
-  region = optionalEnvironment("AWS_REGION"),
-): Promise<A> {
+export async function awsJson<A, I>(args: string[], schema: Schema.Schema<A, I>, region = optionalEnvironment("AWS_REGION")): Promise<A> {
   const command = [...args, ...(region === undefined ? [] : ["--region", region]), "--output", "json"];
   try {
     const { stdout } = await execFileAsync("aws", command, {
@@ -304,7 +264,7 @@ export async function awsJson<A, I>(
   }
 }
 
-export async function axiomJson<A, I>(path: string, schema: Schema.Schema<A, I, never>, init: RequestInit = {}): Promise<A> {
+export async function axiomJson<A, I>(path: string, schema: Schema.Schema<A, I>, init: RequestInit = {}): Promise<A> {
   const token = requiredEnvironment("DEPLOYED_AXIOM_QUERY_TOKEN");
   const base = optionalEnvironment("DEPLOYED_AXIOM_API_URL") ?? "https://api.axiom.co";
   const headers = new Headers(init.headers);
@@ -322,18 +282,14 @@ export async function axiomJson<A, I>(path: string, schema: Schema.Schema<A, I, 
 }
 
 export function axiomApl(apl: string, startTimeMs: number): Promise<unknown> {
-  return axiomJson(
-    "v1/datasets/_apl?format=tabular",
-    Schema.Unknown,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        apl,
-        startTime: new Date(startTimeMs).toISOString(),
-        endTime: new Date().toISOString(),
-      }),
-    },
-  );
+  return axiomJson("v1/datasets/_apl?format=tabular", Schema.Unknown, {
+    method: "POST",
+    body: JSON.stringify({
+      apl,
+      startTime: new Date(startTimeMs).toISOString(),
+      endTime: new Date().toISOString(),
+    }),
+  });
 }
 
 let environmentPromise: Promise<DeployedEnvironment> | undefined;

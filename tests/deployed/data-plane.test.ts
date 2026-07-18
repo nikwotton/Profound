@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { expectRecord, parseJson } from "../../src/decoding.js";
 import {
   type CreatedRouteResponse,
   createRoute,
@@ -13,7 +14,7 @@ import {
 } from "./helpers.js";
 
 function parsedBody(response: { body: string }): Record<string, unknown> {
-  return JSON.parse(response.body) as Record<string, unknown>;
+  return expectRecord(parseJson(response.body, "deployed target response"), "deployed target response");
 }
 
 deployedTest("deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body", async (t) => {

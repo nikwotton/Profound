@@ -5,23 +5,19 @@ import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
 import { Schema } from "effect";
-import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema } from "../../src/control-contract.js";
+import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema, PublicRouteSchema } from "../../src/control-contract.js";
 import { expectBufferChunk } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
-import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../../src/types.js";
+import type { RouteProfileInput } from "../../src/types.js";
 
 export const e2eTestsEnabled = process.env["RUN_PROXY_E2E_TESTS"] === "1";
 
-export interface IssuedAccessGrantResponse {
-  grant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential & { password: string };
-  endpoints: { http: string; socks5: string };
-}
+export type IssuedAccessGrantResponse = typeof IssuedAccessGrantSchema.Type;
 
 export interface CreatedRouteResponse {
-  profile: PublicRoute;
-  accessGrant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential & { password: string };
+  profile: typeof PublicRouteSchema.Type;
+  accessGrant: typeof IssuedAccessGrantSchema.Type.grant;
+  credential: typeof IssuedAccessGrantSchema.Type.credential;
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
 }

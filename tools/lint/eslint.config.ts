@@ -54,6 +54,12 @@ export default defineConfig(
     },
   },
   {
+    files: ["tests/helpers.ts", "tests/e2e/helpers.ts", "tests/deployed/helpers.ts"],
+    rules: {
+      "@typescript-eslint/no-unsafe-type-assertion": "error",
+    },
+  },
+  {
     files: ["tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-floating-promises": [

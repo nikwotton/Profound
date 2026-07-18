@@ -1,15 +1,14 @@
 import { ControlApiServer } from "./control-api.js";
 import { Context, Effect, Layer, ManagedRuntime } from "effect";
 import type { AppConfig } from "./config.js";
+import { createDataPlaneRuntime } from "./data-plane-runtime.js";
 import { DynamoRouteStore } from "./dynamo-store.js";
-import { ForwardProxyServer } from "./forward-proxy.js";
 import type { Logger } from "./logger.js";
 import type { BrightDataConfig } from "./providers/bright-data.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import type { ProxidizeConfig } from "./providers/proxidize.js";
 import { createProviderRuntime } from "./provider-runtime.js";
 import { RouteService } from "./route-service.js";
-import { Socks5ProxyServer } from "./socks5-proxy.js";
 import type { BrightDataSimulator } from "./simulators/bright-data.js";
 import type { ProxidizeSimulator } from "./simulators/proxidize.js";
 import type { RouteStore } from "./store.js";
@@ -59,6 +58,17 @@ interface RoutingRuntime {
 }
 
 class RoutingRuntimeService extends Context.Tag("Profound/RoutingRuntime")<RoutingRuntimeService, RoutingRuntime>() {}
+
+function acquireTelemetry(config: AppConfig, dependency: Telemetry | undefined): { telemetry: Telemetry; stop(): Promise<void> } {
+  const telemetry =
+    dependency ??
+    new Telemetry({
+      serviceName: config.telemetry.serviceName,
+      serviceVersion: config.telemetry.serviceVersion,
+      environment: process.env,
+    });
+  return { telemetry, stop: dependency === undefined ? () => telemetry.shutdown() : async () => undefined };
+}
 
 async function createUnmanagedRoutingRuntime(
   config: AppConfig,
@@ -150,14 +160,8 @@ export async function startStandaloneApplication(
   logger: Logger,
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningApplication> {
-  const ownsTelemetry = dependencies.telemetry === undefined;
-  const telemetry =
-    dependencies.telemetry ??
-    new Telemetry({
-      serviceName: config.telemetry.serviceName,
-      serviceVersion: config.telemetry.serviceVersion,
-      environment: process.env,
-    });
+  const telemetryScope = acquireTelemetry(config, dependencies.telemetry);
+  const telemetry = telemetryScope.telemetry;
   let forwardAddress: ListenAddress | undefined;
   let socks5Address: ListenAddress | undefined;
   const runtime = await createRoutingRuntime(
@@ -171,32 +175,13 @@ export async function startStandaloneApplication(
     dependencies,
   );
   const routes = runtime.routes;
-  const forward = new ForwardProxyServer(routes, {
-    host: config.forwardHost,
-    port: config.forwardPort,
-    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
-    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
-    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
-    streamBufferBytes: config.streamBufferBytes,
-    maxHeaderBytes: config.maxHeaderBytes,
-    targetValidator:
-      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
+  const dataPlane = createDataPlaneRuntime(
+    routes,
+    config,
     logger,
     telemetry,
-  });
-  const socks5 = new Socks5ProxyServer(routes, {
-    host: config.socks5Host,
-    port: config.socks5Port,
-    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
-    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
-    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
-    streamBufferBytes: config.streamBufferBytes,
-    maxHandshakeBytes: config.maxHeaderBytes,
-    targetValidator:
-      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
-    logger,
-    telemetry,
-  });
+    dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
+  );
   const control = new ControlApiServer(routes, {
     host: config.controlHost,
     port: config.controlPort,
@@ -209,8 +194,7 @@ export async function startStandaloneApplication(
   });
 
   try {
-    forwardAddress = await forward.start();
-    socks5Address = await socks5.start();
+    ({ forwardAddress, socks5Address } = await dataPlane.start());
     const controlAddress = await control.start();
     await routes.refreshHealth();
     logger.info("Proxy router started", {
@@ -230,16 +214,16 @@ export async function startStandaloneApplication(
       stop: async () => {
         if (stopped) return;
         stopped = true;
-        await Promise.allSettled([control.stop(), forward.stop(), socks5.stop()]);
+        await Promise.allSettled([control.stop(), dataPlane.stop()]);
         await runtime.stop();
         logger.info("Proxy router stopped");
-        if (ownsTelemetry) await telemetry.shutdown();
+        await telemetryScope.stop();
       },
     };
   } catch (error) {
-    await Promise.allSettled([control.stop(), forward.stop(), socks5.stop()]);
+    await Promise.allSettled([control.stop(), dataPlane.stop()]);
     await runtime.stop();
-    if (ownsTelemetry) await telemetry.shutdown();
+    await telemetryScope.stop();
     throw error;
   }
 }
@@ -249,14 +233,8 @@ export async function startDataPlaneApplication(
   logger: Logger,
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningDataPlaneApplication> {
-  const ownsTelemetry = dependencies.telemetry === undefined;
-  const telemetry =
-    dependencies.telemetry ??
-    new Telemetry({
-      serviceName: config.telemetry.serviceName,
-      serviceVersion: config.telemetry.serviceVersion,
-      environment: process.env,
-    });
+  const telemetryScope = acquireTelemetry(config, dependencies.telemetry);
+  const telemetry = telemetryScope.telemetry;
   let forwardAddress: ListenAddress | undefined;
   let socks5Address: ListenAddress | undefined;
   const runtime = await createRoutingRuntime(
@@ -269,35 +247,15 @@ export async function startDataPlaneApplication(
     },
     dependencies,
   );
-  const forward = new ForwardProxyServer(runtime.routes, {
-    host: config.forwardHost,
-    port: config.forwardPort,
-    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
-    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
-    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
-    streamBufferBytes: config.streamBufferBytes,
-    maxHeaderBytes: config.maxHeaderBytes,
-    targetValidator:
-      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
+  const dataPlane = createDataPlaneRuntime(
+    runtime.routes,
+    config,
     logger,
     telemetry,
-  });
-  const socks5 = new Socks5ProxyServer(runtime.routes, {
-    host: config.socks5Host,
-    port: config.socks5Port,
-    attemptEstablishmentTimeoutMs: config.attemptEstablishmentTimeoutMs,
-    operationEstablishmentTimeoutMs: config.operationEstablishmentTimeoutMs,
-    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
-    streamBufferBytes: config.streamBufferBytes,
-    maxHandshakeBytes: config.maxHeaderBytes,
-    targetValidator:
-      dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
-    logger,
-    telemetry,
-  });
+    dependencies.targetValidator ?? createTargetValidator(config.allowedTargetPorts, undefined, config.blockedTargetHostnames),
+  );
   try {
-    forwardAddress = await forward.start();
-    socks5Address = await socks5.start();
+    ({ forwardAddress, socks5Address } = await dataPlane.start());
     await runtime.routes.refreshHealth();
     logger.info("Proxy data plane started", { providerMode: config.providerMode, forwardAddress, socks5Address });
     let stopped = false;
@@ -308,15 +266,15 @@ export async function startDataPlaneApplication(
       stop: async () => {
         if (stopped) return;
         stopped = true;
-        await Promise.allSettled([forward.stop(), socks5.stop()]);
+        await dataPlane.stop();
         await runtime.stop();
-        if (ownsTelemetry) await telemetry.shutdown();
+        await telemetryScope.stop();
       },
     };
   } catch (error) {
-    await Promise.allSettled([forward.stop(), socks5.stop()]);
+    await dataPlane.stop();
     await runtime.stop();
-    if (ownsTelemetry) await telemetry.shutdown();
+    await telemetryScope.stop();
     throw error;
   }
 }
@@ -326,14 +284,8 @@ export async function startControlPlaneApplication(
   logger: Logger,
   dependencies: ApplicationDependencies = {},
 ): Promise<RunningControlPlaneApplication> {
-  const ownsTelemetry = dependencies.telemetry === undefined;
-  const telemetry =
-    dependencies.telemetry ??
-    new Telemetry({
-      serviceName: config.telemetry.serviceName,
-      serviceVersion: config.telemetry.serviceVersion,
-      environment: process.env,
-    });
+  const telemetryScope = acquireTelemetry(config, dependencies.telemetry);
+  const telemetry = telemetryScope.telemetry;
   const runtime = await createRoutingRuntime(
     config,
     logger,
@@ -367,13 +319,13 @@ export async function startControlPlaneApplication(
         stopped = true;
         await control.stop();
         await runtime.stop();
-        if (ownsTelemetry) await telemetry.shutdown();
+        await telemetryScope.stop();
       },
     };
   } catch (error) {
     await control.stop();
     await runtime.stop();
-    if (ownsTelemetry) await telemetry.shutdown();
+    await telemetryScope.stop();
     throw error;
   }
 }

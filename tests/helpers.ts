@@ -4,11 +4,11 @@ import { connect, createServer as createNetServer, isIP, type Socket } from "nod
 import { Schema } from "effect";
 import { startStandaloneApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
-import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema } from "../src/control-contract.js";
+import { CreatedProfileSchema, IssuedAccessGrantSchema, ProfileResponseSchema, PublicRouteSchema } from "../src/control-contract.js";
 import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
-import type { PublicAccessGrant, PublicAccessGrantCredential, PublicLogicalSession, PublicRoute, RouteProfileInput } from "../src/types.js";
+import type { RouteProfileInput } from "../src/types.js";
 import { InMemoryRouteStore, InMemoryRouteStoreState } from "../src/in-memory-route-store.js";
 
 export interface TestTarget {
@@ -24,19 +24,14 @@ export interface TestApp {
 }
 
 export interface CreatedRouteResponse {
-  profile: PublicRoute & { id: string };
-  accessGrant: PublicAccessGrant & { id: string; routeId: string };
-  credential: PublicAccessGrantCredential & { id: string };
+  profile: typeof PublicRouteSchema.Type & { id: string };
+  accessGrant: typeof IssuedAccessGrantSchema.Type.grant & { id: string; routeId: string };
+  credential: typeof IssuedAccessGrantSchema.Type.credential & { id: string };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
 }
 
-export interface IssuedAccessGrantApiResponse {
-  grant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential & { password: string };
-  session?: PublicLogicalSession;
-  endpoints: { http: string; socks5: string };
-}
+export type IssuedAccessGrantApiResponse = typeof IssuedAccessGrantSchema.Type;
 
 export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiResponse): Omit<CreatedRouteResponse, "profile"> {
   return {

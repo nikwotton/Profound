@@ -223,11 +223,7 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
   assert.match(canaryEnvironment["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "", /^http:\/\/CanaryTelemetryCollector\./);
   assert.equal(metadata.geoIpBundleConfigured, true);
   assert.equal(metadata.canary.geoIpPackaged, true);
-  const canaryApi = await awsJson(
-    ["apigatewayv2", "get-api", "--api-id", metadata.canary.apiId],
-    ApiDescriptionSchema,
-    environment.region,
-  );
+  const canaryApi = await awsJson(["apigatewayv2", "get-api", "--api-id", metadata.canary.apiId], ApiDescriptionSchema, environment.region);
   assert.equal(canaryApi.ProtocolType, "HTTP");
   assert.equal(canaryApi.ApiEndpoint, metadata.publicCanary.replace(/\/$/, ""));
 
@@ -278,8 +274,11 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
 deployedTest("deployed networks isolate the canary and keep status and aggregation private", async () => {
   const environment = await deployedEnvironment();
   const metadata = environment.metadata;
-  const vpcs = await awsJson<{ Vpcs?: Array<{ VpcId?: string; State?: string }> }>(
+  const vpcs = await awsJson(
     ["ec2", "describe-vpcs", "--vpc-ids", metadata.productVpcId, metadata.canaryVpcId],
+    Schema.Struct({
+      Vpcs: optional(mutableArray(Schema.Struct({ VpcId: optional(Schema.String), State: optional(Schema.String) }))),
+    }),
     environment.region,
   );
   assert.deepEqual(new Set(vpcs.Vpcs?.map(({ VpcId }) => VpcId)), new Set([metadata.productVpcId, metadata.canaryVpcId]));
@@ -289,30 +288,30 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
     const service = await describeService(serviceMetadata.cluster, serviceMetadata.service, environment.region);
     const subnetIds = service.networkConfiguration?.awsvpcConfiguration?.subnets ?? [];
     assert.ok(subnetIds.length > 0);
-    const subnets = await awsJson<{ Subnets?: Array<{ VpcId?: string }> }>(
-      ["ec2", "describe-subnets", "--subnet-ids", ...subnetIds],
-      environment.region,
-    );
+    const subnets = await awsJson(["ec2", "describe-subnets", "--subnet-ids", ...subnetIds], SubnetsResponseSchema, environment.region);
     const expectedVpc = name === "canaryTelemetry" ? metadata.canaryVpcId : metadata.productVpcId;
     assert.ok(subnets.Subnets?.every(({ VpcId }) => VpcId === expectedVpc));
   }
 
-  const canaryFunction = await awsJson<{ VpcConfig?: { SubnetIds?: string[] } }>(
+  const canaryFunction = await awsJson(
     ["lambda", "get-function-configuration", "--function-name", metadata.canary.functionArn],
+    Schema.Struct({ VpcConfig: optional(Schema.Struct({ SubnetIds: optional(mutableArray(Schema.String)) })) }),
     environment.region,
   );
   const canarySubnetIds = canaryFunction.VpcConfig?.SubnetIds ?? [];
   assert.ok(canarySubnetIds.length > 0);
-  const canarySubnets = await awsJson<{ Subnets?: Array<{ VpcId?: string }> }>(
+  const canarySubnets = await awsJson(
     ["ec2", "describe-subnets", "--subnet-ids", ...canarySubnetIds],
+    SubnetsResponseSchema,
     environment.region,
   );
   assert.ok(canarySubnets.Subnets?.every(({ VpcId }) => VpcId === metadata.canaryVpcId));
 
   const integrationTarget = metadata.integrationTarget;
   assert.ok(integrationTarget);
-  const targetFunction = await awsJson<{ VpcConfig?: { SubnetIds?: string[] } }>(
+  const targetFunction = await awsJson(
     ["lambda", "get-function-configuration", "--function-name", integrationTarget.functionArn],
+    Schema.Struct({ VpcConfig: optional(Schema.Struct({ SubnetIds: optional(mutableArray(Schema.String)) })) }),
     environment.region,
   );
   const targetSubnetIds = targetFunction.VpcConfig?.SubnetIds ?? [];
@@ -326,8 +325,9 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
     assert.equal(transportService.runningCount, 1);
     assert.deepEqual(await loadBalancerSchemes(transportService, environment.region), ["internet-facing"]);
     const transportSubnetIds = transportService.networkConfiguration?.awsvpcConfiguration?.subnets ?? [];
-    const transportSubnets = await awsJson<{ Subnets?: Array<{ VpcId?: string }> }>(
+    const transportSubnets = await awsJson(
       ["ec2", "describe-subnets", "--subnet-ids", ...transportSubnetIds],
+      SubnetsResponseSchema,
       environment.region,
     );
     assert.ok(transportSubnets.Subnets?.every(({ VpcId }) => VpcId === metadata.canaryVpcId));
@@ -380,16 +380,26 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
     targetGroupArn === undefined ? [] : [targetGroupArn],
   );
   assert.ok(proxyTargetGroups.length >= 2);
-  const targetGroups = await awsJson<{ TargetGroups?: Array<{ LoadBalancerArns?: string[] }> }>(
+  const targetGroups = await awsJson(
     ["elbv2", "describe-target-groups", "--target-group-arns", ...proxyTargetGroups],
+    Schema.Struct({
+      TargetGroups: optional(mutableArray(Schema.Struct({ LoadBalancerArns: optional(mutableArray(Schema.String)) }))),
+    }),
     environment.region,
   );
   const proxyLoadBalancers = [...new Set((targetGroups.TargetGroups ?? []).flatMap(({ LoadBalancerArns }) => LoadBalancerArns ?? []))];
   assert.equal(proxyLoadBalancers.length, 1);
   const proxyLoadBalancer = proxyLoadBalancers[0];
   assert.ok(proxyLoadBalancer);
-  const listeners = await awsJson<{ Listeners?: Array<{ ListenerArn?: string; Port?: number; Protocol?: string }> }>(
+  const listeners = await awsJson(
     ["elbv2", "describe-listeners", "--load-balancer-arn", proxyLoadBalancer],
+    Schema.Struct({
+      Listeners: optional(
+        mutableArray(
+          Schema.Struct({ ListenerArn: optional(Schema.String), Port: optional(Schema.Number), Protocol: optional(Schema.String) }),
+        ),
+      ),
+    }),
     environment.region,
   );
   assert.equal(listeners.Listeners?.length, 2);
@@ -403,8 +413,9 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
     assert.equal(listener.Protocol, "TCP");
     const listenerArn = listener.ListenerArn;
     assert.ok(listenerArn);
-    const listenerAttributes = await awsJson<{ Attributes?: Array<{ Key?: string; Value?: string }> }>(
+    const listenerAttributes = await awsJson(
       ["elbv2", "describe-listener-attributes", "--listener-arn", listenerArn],
+      AttributesResponseSchema,
       environment.region,
     );
     const values = Object.fromEntries(
@@ -417,8 +428,9 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
     assert.equal(values["tcp.idle_timeout.seconds"], String(expected));
   }
   for (const targetGroupArn of proxyTargetGroups) {
-    const targetAttributes = await awsJson<{ Attributes?: Array<{ Key?: string; Value?: string }> }>(
+    const targetAttributes = await awsJson(
       ["elbv2", "describe-target-group-attributes", "--target-group-arn", targetGroupArn],
+      AttributesResponseSchema,
       environment.region,
     );
     const values = Object.fromEntries(
@@ -433,14 +445,22 @@ deployedTest("deployed DynamoDB and Axiom datasets preserve durable state and re
   const environment = await deployedEnvironment();
   const expectedTelemetryRetention = 30;
   assert.equal(environment.metadata.telemetry.retentionDays, expectedTelemetryRetention);
-  const table = await awsJson<{
-    Table?: {
-      TableStatus?: string;
-      BillingModeSummary?: { BillingMode?: string };
-      GlobalSecondaryIndexes?: Array<{ IndexName?: string; IndexStatus?: string }>;
-      DeletionProtectionEnabled?: boolean;
-    };
-  }>(["dynamodb", "describe-table", "--table-name", environment.metadata.routeTable], environment.region);
+  const table = await awsJson(
+    ["dynamodb", "describe-table", "--table-name", environment.metadata.routeTable],
+    Schema.Struct({
+      Table: optional(
+        Schema.Struct({
+          TableStatus: optional(Schema.String),
+          BillingModeSummary: optional(Schema.Struct({ BillingMode: optional(Schema.String) })),
+          GlobalSecondaryIndexes: optional(
+            mutableArray(Schema.Struct({ IndexName: optional(Schema.String), IndexStatus: optional(Schema.String) })),
+          ),
+          DeletionProtectionEnabled: optional(Schema.Boolean),
+        }),
+      ),
+    }),
+    environment.region,
+  );
   assert.equal(table.Table?.TableStatus, "ACTIVE");
   assert.equal(table.Table?.BillingModeSummary?.BillingMode, "PAY_PER_REQUEST");
   assert.deepEqual(table.Table?.GlobalSecondaryIndexes?.map(({ IndexName }) => IndexName).sort(), [
@@ -449,31 +469,44 @@ deployedTest("deployed DynamoDB and Axiom datasets preserve durable state and re
   ]);
   assert.ok(table.Table?.GlobalSecondaryIndexes?.every(({ IndexStatus }) => IndexStatus === "ACTIVE"));
 
-  const backups = await awsJson<{
-    ContinuousBackupsDescription?: {
-      PointInTimeRecoveryDescription?: { PointInTimeRecoveryStatus?: string };
-    };
-  }>(["dynamodb", "describe-continuous-backups", "--table-name", environment.metadata.routeTable], environment.region);
+  const backups = await awsJson(
+    ["dynamodb", "describe-continuous-backups", "--table-name", environment.metadata.routeTable],
+    Schema.Struct({
+      ContinuousBackupsDescription: optional(
+        Schema.Struct({
+          PointInTimeRecoveryDescription: optional(Schema.Struct({ PointInTimeRecoveryStatus: optional(Schema.String) })),
+        }),
+      ),
+    }),
+    environment.region,
+  );
   assert.equal(backups.ContinuousBackupsDescription?.PointInTimeRecoveryDescription?.PointInTimeRecoveryStatus, "ENABLED");
 
   const integrationTarget = environment.metadata.integrationTarget;
   assert.ok(integrationTarget);
-  const targetTable = await awsJson<{
-    Table?: {
-      TableStatus?: string;
-      BillingModeSummary?: { BillingMode?: string };
-      DeletionProtectionEnabled?: boolean;
-    };
-  }>(["dynamodb", "describe-table", "--table-name", integrationTarget.stateTable], environment.region);
+  const targetTable = await awsJson(
+    ["dynamodb", "describe-table", "--table-name", integrationTarget.stateTable],
+    Schema.Struct({
+      Table: optional(
+        Schema.Struct({
+          TableStatus: optional(Schema.String),
+          BillingModeSummary: optional(Schema.Struct({ BillingMode: optional(Schema.String) })),
+          DeletionProtectionEnabled: optional(Schema.Boolean),
+        }),
+      ),
+    }),
+    environment.region,
+  );
   assert.equal(targetTable.Table?.TableStatus, "ACTIVE");
   assert.equal(targetTable.Table?.BillingModeSummary?.BillingMode, "PAY_PER_REQUEST");
   assert.equal(targetTable.Table?.DeletionProtectionEnabled, false);
-  const targetTtl = await awsJson<{
-    TimeToLiveDescription?: {
-      TimeToLiveStatus?: string;
-      AttributeName?: string;
-    };
-  }>(["dynamodb", "describe-time-to-live", "--table-name", integrationTarget.stateTable], environment.region);
+  const targetTtl = await awsJson(
+    ["dynamodb", "describe-time-to-live", "--table-name", integrationTarget.stateTable],
+    Schema.Struct({
+      TimeToLiveDescription: optional(Schema.Struct({ TimeToLiveStatus: optional(Schema.String), AttributeName: optional(Schema.String) })),
+    }),
+    environment.region,
+  );
   assert.match(targetTtl.TimeToLiveDescription?.TimeToLiveStatus ?? "", /^ENABL(?:ING|ED)$/);
   assert.equal(targetTtl.TimeToLiveDescription?.AttributeName, "expiresAt");
 
@@ -483,7 +516,10 @@ deployedTest("deployed DynamoDB and Axiom datasets preserve durable state and re
     [environment.metadata.telemetry.datasets.metrics, "otel:metrics:v1", expectedTelemetryRetention],
   ] as const;
   for (const [name, kind, retentionDays] of expectedDatasets) {
-    const dataset = await axiomJson<{ name?: string; kind?: string; retentionDays?: number }>(`v2/datasets/${encodeURIComponent(name)}`);
+    const dataset = await axiomJson(
+      `v2/datasets/${encodeURIComponent(name)}`,
+      Schema.Struct({ name: optional(Schema.String), kind: optional(Schema.String), retentionDays: optional(Schema.Number) }),
+    );
     assert.equal(dataset.name, name);
     assert.equal(dataset.kind, kind);
     assert.equal(dataset.retentionDays, retentionDays);
@@ -513,12 +549,14 @@ deployedTest("deployed access-grant credentials and route requirements survive a
   assert.equal(before.status, 200);
   const city = before.headers["x-mock-city"];
 
-  const previousTasks = await awsJson<{ taskArns?: string[] }>(
+  const previousTasks = await awsJson(
     ["ecs", "list-tasks", "--cluster", proxyService.cluster, "--service-name", proxyService.service],
+    Schema.Struct({ taskArns: optional(mutableArray(Schema.String)) }),
     environment.region,
   );
   await awsJson(
     ["ecs", "update-service", "--cluster", proxyService.cluster, "--service", proxyService.service, "--force-new-deployment"],
+    Schema.Unknown,
     environment.region,
   );
 
@@ -527,8 +565,9 @@ deployedTest("deployed access-grant credentials and route requirements survive a
     async () => {
       const service = await describeService(proxyService.cluster, proxyService.service, environment.region);
       if (service.deployments?.length !== 1 || service.runningCount !== service.desiredCount) return undefined;
-      const current = await awsJson<{ taskArns?: string[] }>(
+      const current = await awsJson(
         ["ecs", "list-tasks", "--cluster", proxyService.cluster, "--service-name", proxyService.service],
+        Schema.Struct({ taskArns: optional(mutableArray(Schema.String)) }),
         environment.region,
       );
       return current.taskArns?.some((arn) => !(previousTasks.taskArns ?? []).includes(arn)) ? current : undefined;

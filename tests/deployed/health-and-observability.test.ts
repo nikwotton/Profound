@@ -1,21 +1,28 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { Schema } from "effect";
 import { signCanaryChallenge } from "../../src/canary-challenge.js";
+import { expectArray, expectBoolean, expectNumber, expectRecord, parseJson } from "../../src/decoding.js";
+import { decodeCapabilityHealthSnapshot } from "../../src/storage-decoding.js";
 import { axiomApl, createRoute, deployedEnvironment, deployedTest, requestViaHttpProxy, revokeRoute, waitFor } from "./helpers.js";
 
-interface Capability {
-  capability: string;
-  status: string;
-  providerStatusAt?: string;
-  endToEndValidatedAt?: string;
-}
+const optional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
+const CanaryResponseSchema = Schema.Struct({
+  observedIp: Schema.String,
+  timestamp: optional(Schema.String),
+  correlationId: Schema.String,
+  geo: Schema.Struct({
+    status: Schema.String,
+    countryCode: optional(Schema.String),
+    city: optional(Schema.String),
+    accuracyRadiusKm: optional(Schema.Number),
+  }),
+  geoDataset: optional(Schema.Struct({ vendor: Schema.String, edition: Schema.String, buildTimestamp: Schema.String })),
+});
 
-interface HealthSnapshot {
-  id: string;
-  generatedAt: string;
-  capabilities: Capability[];
-  providers: Array<{ provider: string; state: string }>;
-  geographies: unknown[];
+function healthSnapshotResponse(value: unknown, context: string) {
+  const response = expectRecord(value, context);
+  return decodeCapabilityHealthSnapshot(response["snapshot"]);
 }
 
 async function fetchInternal(base: string, path: string, token?: string, init: RequestInit = {}): Promise<Response> {
@@ -44,43 +51,37 @@ deployedTest("deployed health aggregator and status application expose durable c
 
   const aggregatorStatus = await fetchInternal(environment.metadata.healthAggregator, "/v1/status", token);
   assert.equal(aggregatorStatus.status, 200);
-  const aggregatorBody = (await aggregatorStatus.json()) as { snapshot: HealthSnapshot };
-  assert.ok(aggregatorBody.snapshot);
+  const aggregatorSnapshot = healthSnapshotResponse(await aggregatorStatus.json(), "health aggregator response");
   assert.deepEqual(
-    aggregatorBody.snapshot.capabilities.map(({ capability }) => capability),
+    aggregatorSnapshot.capabilities.map(({ capability }) => capability),
     ["all_traffic", "managed_sessions", "stateless_traffic", "health_verification"],
   );
   assert.ok(
-    aggregatorBody.snapshot.capabilities.every(
-      ({ status }) => status === "operational" || status === "degraded" || status === "unavailable",
-    ),
+    aggregatorSnapshot.capabilities.every(({ status }) => status === "operational" || status === "degraded" || status === "unavailable"),
   );
-  assert.deepEqual(aggregatorBody.snapshot.providers.map(({ provider }) => provider).sort(), ["bright_data", "proxidize"]);
+  assert.deepEqual(aggregatorSnapshot.providers.map(({ provider }) => provider).sort(), ["bright_data", "proxidize"]);
 
   const statusLive = await fetchInternal(environment.metadata.statusApplication, "/health/live");
   assert.equal(statusLive.status, 200);
   const status = await fetchInternal(environment.metadata.statusApplication, "/api/status");
   assert.equal(status.status, 200);
-  const statusBody = (await status.json()) as {
-    snapshot: HealthSnapshot;
-    stale: boolean;
-    ageMs: number;
-    capabilityFreshness: Array<{ capability: string; providerStatusStale: boolean; endToEndValidationStale: boolean }>;
-  };
-  assert.equal(typeof statusBody.stale, "boolean");
-  assert.equal(typeof statusBody.ageMs, "number");
-  assert.equal(statusBody.capabilityFreshness.length, 4);
+  const statusBody = expectRecord(await status.json(), "status application response");
+  decodeCapabilityHealthSnapshot(statusBody["snapshot"]);
+  expectBoolean(statusBody["stale"], "status application response.stale");
+  expectNumber(statusBody["ageMs"], "status application response.ageMs");
+  assert.equal(expectArray(statusBody["capabilityFreshness"], "status application response.capabilityFreshness").length, 4);
 
   const history = await fetchInternal(environment.metadata.statusApplication, "/api/status/history?limit=5");
   assert.equal(history.status, 200);
-  assert.ok(((await history.json()) as { data: unknown[] }).data.length > 0);
+  const historyBody = expectRecord(await history.json(), "status history response");
+  assert.ok(expectArray(historyBody["data"], "status history response.data").length > 0);
   assert.equal((await fetchInternal(environment.metadata.statusApplication, "/api/status/geographies")).status, 200);
 
   const requestedValidation = await fetchInternal(environment.metadata.statusApplication, "/api/status/validate", undefined, {
     method: "POST",
   });
   assert.equal(requestedValidation.status, 200);
-  assert.ok(((await requestedValidation.json()) as { snapshot: HealthSnapshot }).snapshot);
+  healthSnapshotResponse(await requestedValidation.json(), "requested validation response");
 
   const page = await fetchInternal(environment.metadata.statusApplication, "/");
   assert.equal(page.status, 200);
@@ -114,16 +115,10 @@ deployedTest("deployed signed public canary works directly and through the norma
     body: JSON.stringify(direct),
   });
   assert.equal(directResponse.status, 200);
-  const directBody = (await directResponse.json()) as {
-    observedIp: string;
-    timestamp: string;
-    correlationId: string;
-    geo: { status: string; accuracyRadiusKm?: number };
-    geoDataset?: { vendor: string; edition: string; buildTimestamp: string };
-  };
+  const directBody = Schema.decodeUnknownSync(CanaryResponseSchema)(await directResponse.json());
   assert.equal(directBody.correlationId, direct.testId);
   assert.notEqual(directBody.observedIp, "198.51.100.99");
-  assert.ok(Number.isFinite(Date.parse(directBody.timestamp)));
+  assert.ok(Number.isFinite(Date.parse(directBody.timestamp ?? "")));
   assert.ok(["available", "unverifiable", "unavailable"].includes(directBody.geo.status));
   assert.equal(directBody.geoDataset?.vendor, "MaxMind");
   assert.equal(directBody.geoDataset?.edition, "GeoLite2-City");
@@ -150,12 +145,7 @@ deployedTest("deployed signed public canary works directly and through the norma
     body: JSON.stringify(proxied),
   });
   assert.equal(proxiedResponse.status, 200);
-  const proxiedBody = JSON.parse(proxiedResponse.body) as {
-    observedIp: string;
-    correlationId: string;
-    geo: { status: string; countryCode?: string; city?: string; accuracyRadiusKm?: number };
-    geoDataset?: { vendor: string; edition: string; buildTimestamp: string };
-  };
+  const proxiedBody = Schema.decodeUnknownSync(CanaryResponseSchema)(parseJson(proxiedResponse.body, "proxied canary response"));
   assert.equal(proxiedBody.correlationId, proxied.testId);
   assert.notEqual(proxiedBody.observedIp, "unknown");
   assert.ok(["available", "unverifiable"].includes(proxiedBody.geo.status));
@@ -189,7 +179,7 @@ deployedTest("deployed passive traffic reaches the health aggregator through the
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
 
   const beforeResponse = await fetchInternal(environment.metadata.healthAggregator, "/v1/status", token);
-  const before = ((await beforeResponse.json()) as { snapshot: HealthSnapshot }).snapshot;
+  const before = healthSnapshotResponse(await beforeResponse.json(), "passive health response");
   const beforeValidation = before.capabilities.find(({ capability }) => capability === "stateless_traffic")?.endToEndValidatedAt;
 
   const response = await requestViaHttpProxy(
@@ -203,7 +193,7 @@ deployedTest("deployed passive traffic reaches the health aggregator through the
     async () => {
       const result = await fetchInternal(environment.metadata.healthAggregator, "/v1/status", token);
       if (!result.ok) return undefined;
-      const snapshot = ((await result.json()) as { snapshot: HealthSnapshot }).snapshot;
+      const snapshot = healthSnapshotResponse(await result.json(), "updated passive health response");
       const validation = snapshot.capabilities.find(({ capability }) => capability === "stateless_traffic")?.endToEndValidatedAt;
       return validation !== undefined && validation !== beforeValidation ? snapshot : undefined;
     },

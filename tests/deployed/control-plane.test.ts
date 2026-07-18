@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { Schema } from "effect";
+import { IssuedAccessGrantSchema, ProfileResponseSchema } from "../../src/control-contract.js";
+import { expectOptionalString, expectRecord } from "../../src/decoding.js";
 import {
   awsJson,
   controlRequest,
@@ -8,7 +11,6 @@ import {
   proxyWithCredentials,
   requestViaHttpProxy,
   revokeRoute,
-  type PublicRoute,
 } from "./helpers.js";
 
 deployedTest("deployed SST metadata identifies a mock non-production stage with a controlled serverless target", async () => {
@@ -32,13 +34,14 @@ deployedTest("deployed control plane exposes provider-neutral liveness, readines
 
   const openapi = await controlRequest("/openapi.json", {}, null);
   assert.equal(openapi.status, 200);
-  const contract = (await openapi.json()) as { openapi?: string; paths?: Record<string, unknown>; components?: unknown };
-  assert.match(contract.openapi ?? "", /^3\./);
+  const contract = expectRecord(await openapi.json(), "deployed OpenAPI response");
+  const paths = expectRecord(contract["paths"], "deployed OpenAPI response.paths");
+  assert.match(expectOptionalString(contract["openapi"], "deployed OpenAPI response.openapi") ?? "", /^3\./);
   for (const path of ["/v1/profiles", "/v1/profiles/{id}", "/v1/profiles/{id}/grants", "/v1/grants/{grantId}"]) {
-    assert.ok(contract.paths?.[path], `OpenAPI is missing ${path}`);
+    assert.ok(paths[path], `OpenAPI is missing ${path}`);
   }
-  assert.equal(contract.paths?.["/v1/providers"], undefined);
-  assert.equal(contract.paths?.["/v1/providers/health"], undefined);
+  assert.equal(paths["/v1/providers"], undefined);
+  assert.equal(paths["/v1/providers/health"], undefined);
 });
 
 deployedTest("deployed route management rejects untrusted and malformed requests", async () => {
@@ -128,9 +131,9 @@ deployedTest(
       }),
     });
     assert.equal(updated.status, 200);
-    assert.equal(((await updated.json()) as { profile: PublicRoute }).profile.geography?.countryCode, "CA");
+    assert.equal(Schema.decodeUnknownSync(ProfileResponseSchema)(await updated.json()).profile.geography?.countryCode, "CA");
 
-    const stored = await awsJson<Record<string, unknown>>(
+    const stored = await awsJson(
       [
         "dynamodb",
         "get-item",
@@ -140,13 +143,14 @@ deployedTest(
         "--key",
         JSON.stringify({ pk: { S: `ROUTE#${route.profile.id}` }, sk: { S: "STATE" } }),
       ],
+      Schema.Unknown,
       environment.region,
     );
     const storedText = JSON.stringify(stored);
     assert.doesNotMatch(storedText, /tokenHash|tokenSalt/);
     assert.doesNotMatch(storedText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-    const storedGrant = await awsJson<Record<string, unknown>>(
+    const storedGrant = await awsJson(
       [
         "dynamodb",
         "get-item",
@@ -156,6 +160,7 @@ deployedTest(
         "--key",
         JSON.stringify({ pk: { S: `ACCESS_GRANT#${route.accessGrant.id}` }, sk: { S: "STATE" } }),
       ],
+      Schema.Unknown,
       environment.region,
     );
     const storedGrantText = JSON.stringify(storedGrant);
@@ -168,7 +173,7 @@ deployedTest(
       body: JSON.stringify({ sessionMode: "none" }),
     });
     assert.equal(secondResponse.status, 201);
-    const second = (await secondResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
+    const second = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await secondResponse.json());
     assert.notEqual(second.grant.grantId, route.accessGrant.id);
 
     const before = await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString());
@@ -177,7 +182,7 @@ deployedTest(
       method: "POST",
     });
     assert.equal(rotationResponse.status, 200);
-    const rotated = (await rotationResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
+    const rotated = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await rotationResponse.json());
     assert.equal(rotated.grant.credentials[0]?.status, "overlap");
     assert.equal((await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 200);
     const rotatedProxy = proxyWithCredentials(rotated.endpoints.http, rotated.credential.username, rotated.credential.password);
@@ -188,7 +193,7 @@ deployedTest(
       { method: "POST" },
     );
     assert.equal(emergencyRotationResponse.status, 200);
-    const emergency = (await emergencyRotationResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
+    const emergency = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await emergencyRotationResponse.json());
     const emergencyProxy = proxyWithCredentials(emergency.endpoints.http, emergency.credential.username, emergency.credential.password);
     assert.equal((await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 407);
     assert.equal((await requestViaHttpProxy(rotatedProxy, new URL("/lifecycle", target.url).toString())).status, 407);
