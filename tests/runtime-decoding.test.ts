@@ -117,13 +117,14 @@ test("persistence decoders fail closed on invalid records", () => {
   assert.throws(
     () =>
       decodeUsageReconciliation({
+        kind: "provider_usage_adjustment",
         id: "reconciliation-1",
         provider: "bright_data",
         periodStartedAt: "2026-07-18T00:00:00.000Z",
         periodEndsAt: "2026-07-17T00:00:00.000Z",
         estimatedTotalUsd: 1,
         reportedTotalUsd: 1,
-        varianceUsd: 0,
+        adjustmentUsd: 0,
         relativeVariance: 0,
         varianceAttribution: "Unallocated",
         severity: "normal",

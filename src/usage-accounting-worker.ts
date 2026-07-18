@@ -51,13 +51,14 @@ export class UsageAccountingWorker {
         (record) => record.provider === total.provider && record.severity !== "normal" && record.sourceVersion !== total.sourceVersion,
       );
       const reconciliation: UsageReconciliation = {
+        kind: "provider_usage_adjustment",
         id: `${total.provider}#${total.periodStartedAt}#${total.periodEndsAt}#${total.sourceVersion}`,
         provider: total.provider,
         periodStartedAt: total.periodStartedAt,
         periodEndsAt: total.periodEndsAt,
         estimatedTotalUsd: estimate,
         reportedTotalUsd: total.amountUsd,
-        varianceUsd,
+        adjustmentUsd: varianceUsd,
         relativeVariance,
         varianceAttribution: "Unallocated",
         severity: severe || (significant && repeated) ? "error" : significant ? "warning" : "normal",
@@ -74,7 +75,7 @@ export class UsageAccountingWorker {
             periodStartedAt: reconciliation.periodStartedAt,
             periodEndsAt: reconciliation.periodEndsAt,
             relatedRecordId: reconciliation.id,
-            varianceUsd: reconciliation.varianceUsd,
+            varianceUsd: reconciliation.adjustmentUsd,
             relativeVariance: reconciliation.relativeVariance,
             createdAt: reconciliation.createdAt,
           };
@@ -107,7 +108,7 @@ export class UsageAccountingWorker {
           rollup.attributedCostUsd = rollup.estimatedCostUsd;
           rollup.costStatus = "reconciled";
         }
-        const variance = periodReconciliations.reduce((sum, record) => sum + record.varianceUsd, 0);
+        const variance = periodReconciliations.reduce((sum, record) => sum + record.adjustmentUsd, 0);
         let unallocated = periodCustomers.find((rollup) => rollup.group.customer === "Unallocated");
         if (unallocated === undefined) {
           const created: UsageRollup = {
@@ -116,7 +117,7 @@ export class UsageAccountingWorker {
             periodStartedAt,
             periodEndsAt,
             group: { customer: "Unallocated" },
-            requestCount: 0,
+            operationCount: 0,
             successCount: 0,
             retryCount: 0,
             failoverCount: 0,

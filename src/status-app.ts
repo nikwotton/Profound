@@ -140,14 +140,14 @@ function page(
       .join("") ?? "";
   const usageTotal = usage.reduce(
     (total, rollup) => ({
-      requests: total.requests + rollup.requestCount,
+      operations: total.operations + rollup.operationCount,
       bytes: total.bytes + rollup.bytesSent + rollup.bytesReceived,
       connectionMs: total.connectionMs + rollup.activeConnectionMs,
       provisionedMs: total.provisionedMs + rollup.provisionedSlotMs,
       unhealthyMs: total.unhealthyMs + rollup.unhealthySlotMs,
       cost: total.cost + rollup.attributedCostUsd,
     }),
-    { requests: 0, bytes: 0, connectionMs: 0, provisionedMs: 0, unhealthyMs: 0, cost: 0 },
+    { operations: 0, bytes: 0, connectionMs: 0, provisionedMs: 0, unhealthyMs: 0, cost: 0 },
   );
   const capacity = capacityRecommendation(capacityUsage, now, inventory?.slots.length);
   const latestCapacity = capacity.latest;
@@ -192,7 +192,7 @@ table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td
 </style></head><body><main><h1>Proxy routing dashboard</h1>
 <div class="summary">${stale ? "Status data is stale" : "Status data is current"}${ageMs === undefined ? "" : ` · updated ${Math.round(ageMs / 1000)} seconds ago`}</div>
 <h2>Usage and cost · last 30 days</h2><section class="metrics">
-<div class="metric"><span>Requests</span><strong>${usageTotal.requests.toLocaleString("en-US")}</strong></div>
+<div class="metric"><span>Operations</span><strong>${usageTotal.operations.toLocaleString("en-US")}</strong></div>
 <div class="metric"><span>Transfer</span><strong>${(usageTotal.bytes / 1024 ** 3).toFixed(3)} GiB</strong></div>
 <div class="metric"><span>Upstream connection time</span><strong>${(usageTotal.connectionMs / 3_600_000).toFixed(1)} h</strong></div>
 <div class="metric"><span>Proxy-slot occupancy</span><strong>${((latestCapacity?.slotOccupancy ?? 0) * 100).toFixed(1)}%</strong><small>current ${((latestCapacity?.currentSlotOccupancy ?? 0) * 100).toFixed(1)}%</small></div>

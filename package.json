@@ -1,23 +1,13 @@
 {
   "name": "profound-proxy-router",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "Provider-neutral HTTP, HTTPS, and SOCKS5 proxy router",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
   },
-  "packageManager": "pnpm@10.12.1",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ],
-    "ignoredBuiltDependencies": [
-      "@parcel/watcher",
-      "msgpackr-extract",
-      "protobufjs"
-    ]
-  },
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "tsx scripts/build.ts",
     "check": "tsc --noEmit && tsc -p tsconfig.sst.json",

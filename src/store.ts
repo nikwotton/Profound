@@ -115,7 +115,7 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
     customerId: route.customerId,
     ...(route.geography === undefined ? {} : { geography: route.geography }),
     ...(route.carrier === undefined ? {} : { carrier: route.carrier }),
-    ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
+    providerOverride: route.providerOverride ?? null,
     allowConnectionRetry: route.allowConnectionRetry,
     status: route.status,
     createdAt: route.createdAt,

@@ -50,10 +50,15 @@ export function attemptUsageRecord(
       ? {}
       : {
           proxySlotId: upstream.proxySlotId,
-          ...(upstream.upstreamConnectionId === undefined ? {} : { upstreamConnectionId: upstream.upstreamConnectionId }),
+          ...(upstream.assignment.deviceId === undefined ? {} : { deviceId: upstream.assignment.deviceId }),
+          selectedSlotLoad: upstream.selectedSlotLoad,
+        }),
+    ...(upstream?.upstreamConnectionId === undefined
+      ? {}
+      : {
+          upstreamConnectionId: upstream.upstreamConnectionId,
           connectionStartedAt: upstream.upstreamConnectionStartedAt ?? new Date(input.attemptStartedAt).toISOString(),
           connectionEndedAt: input.completedAt,
-          selectedSlotLoad: upstream.selectedSlotLoad,
         }),
     ...(upstream?.capacityPressure === true
       ? {

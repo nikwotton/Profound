@@ -277,6 +277,7 @@ const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
   city: exactOptional(Schema.String),
   endpointId: exactOptional(Schema.String),
   proxySlotId: exactOptional(Schema.String),
+  deviceId: exactOptional(Schema.String),
   upstreamConnectionId: exactOptional(Schema.String),
   connectionStartedAt: exactOptional(IsoTimestamp),
   connectionEndedAt: exactOptional(IsoTimestamp),
@@ -321,7 +322,7 @@ const UsageRollupSchema: Schema.Schema<UsageRollup> = Schema.Struct({
   periodStartedAt: IsoTimestamp,
   periodEndsAt: IsoTimestamp,
   group: Schema.Record({ key: Schema.String, value: Schema.String }),
-  requestCount: NonNegativeInteger,
+  operationCount: NonNegativeInteger,
   successCount: NonNegativeInteger,
   retryCount: NonNegativeInteger,
   failoverCount: NonNegativeInteger,
@@ -357,13 +358,14 @@ const UsageRollupSchema: Schema.Schema<UsageRollup> = Schema.Struct({
 });
 
 const UsageReconciliationSchema: Schema.Schema<UsageReconciliation> = Schema.Struct({
+  kind: Schema.Literal("provider_usage_adjustment"),
   id: Schema.String,
   provider: Schema.Literal("bright_data", "proxidize"),
   periodStartedAt: IsoTimestamp,
   periodEndsAt: IsoTimestamp,
   estimatedTotalUsd: NonNegativeNumber,
   reportedTotalUsd: NonNegativeNumber,
-  varianceUsd: Schema.Number,
+  adjustmentUsd: Schema.Number,
   relativeVariance: NonNegativeNumber,
   varianceAttribution: Schema.Literal("Unallocated"),
   severity: Schema.Literal("normal", "warning", "error"),

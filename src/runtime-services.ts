@@ -329,7 +329,7 @@ export async function startUsageAccountingService(
           periodEndsAt: record.periodEndsAt,
           estimatedTotalUsd: record.estimatedTotalUsd,
           reportedTotalUsd: record.reportedTotalUsd,
-          varianceUsd: record.varianceUsd,
+          adjustmentUsd: record.adjustmentUsd,
           relativeVariance: record.relativeVariance,
           varianceAttribution: record.varianceAttribution,
           severity: record.severity,

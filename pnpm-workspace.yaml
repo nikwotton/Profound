@@ -1,0 +1,10 @@
+packages:
+  - .
+
+confirmModulesPurge: false
+
+allowBuilds:
+  esbuild: true
+  "@parcel/watcher": false
+  msgpackr-extract: false
+  protobufjs: false

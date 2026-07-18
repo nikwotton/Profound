@@ -2,6 +2,8 @@
 
 V0 has one source of truth for each value and deliberately keeps its operator surface small. A value may be delivered to a process as an environment variable, but runtime transport does not make it an operator-configurable deployment knob.
 
+Workload shape and volume, latency and availability SLOs, state-freshness and outage behavior, accounting guarantees, and geography/data-residency or multi-region requirements remain foundational unknowns. Concrete compute, load-balancer, observability, timeout, and retention values are typed v0 implementation defaults used to collect evidence, not stakeholder-approved design commitments.
+
 ## Source rules
 
 | Value class               | Source                                                                      | Runtime delivery                                                                                       |

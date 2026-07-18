@@ -55,7 +55,7 @@ test("usage-priced traffic is estimated from billable bytes and historical price
     to: "2026-07-16T00:00:00.000Z",
     interval: "day",
   });
-  assert.equal(rollup?.requestCount, 1);
+  assert.equal(rollup?.operationCount, 1);
   assert.equal(rollup?.bytesSent + (rollup?.bytesReceived ?? 0), 1024 ** 3);
   assert.equal(rollup?.estimatedCostUsd, 8);
   assert.equal(rollup?.averageLatencyMs, 120);
@@ -192,7 +192,7 @@ test("idle proxy-slot capacity is attributed to the synthetic Unallocated custom
     groupBy: "customer",
   });
   assert.equal(rollup?.group.customer, "Unallocated");
-  assert.equal(rollup?.requestCount, 0);
+  assert.equal(rollup?.operationCount, 0);
   assert.equal(rollup?.activeConnectionMs, 0);
   assert.equal(rollup?.provisionedSlotMs, 60 * 60_000);
   assert.equal(rollup?.healthyIdleSlotMs, 60 * 60_000);
@@ -257,7 +257,8 @@ test("reconciliation persists variance evidence and posts unexplained difference
     const [reconciliation] = await store.listUsageReconciliations("2026-07-15T00:00:00.000Z", "2026-07-16T00:00:00.000Z");
     assert.equal(reconciliation?.estimatedTotalUsd, 8);
     assert.equal(reconciliation?.reportedTotalUsd, 9);
-    assert.equal(reconciliation?.varianceUsd, 1);
+    assert.equal(reconciliation?.kind, "provider_usage_adjustment");
+    assert.equal(reconciliation?.adjustmentUsd, 1);
     assert.equal(reconciliation?.varianceAttribution, "Unallocated");
     assert.equal(reconciliation?.severity, "warning");
     const [alert] = await store.listUsageAlertEvents("2026-07-15T00:00:00.000Z", "2026-07-16T00:00:00.000Z");
@@ -464,26 +465,26 @@ test("company-facing dashboard supports usage filters and provider-neutral crede
   });
   const response = await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=provider&provider=proxidize`);
   assert.equal(response.status, 200);
-  const body = (await response.json()) as { data: Array<{ group: { provider: string }; requestCount: number }> };
+  const body = (await response.json()) as { data: Array<{ group: { provider: string }; operationCount: number }> };
   assert.equal(body.data[0]?.group.provider, "proxidize");
-  assert.equal(body.data[0]?.requestCount, 1);
+  assert.equal(body.data[0]?.operationCount, 1);
   const sessions = (await (
     await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=session_mode&sessionMode=stateless`)
-  ).json()) as { data: Array<{ group: { session_mode: string }; requestCount: number }> };
+  ).json()) as { data: Array<{ group: { session_mode: string }; operationCount: number }> };
   assert.equal(sessions.data[0]?.group.session_mode, "stateless");
-  assert.equal(sessions.data[0]?.requestCount, 1);
+  assert.equal(sessions.data[0]?.operationCount, 1);
   const jobs = (await (
     await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=job&jobId=dashboard-job`)
-  ).json()) as { data: Array<{ group: { job: string }; requestCount: number }> };
+  ).json()) as { data: Array<{ group: { job: string }; operationCount: number }> };
   assert.equal(jobs.data[0]?.group.job, "dashboard-job");
-  assert.equal(jobs.data[0]?.requestCount, 1);
+  assert.equal(jobs.data[0]?.operationCount, 1);
   const destinations = (await (
     await fetch(
       `http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=destination_host&destinationDomain=example.com&destinationHost=api.example.com&destinationPathTemplate=%2Fitems%2F%3Aid`,
     )
-  ).json()) as { data: Array<{ group: { destination_host: string }; requestCount: number }> };
+  ).json()) as { data: Array<{ group: { destination_host: string }; operationCount: number }> };
   assert.equal(destinations.data[0]?.group.destination_host, "api.example.com");
-  assert.equal(destinations.data[0]?.requestCount, 1);
+  assert.equal(destinations.data[0]?.operationCount, 1);
   const mixedTimeRange = await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&from=2026-07-14T00%3A00%3A00.000Z`);
   assert.equal(mixedTimeRange.status, 400);
   assert.deepEqual(await mixedTimeRange.json(), { error: "invalid_usage_time_range" });

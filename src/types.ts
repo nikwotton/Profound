@@ -180,8 +180,13 @@ export interface AuthenticatedRoute extends StoredRoute {
   sessionId?: string;
 }
 
-export interface PublicRoute extends RouteProfileInput {
+export interface PublicRoute {
   profileId: string;
+  customerId: string;
+  geography?: NonNullable<RouteProfileInput["geography"]>;
+  carrier?: string;
+  providerOverride: ProviderId | null;
+  allowConnectionRetry: boolean;
   status: RouteStatus;
   createdAt: string;
   updatedAt: string;
@@ -406,6 +411,7 @@ export interface UsageRecord {
   city?: string;
   endpointId?: string;
   proxySlotId?: string;
+  deviceId?: string;
   upstreamConnectionId?: string;
   connectionStartedAt?: string;
   connectionEndedAt?: string;
@@ -448,7 +454,7 @@ export interface UsageRollup {
   periodStartedAt: string;
   periodEndsAt: string;
   group: Partial<Record<UsageGroupBy, string>>;
-  requestCount: number;
+  operationCount: number;
   successCount: number;
   retryCount: number;
   failoverCount: number;
@@ -484,13 +490,14 @@ export interface UsageRollup {
 }
 
 export interface UsageReconciliation {
+  kind: "provider_usage_adjustment";
   id: string;
   provider: ProviderId;
   periodStartedAt: string;
   periodEndsAt: string;
   estimatedTotalUsd: number;
   reportedTotalUsd: number;
-  varianceUsd: number;
+  adjustmentUsd: number;
   relativeVariance: number;
   varianceAttribution: "Unallocated";
   severity: "normal" | "warning" | "error";

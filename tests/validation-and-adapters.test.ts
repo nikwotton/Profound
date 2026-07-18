@@ -376,7 +376,7 @@ test("Effect generates a complete secured OpenAPI contract from the control API"
   assert.equal(paths["/v1/providers"], undefined);
   assert.equal(paths["/v1/providers/health"], undefined);
   assert.equal(specification.info.title, "Profound Proxy Router Control API");
-  assert.equal(specification.info.version, "0.9.0");
+  assert.equal(specification.info.version, "0.10.0");
   assert.match(JSON.stringify(specification.components.securitySchemes), /bearer/i);
   assert.doesNotMatch(JSON.stringify(specification), /HttpApiDecodeError|"_tag"/);
   assert.match(JSON.stringify(specification.components.schemas), /ApiError/);

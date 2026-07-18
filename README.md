@@ -25,7 +25,7 @@ The deployed control API, proxy gateways, and dashboard are company-wide service
 | Platform operators and on-call engineers   | [Operations guide](docs/OPERATIONS.md)                                     |
 | Contributors and maintainers               | [Development guide](docs/DEVELOPMENT.md)                                   |
 | Repository administrators                  | [Repository and release settings](docs/repository-and-release-settings.md) |
-| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.9.0.json)           |
+| Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.10.0.json)          |
 | Configuration and secret sources           | [Configuration audit](docs/CONFIGURATION.md)                               |
 
 The OpenAPI contract covers management operations. Forwarding remains native HTTP proxy and SOCKS5 protocol traffic, so consumers do not wrap requests in a Profound-specific envelope.
@@ -35,7 +35,7 @@ The [capability map](docs/CAPABILITIES.md) distinguishes what the zero-account `
 ## Requirements
 
 - Node.js 22.13 or newer
-- pnpm 10.12.1
+- pnpm 11.9.0
 - AWS credentials for SST development and deployment only
 - Docker when building or deploying container images only
 
@@ -57,7 +57,7 @@ Start the complete single-process local stack and watch it exercise the main usa
 pnpm demo
 ```
 
-No AWS, Axiom, Bright Data, Proxidize, Docker, or other external account is needed. The command starts the real control API, HTTP/HTTPS forward proxy, SOCKS5 proxy, usage ledger, accounting worker, and analytics API with in-memory persistence and local provider simulators. It demonstrates readiness, residential rotation, mobile affinity, HTTP forwarding, a pre-commit `CONNECT` retry/failover, SOCKS5 tunnelling, credential lifecycle, and the complete request → usage event → rollup → analytics-query path. The output includes customer/job/provider attribution, bytes, latency, retry/failover and outcome metrics, Bright Data per-GiB cost, and Proxidize device-month cost allocation. In an interactive terminal, press Enter to run each step individually. Each step prints its live sanitized request, response, selected mock identity metadata, and protocol details; request bodies, URL queries, headers, cookies, authorization, and credentials remain absent or redacted. Redirected output and `pnpm demo -- --no-interactive` run the walkthrough continuously without prompts.
+No AWS, Axiom, Bright Data, Proxidize, Docker, or other external account is needed. The command starts the real control API, HTTP/HTTPS forward proxy, SOCKS5 proxy, usage ledger, accounting worker, and analytics API with in-memory persistence and local provider simulators. It demonstrates readiness, residential rotation, mobile affinity, HTTP forwarding, a pre-commit `CONNECT` retry/failover, SOCKS5 tunnelling, credential lifecycle, and the complete operation → immutable attempt records → rollup → analytics-query path. The output includes customer/job/provider attribution, bytes, latency, retry/failover and outcome metrics, Bright Data per-GiB cost, and Proxidize device-month cost allocation. In an interactive terminal, press Enter to run each step individually. Each step prints its live sanitized request, response, selected mock identity metadata, and protocol details; request bodies, URL queries, headers, cookies, authorization, and credentials remain absent or redacted. Redirected output and `pnpm demo -- --no-interactive` run the walkthrough continuously without prompts.
 
 After the walkthrough, the servers stay available for inspection:
 

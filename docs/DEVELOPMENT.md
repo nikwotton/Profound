@@ -5,7 +5,7 @@ This guide covers local development, contracts, tests, migrations, and delivery 
 ## Toolchain
 
 - Node.js 22.13 or newer
-- pnpm 10.12.1
+- pnpm 11.9.0
 - TypeScript 7 for authoritative compilation
 - the repository's isolated lint toolchain
 - AWS credentials for SST development, deployed tests, and infrastructure changes
@@ -195,7 +195,7 @@ pnpm aws:remove --stage ci-manual
 
 ## OpenAPI workflow
 
-The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.9.0.json) is committed for client generation.
+The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.10.0.json) is committed for client generation.
 
 After any control schema or endpoint change:
 

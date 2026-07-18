@@ -551,7 +551,7 @@ export function summarizeUsage(
         periodStartedAt,
         periodEndsAt,
         group,
-        requestCount: operations.size,
+        operationCount: operations.size,
         successCount: successful.size,
         retryCount: completedEntries.filter((record) => record.outcome === "retry").length,
         failoverCount: completedEntries.filter((record) => record.failover).length,

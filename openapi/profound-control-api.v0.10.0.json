@@ -17,14 +17,7 @@
             "type": "string"
           },
           "jobId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "profileId": {
             "type": "string"
@@ -43,7 +36,6 @@
         "required": [
           "grantId",
           "profileId",
-          "jobId",
           "status",
           "credentials",
           "createdAt",
@@ -110,15 +102,9 @@
         ],
         "type": "object"
       },
-      "BadRequest": {
+      "ApiError": {
         "additionalProperties": false,
         "properties": {
-          "_tag": {
-            "enum": [
-              "BadRequest"
-            ],
-            "type": "string"
-          },
           "code": {
             "type": "string"
           },
@@ -136,8 +122,7 @@
           "code",
           "message",
           "retryable",
-          "requestId",
-          "_tag"
+          "requestId"
         ],
         "type": "object"
       },
@@ -173,101 +158,6 @@
         },
         "required": [
           "sessionMode"
-        ],
-        "type": "object"
-      },
-      "HttpApiDecodeError": {
-        "additionalProperties": false,
-        "description": "The request did not match the expected schema",
-        "properties": {
-          "_tag": {
-            "enum": [
-              "HttpApiDecodeError"
-            ],
-            "type": "string"
-          },
-          "issues": {
-            "items": {
-              "$ref": "#/components/schemas/Issue"
-            },
-            "type": "array"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "issues",
-          "message",
-          "_tag"
-        ],
-        "type": "object"
-      },
-      "InternalError": {
-        "additionalProperties": false,
-        "properties": {
-          "_tag": {
-            "enum": [
-              "InternalError"
-            ],
-            "type": "string"
-          },
-          "code": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "requestId": {
-            "type": "string"
-          },
-          "retryable": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "retryable",
-          "requestId",
-          "_tag"
-        ],
-        "type": "object"
-      },
-      "Issue": {
-        "additionalProperties": false,
-        "description": "Represents an error encountered while parsing a value to match the schema",
-        "properties": {
-          "_tag": {
-            "description": "The tag identifying the type of parse issue",
-            "enum": [
-              "Pointer",
-              "Unexpected",
-              "Missing",
-              "Composite",
-              "Refinement",
-              "Transformation",
-              "Type",
-              "Forbidden"
-            ],
-            "type": "string"
-          },
-          "message": {
-            "description": "A descriptive message explaining the issue",
-            "type": "string"
-          },
-          "path": {
-            "description": "The path to the property where the issue occurred",
-            "items": {
-              "$ref": "#/components/schemas/PropertyKey"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "_tag",
-          "path",
-          "message"
         ],
         "type": "object"
       },
@@ -354,7 +244,7 @@
             "type": "object"
           },
           "grant": {
-            "$ref": "#/components/schemas/AccessGrant"
+            "$ref": "#/components/schemas/IssuedGrant"
           },
           "session": {
             "$ref": "#/components/schemas/LogicalSession"
@@ -364,6 +254,41 @@
           "grant",
           "credential",
           "endpoints"
+        ],
+        "type": "object"
+      },
+      "IssuedGrant": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "grantId": {
+            "type": "string"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "revoked"
+            ],
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "grantId",
+          "profileId",
+          "status",
+          "createdAt",
+          "updatedAt"
         ],
         "type": "object"
       },
@@ -388,12 +313,6 @@
           "sessionId": {
             "type": "string"
           },
-          "sessionMode": {
-            "enum": [
-              "managed"
-            ],
-            "type": "string"
-          },
           "status": {
             "enum": [
               "open",
@@ -409,71 +328,9 @@
           "sessionId",
           "grantId",
           "profileId",
-          "sessionMode",
           "status",
           "createdAt",
           "updatedAt"
-        ],
-        "type": "object"
-      },
-      "PropertyKey": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "number"
-          },
-          {
-            "additionalProperties": false,
-            "description": "an object to be decoded into a globally shared symbol",
-            "properties": {
-              "_tag": {
-                "enum": [
-                  "symbol"
-                ],
-                "type": "string"
-              },
-              "key": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "_tag",
-              "key"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "RouteNotFound": {
-        "additionalProperties": false,
-        "properties": {
-          "_tag": {
-            "enum": [
-              "RouteNotFound"
-            ],
-            "type": "string"
-          },
-          "code": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "requestId": {
-            "type": "string"
-          },
-          "retryable": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "retryable",
-          "requestId",
-          "_tag"
         ],
         "type": "object"
       },
@@ -515,8 +372,6 @@
           "status": {
             "enum": [
               "ready",
-              "rotating",
-              "failed",
               "revoked"
             ],
             "type": "string"
@@ -552,18 +407,11 @@
             "$ref": "#/components/schemas/Geography"
           },
           "providerOverride": {
-            "anyOf": [
-              {
-                "enum": [
-                  "bright_data",
-                  "proxidize"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "enum": [
+              "bright_data",
+              "proxidize"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -571,98 +419,20 @@
           "allowConnectionRetry"
         ],
         "type": "object"
-      },
-      "ServiceUnavailable": {
-        "additionalProperties": false,
-        "properties": {
-          "_tag": {
-            "enum": [
-              "ServiceUnavailable"
-            ],
-            "type": "string"
-          },
-          "code": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "requestId": {
-            "type": "string"
-          },
-          "retryable": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "retryable",
-          "requestId",
-          "_tag"
-        ],
-        "type": "object"
-      },
-      "SessionModeInput": {
-        "additionalProperties": false,
-        "properties": {
-          "sessionMode": {
-            "enum": [
-              "managed",
-              "none"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionMode"
-        ],
-        "type": "object"
-      },
-      "Unauthorized": {
-        "additionalProperties": false,
-        "properties": {
-          "_tag": {
-            "enum": [
-              "Unauthorized"
-            ],
-            "type": "string"
-          },
-          "code": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "requestId": {
-            "type": "string"
-          },
-          "retryable": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "retryable",
-          "requestId",
-          "_tag"
-        ],
-        "type": "object"
       }
     },
     "securitySchemes": {
       "bearer": {
-        "description": "Administrator token supplied through CONTROL_API_TOKEN",
+        "description": "Control-plane bearer token issued by the platform operator",
         "scheme": "bearer",
         "type": "http"
       }
     }
   },
   "info": {
-    "description": "Manage provider-neutral route profiles, access grants, managed logical sessions, and explicitly stateless credentials.",
+    "description": "Manage provider-neutral route profiles, access grants, managed logical sessions, and explicit no-session credentials.",
     "title": "Profound Proxy Router Control API",
-    "version": "0.7.0"
+    "version": "0.10.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -698,7 +468,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -743,7 +513,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -753,7 +523,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServiceUnavailable"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -787,7 +557,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -797,7 +567,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -807,7 +577,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -817,7 +587,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -869,7 +639,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -879,7 +649,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -889,7 +659,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -899,7 +669,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -929,16 +699,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SessionModeInput"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "201": {
             "content": {
@@ -1026,7 +786,7 @@
                       "type": "object"
                     },
                     "grant": {
-                      "$ref": "#/components/schemas/AccessGrant"
+                      "$ref": "#/components/schemas/IssuedGrant"
                     },
                     "session": {
                       "$ref": "#/components/schemas/LogicalSession"
@@ -1047,14 +807,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/HttpApiDecodeError"
-                    },
-                    {
-                      "$ref": "#/components/schemas/BadRequest"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1064,7 +817,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1074,7 +827,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1084,7 +837,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1094,7 +847,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServiceUnavailable"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1140,7 +893,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1150,7 +903,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1160,7 +913,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1170,7 +923,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1230,7 +983,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1240,7 +993,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1250,7 +1003,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1260,7 +1013,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1314,7 +1067,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1324,7 +1077,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1334,7 +1087,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1344,7 +1097,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1398,7 +1151,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1408,7 +1161,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1418,7 +1171,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1428,7 +1181,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1485,7 +1238,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1495,7 +1248,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1505,7 +1258,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1515,7 +1268,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1630,7 +1383,7 @@
                       "type": "object"
                     },
                     "grant": {
-                      "$ref": "#/components/schemas/AccessGrant"
+                      "$ref": "#/components/schemas/IssuedGrant"
                     },
                     "session": {
                       "$ref": "#/components/schemas/LogicalSession"
@@ -1651,7 +1404,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1661,7 +1414,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1671,7 +1424,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1681,7 +1434,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1727,7 +1480,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1737,7 +1490,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1747,7 +1500,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1757,7 +1510,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1817,7 +1570,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1827,7 +1580,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1837,7 +1590,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1847,7 +1600,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1893,7 +1646,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1903,7 +1656,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1913,7 +1666,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1923,7 +1676,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1971,7 +1724,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1981,7 +1734,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -1991,7 +1744,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2044,14 +1797,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/HttpApiDecodeError"
-                    },
-                    {
-                      "$ref": "#/components/schemas/BadRequest"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2061,7 +1807,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2071,7 +1817,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2081,7 +1827,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServiceUnavailable"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2119,7 +1865,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2129,7 +1875,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2139,7 +1885,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2149,7 +1895,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2201,7 +1947,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2211,7 +1957,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2221,7 +1967,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2231,7 +1977,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2294,14 +2040,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/HttpApiDecodeError"
-                    },
-                    {
-                      "$ref": "#/components/schemas/BadRequest"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2311,7 +2050,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2321,7 +2060,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2331,7 +2070,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2341,7 +2080,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServiceUnavailable"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2399,7 +2138,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HttpApiDecodeError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2409,7 +2148,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2419,7 +2158,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2429,7 +2168,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2446,7 +2185,7 @@
         ]
       },
       "post": {
-        "description": "Create an explicit managed-session or stateless grant and return its secret once",
+        "description": "Create an explicit managed-session or no-session grant and return its secret once",
         "operationId": "createAccessGrant",
         "parameters": [
           {
@@ -2555,7 +2294,7 @@
                       "type": "object"
                     },
                     "grant": {
-                      "$ref": "#/components/schemas/AccessGrant"
+                      "$ref": "#/components/schemas/IssuedGrant"
                     },
                     "session": {
                       "$ref": "#/components/schemas/LogicalSession"
@@ -2576,14 +2315,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/HttpApiDecodeError"
-                    },
-                    {
-                      "$ref": "#/components/schemas/BadRequest"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2593,7 +2325,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Unauthorized"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2603,7 +2335,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RouteNotFound"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2613,7 +2345,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InternalError"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },
@@ -2623,7 +2355,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServiceUnavailable"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             },

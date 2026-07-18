@@ -588,7 +588,7 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
     const attemptRecords = attempts.filter((record) => record.kind === "attempt");
     const operationCount = new Set(attemptRecords.map((record) => record.logicalOperationId)).size;
     writeJson(writeLine, "recorded usage events", attemptRecords.map(safeUsageEvent));
-    writeLine(`      ✓ ${operationCount} proxy requests produced ${attemptRecords.length} immutable upstream-attempt events`);
+    writeLine(`      ✓ ${operationCount} proxy operations produced ${attemptRecords.length} immutable upstream-attempt events`);
 
     const proxidizePricing = application.routes.descriptors().find((descriptor) => descriptor.id === "proxidize")?.pricing;
     assert(proxidizePricing?.model === "per_device_month", "Proxidize pricing metadata was unavailable");

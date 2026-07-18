@@ -269,7 +269,7 @@ deployedTest("deployed OTLP logs, metrics, traces, and canary security logs arri
     "OTLP metrics in Axiom",
     async () => {
       const text = await axiomDatasetText(environment.metadata.telemetry.datasets.metrics, startedAt);
-      return text.includes("profound.proxy.requests") ? text : undefined;
+      return text.includes("profound.proxy.operations") ? text : undefined;
     },
     { timeoutMs: 180_000, intervalMs: 10_000 },
   );

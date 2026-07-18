@@ -22,6 +22,20 @@ AWS is the only deployment provider implemented in v0. The SST module deploys in
 
 The product VPC holds provider credentials, route state, and customer attribution. The public canary has no provider credentials, customer data, company-private routes, or path into the product VPC. Target traffic always travels through a selected provider and never falls back to a direct connection.
 
+## Foundational unknowns and v0 defaults
+
+The current design deliberately leaves these inputs unanswered until production evidence and stakeholder expectations exist:
+
+| Unknown                             | What must be learned before it becomes a commitment                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------ |
+| Workload shape and volume           | Operation mix, concurrency, tunnel duration, traffic distribution, and growth        |
+| Latency and availability objectives | End-to-end SLOs, provider contribution, and acceptable degradation                   |
+| State freshness and outage behavior | Maximum tolerable staleness and fail-closed behavior for each state owner            |
+| Accounting guarantees               | Required completeness, reconciliation cadence, tolerance, and auditability           |
+| Deployment footprint                | Geography, data residency, recovery objectives, and whether multi-region is required |
+
+Concrete ECS sizing, load-balancer behavior, observability retention, health thresholds, and timeouts are typed v0 defaults used to validate the system and collect evidence. Unless a value is explicitly part of `V0_POLICY`, operators must not treat it as an authoritative design guarantee.
+
 ## Personal development operation
 
 ### Install
@@ -256,6 +270,8 @@ The health aggregator combines:
 
 It persists global capabilities `all_traffic`, `managed_sessions`, `stateless_traffic`, and `health_verification` with `operational`, `degraded`, or `unavailable` status. Evidence freshness is reported separately: quiet traffic or a missing synthetic route may make validation stale without declaring an outage.
 
+V0 synthetic validation is a bounded, authorized, user-triggered operation. Requests share the aggregator cooldown and scheduled probing is disabled. The aggregator distinguishes a direct canary failure from a failure of the normal proxy path: one synthetic result cannot by itself mark a traffic capability `unavailable`, and a failed direct canary makes proxy-path evidence inconclusive. The public canary's own liveness and `health_verification` state remain distinct from provider and traffic capabilities.
+
 Aggregator endpoints:
 
 | Endpoint                        | Authentication | Purpose                                 |
@@ -286,7 +302,7 @@ The canary accepts only short-lived signed, non-replayable challenges. In AWS, A
 
 ## Company-facing dashboard
 
-The dashboard root shows 30-day request count, transfer, active upstream connection time, current and time-weighted proxy-slot occupancy, provisioned and unhealthy paid slot capacity, peak and p95 concurrency, attributed cost, capacity recommendations, capability state, freshness, and geography evidence.
+The dashboard root shows 30-day operation count, transfer, active upstream connection time, current and time-weighted proxy-slot occupancy, provisioned and unhealthy paid slot capacity, peak and p95 concurrency, attributed cost, capacity recommendations, capability state, freshness, and geography evidence.
 
 The dashboard and its programmatic endpoints are available to authorized users and services across the company, not only the operating team. They are unauthenticated at the application layer in v0, so approved company-network access to the private service is the authorization boundary:
 
@@ -297,7 +313,7 @@ The dashboard and its programmatic endpoints are available to authorized users a
 | `GET /v1/status/geographies`     | Latest geography evidence                                                |
 | `POST /v1/status/validate`       | Proxy a synthetic validation request to the aggregator                   |
 | `GET /v1/usage`                  | Usage and cost rollups                                                   |
-| `GET /v1/usage/reconciliations`  | Provider total comparisons and variance evidence                         |
+| `GET /v1/usage/reconciliations`  | Provider total comparisons and explicit adjustment evidence              |
 | `GET /v1/capacity`               | Slot inventory, compatible capacity, policy, and operator recommendation |
 
 `/v1/usage` supports:
@@ -347,14 +363,15 @@ The dashboard reports recommendation evidence, estimated monthly cost impact, po
 
 ## Usage and cost accounting
 
-The durable usage ledger, not OTLP, is authoritative. Every upstream attempt records an idempotent unsampled event containing logical operation, customer, principal/grant, route, provider, outcome, byte counts, proxy-slot and upstream-connection context, capacity pressure, routing and capacity policy versions, candidate score components, and historical pricing version.
+The durable usage ledger, not OTLP, is authoritative. Every upstream attempt records an idempotent unsampled event containing logical operation, optional job, customer, principal/grant, route, provider, outcome, start/end/duration, byte counts, destination dimensions, applicable proxy-slot/device/upstream-connection context, capacity pressure, routing and capacity policy versions, candidate score components, and historical pricing version.
 
 - Bright Data cost is estimated from billable bytes and the historical per-GiB price.
 - Proxidize provisioned-slot cost is allocated by customer connection-seconds within each interval. Concurrent customers split proportionally; a slot with no active connection is attributed to `Unallocated`.
 - Hour/day/week/month rollups retain group attribution and whether cost is `estimated` or `reconciled`.
-- Configured provider totals replace the overall authoritative spend for matching periods.
-- Idle slot capacity and unexplained reconciliation differences are posted to the synthetic `Unallocated` customer, never silently prorated to customers. Customer attribution plus `Unallocated` normalizes to reconciled provisioned-slot cost.
-- The component provides company-only billing inputs. Invoice generation, approval, adjustments, collection, and customer-facing audit are out of scope.
+- Provider-reported usage remains a separate aggregate from the immutable per-attempt ledger.
+- Reconciliation writes an explicit, immutable adjustment record; it never rewrites an attempt.
+- Idle slot capacity and unexplained reconciliation adjustments are posted to the synthetic `Unallocated` customer, never silently prorated to customers. Customer attribution plus `Unallocated` normalizes to reconciled provisioned-slot cost.
+- The component provides company-only billing inputs. Invoice generation, approval, collection, and customer-facing audit are out of scope.
 
 The initial v0 policy uses empty provider-total and provisioned-capacity inputs. The optional external accounting source is disabled; enabling `stage.features.usageAccountingSource` through a reviewed code change allows a source returning:
 
@@ -367,7 +384,7 @@ The initial v0 policy uses empty provider-total and provisioned-capacity inputs.
 
 Protect it with the `UsageAccountingSourceToken` SST secret when enabled.
 
-Each reconciliation persists estimated total, reported total, variance, source version, and `Unallocated` attribution. The current experimental implementation defaults are:
+Each reconciliation persists `kind: "provider_usage_adjustment"`, estimated total, reported total, `adjustmentUsd`, source version, and `Unallocated` attribution. The current experimental implementation defaults are:
 
 - ignore relative thresholds until the absolute variance exceeds `$1`;
 - warning above `5%`;
@@ -448,8 +465,8 @@ The ECS bake window currently keeps the old tasks available for six hours. These
 ### Provider unavailable or route creation fails
 
 1. Read the provider-neutral error and use the company-facing status/dashboard diagnostics for provider health and capacity.
-2. Compare the profile's geography, carrier, target-authenticated intent, and retry intent with restricted capability evidence.
-3. For authenticated routes, confirm an exact-city-capable provider is available.
+2. Compare the profile's geography, carrier, provider override, and retry intent with restricted capability evidence.
+3. For exact-city requirements, confirm an exact-city-capable provider is available.
 4. Check compatible proxy-slot inventory, health, current connection load, and capacity pressure for Proxidize.
 5. Keep provider selection and provider diagnostics out of public requests and responses; use only authorized company-facing dashboard and telemetry views to explain eligibility.
 

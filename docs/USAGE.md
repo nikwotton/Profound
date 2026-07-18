@@ -100,21 +100,21 @@ V0 supports authenticated SOCKS5 TCP `CONNECT`; it rejects unauthenticated negot
 
 ## Route profile contract
 
-The committed [OpenAPI contract](../openapi/profound-control-api.v0.9.0.json) is authoritative.
+The committed [OpenAPI contract](../openapi/profound-control-api.v0.10.0.json) is authoritative.
 
-| Field                   | Required    | Behavior                                                                                                       |
-| ----------------------- | ----------- | -------------------------------------------------------------------------------------------------------------- |
-| `customerId`            | Yes         | Non-empty attribution value.                                                                                   |
-| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required when region or city is supplied.               |
-| `geography.regionCode`  | No          | State or region hard constraint; requires country.                                                             |
-| `geography.city`        | No          | Exact-city hard constraint; requires country.                                                                  |
-| `carrier`               | No          | Carrier hard constraint.                                                                                       |
-| `providerOverride`      | No          | `bright_data` or `proxidize`; constrains routing without bypassing compatibility, safety, health, or capacity. |
-| `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                      |
+| Field                   | Required    | Behavior                                                                                                                                                                               |
+| ----------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `customerId`            | Yes         | Non-empty attribution value.                                                                                                                                                           |
+| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required when region or city is supplied.                                                                                       |
+| `geography.regionCode`  | No          | State or region hard constraint; requires country.                                                                                                                                     |
+| `geography.city`        | No          | Exact-city hard constraint; requires country.                                                                                                                                          |
+| `carrier`               | No          | Carrier hard constraint.                                                                                                                                                               |
+| `providerOverride`      | No on write | `bright_data` or `proxidize`; constrains routing without bypassing compatibility, safety, health, or capacity. Profile reads always return this field and use `null` when it is unset. |
+| `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                                                                                              |
 
 Unknown fields are rejected. In particular, profiles do not accept target-authentication state, `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
 
-Every supplied geography level is a hard gate for initial placement, retry, failover, rebind, and failback; city means exact city. Target-site authentication remains ordinary pass-through traffic and is deliberately not part of the routing contract. Profile responses omit unset optional fields; chosen-provider details, pricing, and health remain service-private and appear only in authorized dashboard and telemetry views.
+Every supplied geography level is a hard gate for initial placement, retry, failover, rebind, and failback; city means exact city. Target-site authentication remains ordinary pass-through traffic and is deliberately not part of the routing contract. Profile responses omit other unset optional fields but always return `providerOverride` as a provider ID or `null`; chosen-provider details, pricing, and health remain service-private and appear only in authorized dashboard and telemetry views.
 
 Replace the stable requirements with `PUT /v1/profiles/{id}`. New connections use the replacement; established requests and tunnels continue under the policy with which they opened.
 
@@ -159,7 +159,7 @@ Within the applicable provider-preference tier, v0 selects the least-loaded elig
 - The authoritative v0 establishment budget considers at most two candidates per provider and three providers per logical operation. Each attempt has 10 seconds and the operation has 30 seconds overall.
 - `allowConnectionRetry` only permits another upstream establishment attempt before commitment. Plain HTTP commits when its first application-request byte is written upstream; CONNECT and SOCKS5 commit when tunnel establishment is acknowledged to the caller or a tunneled byte is relayed.
 - Target HTTP responses, provider-authentication failures, and failures after commit are not hidden by failover.
-- No request ever falls back to the router's direct Internet connection.
+- No operation ever falls back to the router's direct Internet connection.
 
 ## Errors
 
@@ -180,7 +180,7 @@ Every control-plane error uses exactly this envelope. `401` means the control cr
 
 - Explicit loopback, private, link-local, multicast, reserved, metadata, and special-use IP literals are rejected.
 - `localhost` and operator-configured local-only hostnames or parent domains are rejected.
-- Domains remain intact for provider-side DNS. Local DNS is diagnostic only and cannot reroute the request.
+- Domains remain intact for provider-side DNS. Local DNS is diagnostic only and cannot reroute the operation.
 - Provider-selected addresses are classified `verified` when the adapter can observe or constrain them; verified private or special-purpose results are rejected.
 - Opaque DNS is classified `provider-trusted` and is eligible only for third-party exits with no protected company-network reachability. Bright Data and Proxidize meet that external-provider boundary, but the gateway does not claim complete SSRF enforcement for resources reachable from a provider's own network.
 - Target URL credentials and credentials in `CONNECT` authorities are rejected.
@@ -189,7 +189,7 @@ Every control-plane error uses exactly this envelope. `401` means the control cr
 
 ## Privacy and logging
 
-Operational telemetry may include timestamps, request and correlation IDs, profile/grant/customer identifiers, protocol, target hostname and port, target method and status for plain HTTP, provider class and provider identifier in restricted telemetry only, normalized outcome, duration, byte counts, retry count, and sanitized assignment evidence. Restricted logs and traces may carry a proxy-slot identifier for diagnosis and connection-level accounting; metrics must not use proxy-slot, device, IP, session, route, grant, or user identifiers as attributes.
+Operational telemetry may include timestamps, operation and correlation IDs, profile/grant/customer identifiers, protocol, target hostname and port, target method and status for plain HTTP, provider class and provider identifier in restricted telemetry only, normalized outcome, duration, byte counts, retry count, and sanitized assignment evidence. Restricted logs and traces may carry a proxy-slot identifier for diagnosis and connection-level accounting; metrics must not use proxy-slot, device, IP, session, route, grant, or user identifiers as attributes.
 
 Logs and traces must not contain request/response bodies, full URLs or query strings, raw headers, cookies, target authorization, control bearer tokens, proxy passwords, credential verifiers, provider credentials, or raw vendor responses. Tunnel telemetry contains connection metadata only because application traffic remains encrypted. Provider, provider-override, health, cost, routing-score, soft-overflow, failure-class, and hard-capacity circuit diagnostics are restricted to authorized telemetry and company-facing dashboard views.
 

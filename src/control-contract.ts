@@ -5,7 +5,7 @@ import { GeographyPayload as Geography, RouteProfilePayload } from "./route-prof
 
 export { RouteProfilePayload } from "./route-profile-schema.js";
 
-export const CONTROL_API_VERSION = "0.9.0";
+export const CONTROL_API_VERSION = "0.10.0";
 const exactOptional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
 
 export const ApiError = Schema.Struct({
@@ -92,7 +92,7 @@ export const PublicRouteSchema = Schema.Struct({
   customerId: Schema.String,
   geography: exactOptional(Geography),
   carrier: exactOptional(Schema.String),
-  providerOverride: exactOptional(Schema.Literal("bright_data", "proxidize")),
+  providerOverride: Schema.NullOr(Schema.Literal("bright_data", "proxidize")),
   allowConnectionRetry: Schema.Boolean,
   status: Schema.Literal("ready", "revoked"),
   createdAt: Schema.String,

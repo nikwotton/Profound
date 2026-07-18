@@ -64,6 +64,7 @@ test("managed sessions prefer Proxidize while Bright Data remains eligible when 
   );
   const eligibleFirst = await requestViaProxy(eligible.proxyUrls.http, target.url);
   const eligibleSecond = await requestViaProxy(eligible.proxyUrls.http, target.url);
+  assert.equal(eligible.profile.providerOverride, null, "profile reads make an unset provider override explicit");
   assert.equal(eligibleFirst.status, 200);
   assert.equal(eligibleFirst.headers["x-mock-endpoint-id"], "bright-data-superproxy");
   assert.equal(

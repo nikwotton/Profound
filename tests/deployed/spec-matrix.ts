@@ -1,6 +1,6 @@
 export const DESIGN_DOCUMENT_ID = "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU";
 export const DESIGN_DOCUMENT_REVISION =
-  "ALtnJHyFq-4oFDTRX2n2ZWVGRloBWdjqBee6-H0XNDOfq-q-n7yz6087V5ZdlKd5kV0Qtj3r-xBQ7-IAl7mLhdoMtF7m5MfcRAiSqL07dDo";
+  "ALtnJHxphKy20fWAumTYoX3QkJiJB5JsFNXnxghTuArEzfP-LtahbmKR-mx8k9NoPT8ZvkTzmVvIO9-erp5xzpvVtrD9FeIvIxzLHYr4qwA";
 
 export interface SpecCoverage {
   id: string;
@@ -37,7 +37,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
   {
     id: "2.attribution",
     section: 2,
-    requirement: "Requests, performance, usage, and cost remain attributable to user, customer, optional job, and provider path",
+    requirement: "Operations, performance, usage, and cost remain attributable to user, customer, optional job, and provider path",
     deployed: ["deployed passive traffic reaches the health aggregator through the product telemetry collector"],
     offline: [
       "data-plane attempt logs include attribution and byte counts without request content",
@@ -48,7 +48,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "2.v0-delivery-areas",
     section: 2,
     requirement:
-      "V0 supplies request monitoring, provider-neutral compatibility and failover, passive health, hard geography, shared mobile capacity observation, and basic usage analytics while roadmap work is not a release gate",
+      "V0 supplies operation monitoring, provider-neutral compatibility and failover, passive health, hard geography, shared mobile capacity observation, and basic usage analytics while roadmap work is not a release gate",
     deployed: [
       "deployed health aggregator and status application expose durable capability state and freshness",
       "deployed Proxidize connections share slot capacity and preserve the exact city",
@@ -128,10 +128,10 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     ],
   },
   {
-    id: "3.3.native-request-flow",
+    id: "3.3.native-operation-flow",
     section: 3,
     requirement:
-      "Each new connection resolves service-owned state, validates the destination, establishes a compatible upstream, preserves native proxy semantics, and records the logical operation and every attempt",
+      "Each plain HTTP request and each new CONNECT or SOCKS5 tunnel resolves service-owned state, validates its destination, establishes a compatible upstream, preserves native proxy semantics, and records the logical operation and every attempt",
     deployed: ["deployed HTTP forwarding preserves native method, path, query, headers, cookies, authorization, and body"],
     offline: [
       "plain HTTP preserves method, path, headers, and streamed body",
@@ -236,7 +236,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.5.usage-ledger",
     section: 3,
     requirement:
-      "Every attempt creates an unsampled idempotent immutable usage record with operation, job, attribution, provider path, outcome, bytes, pricing, destination, and applicable capacity context",
+      "Every attempt creates one unsampled idempotent immutable usage record with operation, optional job, attribution, provider path, outcome, timing, bytes, pricing, destination, and applicable slot, device, or connection context",
     deployed: [],
     offline: [
       "usage records are immutable and idempotent",
@@ -268,11 +268,12 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.6.capability-health",
     section: 3,
     requirement:
-      "Provider and passive evidence produce All Traffic, Managed Sessions, and Stateless Traffic rollups with operational, degraded, unavailable, and freshness semantics that feed routing",
+      "Provider, passive, and bounded user-triggered synthetic evidence produce traffic and health-verification rollups with operational, degraded, unavailable, freshness, shared-cooldown, and inconclusive-canary semantics that feed routing",
     deployed: ["deployed health aggregator and status application expose durable capability state and freshness"],
     offline: [
       "capability health follows preferred provider classes without penalizing a healthy preferred class",
       "status application serves durable snapshots, history, and explicit staleness",
+      "an inconclusive canary check cannot mark health verification unavailable",
     ],
   },
   {
@@ -291,7 +292,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "3.7.destination-safety",
     section: 3,
     requirement:
-      "Every new connection rejects unsafe literals, local names, malformed destinations, disallowed ports, and observable unsafe provider addresses, never uses direct fallback, and treats provider DNS as authoritative",
+      "Every plain HTTP request and each new CONNECT or SOCKS5 tunnel rejects unsafe literals, local names, malformed destinations, disallowed ports, and observable unsafe provider addresses, never uses direct fallback, and treats provider DNS as authoritative",
     deployed: ["deployed gateways enforce public destinations, ports, and credential-free targets"],
     offline: [
       "literal target validation blocks explicit private, metadata, and reserved addresses without using local DNS for routing",
@@ -333,9 +334,21 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     offline: ["repository delivery policy encodes required CI, review, dependency, migration, and live-probe gates"],
   },
   {
+    id: "3.8.signed-public-canary",
+    section: 3,
+    requirement:
+      "V0 deploys the signed HTTP-only public canary behind API Gateway and Lambda in an isolated VPC and reports its health separately from provider and traffic capabilities",
+    deployed: [
+      "deployed signed public canary works directly and through the normal proxy path without replay",
+      "deployed networks isolate the canary and keep status and aggregation private",
+    ],
+    offline: ["an inconclusive canary check cannot mark health verification unavailable"],
+  },
+  {
     id: "4.1.geographic-roadmap",
     section: 4,
-    requirement: "Verified exact-city optimization and the isolated signed public canary are production-roadmap work, not v0 release gates",
+    requirement:
+      "Automated history-backed exact-city verification across provider candidates and geographies is production-roadmap work built on the unchanged v0 hard gates and signed canary",
     deployed: [],
     offline: [],
     deferred: true,
@@ -362,7 +375,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "4.4.health-roadmap",
     section: 4,
     requirement:
-      "Dedicated health aggregation, demand-driven synthetic validation, history and geography drill-down, richer subscriptions, and centralized rule ownership are production-roadmap work",
+      "Dedicated centralized aggregation, conflict-triggered synthetic automation, history, geography drill-down, richer subscriptions, and escalation are production-roadmap work around v0's authorized user-triggered validation",
     deployed: [],
     offline: [],
     deferred: true,
@@ -371,7 +384,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "4.5.accounting-roadmap",
     section: 4,
     requirement:
-      "Provider reconciliation, variance escalation, richer analytics, and replaceable company-platform read models are production-roadmap work rather than charge execution",
+      "Provider-total reconciliation, variance alerts, richer rollups and forecasts, replaceable analytics backends, and downstream billing workflows are production-roadmap work rather than v0 release requirements",
     deployed: [],
     offline: [],
     deferred: true,
@@ -380,16 +393,16 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     id: "4.6.release-roadmap",
     section: 4,
     requirement:
-      "Independent scaling, public-canary Lambda deployment, immutable-artifact promotion, state migration, and blue-green tunnel draining are production-roadmap work",
+      "Independent scaling, immutable-artifact promotion, state migration, and blue-green tunnel draining are production-roadmap work",
     deployed: [],
     offline: [],
     deferred: true,
   },
   {
-    id: "5.1.foundational-unknowns",
-    section: 5,
+    id: "2.foundational-unknowns",
+    section: 2,
     requirement:
-      "Workload, SLO, freshness, accounting-guarantee, and deployment-footprint values remain explicitly unknown until evidence and stakeholder expectations justify architecture commitments",
+      "Workload, SLO, freshness, accounting-guarantee, geography, data-residency, and multi-region values remain explicitly unknown until evidence and stakeholder expectations justify architecture commitments",
     deployed: [],
     offline: [],
     deferred: true,

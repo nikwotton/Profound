@@ -186,6 +186,38 @@ test("capability aggregation keeps freshness separate and requires corroboration
   await store.close();
 });
 
+test("an inconclusive canary check cannot mark health verification unavailable", async () => {
+  const store = new InMemoryRouteStore();
+  const checkedAt = "2026-07-15T00:00:00.000Z";
+  const aggregator = new CapabilityHealthAggregator(
+    store,
+    [
+      new HealthProvider("bright_data", { provider: "bright_data", state: "healthy", checkedAt }),
+      new HealthProvider("proxidize", { provider: "proxidize", state: "healthy", checkedAt }),
+    ],
+    {
+      passiveValidationMaxAgeMs: 300_000,
+      syntheticValidator: new CooldownSyntheticValidator(
+        async () => ({ testId: "inconclusive", outcome: "inconclusive", checkedAt, message: "canary unavailable" }),
+        300_000,
+        () => Date.parse(checkedAt),
+      ),
+      now: () => Date.parse(checkedAt),
+    },
+    silentLogger,
+  );
+  try {
+    const snapshot = await aggregator.refresh({ forceSynthetic: true });
+    assert.equal(snapshot.capabilities.find(({ capability }) => capability === "health_verification")?.status, "degraded");
+    assert.equal(
+      snapshot.capabilities.some(({ status }) => status === "unavailable"),
+      false,
+    );
+  } finally {
+    await store.close();
+  }
+});
+
 test("capability health follows preferred provider classes without penalizing a healthy preferred class", async () => {
   const checkedAt = "2026-07-15T00:00:00.000Z";
   const snapshotFor = async (

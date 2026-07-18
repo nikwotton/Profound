@@ -38,7 +38,7 @@ export class Telemetry {
   readonly effectLayer;
   readonly #sdk: NodeSDK;
   readonly #tracer;
-  readonly #requests;
+  readonly #operations;
   readonly #duration;
   readonly #rotations;
   readonly #attempts;
@@ -66,12 +66,12 @@ export class Telemetry {
     this.#tracer = trace.getTracer(options.serviceName, options.serviceVersion);
     this.#healthLogger = logs.getLogger(options.serviceName, options.serviceVersion);
     const meter = metrics.getMeter(options.serviceName, options.serviceVersion);
-    this.#requests = meter.createCounter("profound.proxy.requests", {
-      description: "Requests handled by the proxy and control planes",
-      unit: "{request}",
+    this.#operations = meter.createCounter("profound.proxy.operations", {
+      description: "Logical operations handled by the proxy and control planes",
+      unit: "{operation}",
     });
-    this.#duration = meter.createHistogram("profound.proxy.request.duration", {
-      description: "Proxy and control request duration",
+    this.#duration = meter.createHistogram("profound.proxy.operation.duration", {
+      description: "Proxy and control operation duration",
       unit: "ms",
     });
     this.#rotations = meter.createCounter("profound.proxy.rotations", {
@@ -123,7 +123,7 @@ export class Telemetry {
       protocol: attributes["protocol"] ?? "unknown",
       outcome: attributes["outcome"] ?? (error === undefined ? "success" : "failure"),
     };
-    this.#requests.add(1, metricAttributes);
+    this.#operations.add(1, metricAttributes);
     this.#duration.record(Date.now() - startedAt, metricAttributes);
   }
 

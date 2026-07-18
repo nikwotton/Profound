@@ -307,7 +307,7 @@ export class CapabilityHealthAggregator {
               synthetic === undefined
                 ? "degraded"
                 : synthetic.outcome === "inconclusive"
-                  ? "unavailable"
+                  ? "degraded"
                   : synthetic.outcome === "success" && synthetic.geographyVerification !== "match"
                     ? "degraded"
                     : "operational",
