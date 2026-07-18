@@ -1283,8 +1283,6 @@ service:
             publicCanary: canaryApi.url,
             statusApplication: status.url,
             companyDashboard: status.url,
-            // Compatibility alias for existing deployed-test metadata readers.
-            internalDashboard: status.url,
             usageAccounting: usageAccounting.url,
             healthAggregator: healthAggregator.url,
             productVpcId: vpc.id,
@@ -1394,8 +1392,6 @@ service:
       telemetryRetentionDays,
       statusApplication: status.url,
       companyDashboard: status.url,
-      // Compatibility alias for existing stage-output consumers.
-      internalDashboard: status.url,
       usageAccounting: usageAccounting.url,
       healthAggregator: healthAggregator.url,
       publicCanary: canaryApi.url,
