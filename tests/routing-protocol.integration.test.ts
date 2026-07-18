@@ -397,6 +397,9 @@ test("control API rejects unauthorized and malformed route requests", async (t) 
   });
   const unauthorized = await controlRequest(testApp.application, "/v1/profiles", {}, false);
   assert.equal(unauthorized.status, 401);
+  const unauthorizedBody = (await unauthorized.json()) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(unauthorizedBody).sort(), ["code", "message", "requestId", "retryable"]);
+  assert.equal(unauthorizedBody["code"], "unauthorized");
   const invalid = await controlRequest(testApp.application, "/v1/profiles", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -413,6 +416,7 @@ test("control API rejects unauthorized and malformed route requests", async (t) 
   assert.equal(typeof invalidBody["message"], "string");
   assert.equal(typeof invalidBody["retryable"], "boolean");
   assert.equal(typeof invalidBody["requestId"], "string");
+  assert.equal(invalidBody["_tag"], undefined);
   assert.doesNotMatch(JSON.stringify(invalidBody), /bright|proxidize|provider|candidate/i);
 
   const openApi = await controlRequest(testApp.application, "/openapi.json", {}, false);
