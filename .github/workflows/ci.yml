@@ -40,9 +40,7 @@ jobs:
         run: pnpm lint
       - name: TypeScript 7 authoritative compiler
         run: pnpm check
-      - name: Vitest and Effect tests
-        run: pnpm test:unit
-      - name: fast-check properties
+      - name: Vitest, Effect, and fast-check property tests
         run: pnpm test:property
       - name: Offline integration and contract tests with coverage thresholds
         run: pnpm test:coverage

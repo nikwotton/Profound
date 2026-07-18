@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { NotFoundError, ValidationError } from "./errors.js";
+import { NotFoundError } from "./errors.js";
 import type { Logger } from "./logger.js";
 import {
   toPublicAccessGrant,
@@ -17,15 +17,26 @@ import type {
   StoredAccessGrant,
   StoredLogicalSession,
 } from "./types.js";
-import { validateGrantIssuance, validateSessionMode } from "./validation.js";
+import { validateGrantIssuance } from "./validation.js";
 
 export interface IssuedAccessGrant {
-  grant: PublicAccessGrant;
+  grant: Omit<PublicAccessGrant, "credentials">;
   credential: PublicAccessGrantCredential & { password: string };
   session?: PublicLogicalSession;
   endpoints: {
     http: string;
     socks5: string;
+  };
+}
+
+function issuedGrant(grant: PublicAccessGrant): IssuedAccessGrant["grant"] {
+  return {
+    grantId: grant.grantId,
+    profileId: grant.profileId,
+    ...(grant.jobId === undefined ? {} : { jobId: grant.jobId }),
+    status: grant.status,
+    createdAt: grant.createdAt,
+    updatedAt: grant.updatedAt,
   };
 }
 
@@ -89,7 +100,7 @@ export class AccessGrantService {
     if (credential === undefined) throw new Error("New access-grant credential was not persisted");
     this.logger.info("Access grant issued", { routeId, accessGrantId: grantId, userId: principalId });
     return {
-      grant: publicGrant,
+      grant: issuedGrant(publicGrant),
       credential: { ...credential, password: token },
       ...(session === undefined ? {} : { session: toPublicLogicalSession(session) }),
       endpoints: this.#proxyEndpoints(),
@@ -115,25 +126,22 @@ export class AccessGrantService {
     const credential = publicGrant.credentials.find((candidate) => candidate.credentialId === credentialId);
     if (credential === undefined) throw new Error("Managed-session credential was not persisted");
     return {
-      grant: publicGrant,
+      grant: issuedGrant(publicGrant),
       session: toPublicLogicalSession(session),
       credential: { ...credential, password: token },
       endpoints: this.#proxyEndpoints(),
     };
   }
 
-  async createStatelessCredential(grantId: string, principalId: string, input: unknown): Promise<IssuedAccessGrant> {
-    if (validateSessionMode(input) !== "none") {
-      throw new ValidationError("Stateless credential issuance requires sessionMode none");
-    }
+  async createStatelessCredential(grantId: string, principalId: string): Promise<IssuedAccessGrant> {
     const existing = await this.#ownedAccessGrant(grantId, principalId);
     const credentialId = randomUUID();
     const token = randomBytes(32).toString("base64url");
-    const grant = await this.store.addAccessGrantCredential(existing.id, credentialId, token, "none");
+    const grant = await this.store.addAccessGrantCredential(existing.id, credentialId, token, "stateless");
     const publicGrant = toPublicAccessGrant(grant);
     const credential = publicGrant.credentials.find((candidate) => candidate.credentialId === credentialId);
     if (credential === undefined) throw new Error("Stateless credential was not persisted");
-    return { grant: publicGrant, credential: { ...credential, password: token }, endpoints: this.#proxyEndpoints() };
+    return { grant: issuedGrant(publicGrant), credential: { ...credential, password: token }, endpoints: this.#proxyEndpoints() };
   }
 
   async listLogicalSessions(grantId: string, principalId: string): Promise<PublicLogicalSession[]> {
@@ -199,7 +207,7 @@ export class AccessGrantService {
       suspectedCompromise,
     });
     return {
-      grant,
+      grant: issuedGrant(grant),
       credential: { ...credential, password: token },
       endpoints: this.#proxyEndpoints(),
     };

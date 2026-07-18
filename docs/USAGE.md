@@ -100,21 +100,21 @@ V0 supports authenticated SOCKS5 TCP `CONNECT`; it rejects unauthenticated negot
 
 ## Route profile contract
 
-The committed [OpenAPI contract](../openapi/profound-control-api.v0.7.0.json) is authoritative.
+The committed [OpenAPI contract](../openapi/profound-control-api.v0.8.0.json) is authoritative.
 
-| Field                   | Required    | Behavior                                                                                                                |
-| ----------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `customerId`            | Yes         | Non-empty attribution value.                                                                                            |
-| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required when region or city is supplied.                        |
-| `geography.regionCode`  | No          | State or region hard constraint; requires country.                                                                      |
-| `geography.city`        | No          | Exact-city hard constraint; requires country.                                                                           |
-| `carrier`               | No          | Carrier hard constraint.                                                                                                |
-| `providerOverride`      | No          | `bright_data`, `proxidize`, or `null`; constrains routing without bypassing compatibility, safety, health, or capacity. |
-| `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                               |
+| Field                   | Required    | Behavior                                                                                                       |
+| ----------------------- | ----------- | -------------------------------------------------------------------------------------------------------------- |
+| `customerId`            | Yes         | Non-empty attribution value.                                                                                   |
+| `geography.countryCode` | Conditional | Optional two-letter ISO code, normalized to uppercase; required when region or city is supplied.               |
+| `geography.regionCode`  | No          | State or region hard constraint; requires country.                                                             |
+| `geography.city`        | No          | Exact-city hard constraint; requires country.                                                                  |
+| `carrier`               | No          | Carrier hard constraint.                                                                                       |
+| `providerOverride`      | No          | `bright_data` or `proxidize`; constrains routing without bypassing compatibility, safety, health, or capacity. |
+| `allowConnectionRetry`  | Yes         | Permits safe pre-commit connection-establishment retries.                                                      |
 
 Unknown fields are rejected. In particular, profiles do not accept target-authentication state, `name`, `protocol`, `allowedProtocols`, `targeting`, `rotation`, `session`, `retryPolicy`, `provider`, `principalId`, or `userId`.
 
-Every supplied geography level is a hard gate for initial placement, retry, failover, rebind, and failback; city means exact city. Target-site authentication remains ordinary pass-through traffic and is deliberately not part of the routing contract. Complete profile responses include `providerOverride: null` when no override is set; chosen-provider details, pricing, and health remain service-private and appear only in authorized dashboard and telemetry views.
+Every supplied geography level is a hard gate for initial placement, retry, failover, rebind, and failback; city means exact city. Target-site authentication remains ordinary pass-through traffic and is deliberately not part of the routing contract. Profile responses omit unset optional fields; chosen-provider details, pricing, and health remain service-private and appear only in authorized dashboard and telemetry views.
 
 Replace the stable requirements with `PUT /v1/profiles/{id}`. New connections use the replacement; established requests and tunnels continue under the policy with which they opened.
 
@@ -128,7 +128,7 @@ An access grant owns independently revocable authorization for one profile. Mana
 | Inspect/replace/remove profile | `GET`, `PUT`, `DELETE /v1/profiles/{id}`                                |
 | Create/list grants             | `POST`, `GET /v1/profiles/{id}/grants`                                  |
 | Inspect/revoke grant           | `GET`, `DELETE /v1/grants/{grantId}`                                    |
-| Create stateless credential    | `POST /v1/grants/{grantId}/credentials` with `sessionMode: "none"`      |
+| Create stateless credential    | `POST /v1/grants/{grantId}/credentials`                                 |
 | Rotate credential              | `POST /v1/grants/{grantId}/credentials/{credentialId}/rotate`           |
 | Replace compromised credential | `POST /v1/grants/{grantId}/credentials/{credentialId}/emergency-rotate` |
 | Inspect/revoke credential      | `GET`, `DELETE /v1/grants/{grantId}/credentials/{credentialId}`         |
@@ -140,18 +140,18 @@ Closing a session rejects new connections immediately and lets established work 
 
 Credentials have a fixed 30-day lifetime. `renewalDueAt` is seven days before expiry. Routine rotation leaves the selected prior credential in bounded overlap for at most 72 hours or until original expiry. Emergency rotation invalidates the selected suspected credential immediately. Rotation preserves `sessionMode` and `sessionId`; it never creates a new logical identity.
 
-Profile, grant, session, and credential list/read responses never include passwords, verifiers, provider credentials, provider affinity, device identifiers, IP assignments, or proxy URLs with embedded credentials.
+Issuance responses contain a compact grant summary plus the new credential and credential-free endpoints. Profile, grant, session, and credential list/read responses never include passwords, verifiers, provider credentials, provider affinity, device identifiers, IP assignments, or proxy URLs with embedded credentials.
 
 ## Routing and retry behavior
 
 Provider selection and provider-specific rotation are private service implementation policy. Consumers declare stable requirements, not mechanisms.
 
-`providerOverride` is the one deliberate exception: set it to `bright_data` or `proxidize` only when a workload must constrain the vendor, or leave it `null`/omit it for ordinary provider-neutral routing. An override never bypasses protocol, geography, safety, health, hard-capacity, or circuit checks. If the named provider cannot satisfy the profile, the control plane returns `provider_override_unsatisfied`; the data plane does not fall back to another provider.
+`providerOverride` is the one deliberate exception: set it to `bright_data` or `proxidize` only when a workload must constrain the vendor, or omit it for ordinary provider-neutral routing. An override never bypasses protocol, geography, safety, health, hard-capacity, or circuit checks. If the named provider cannot satisfy the profile, the control plane returns `provider_override_unsatisfied`; the data plane does not fall back to another provider.
 
 Within the applicable provider-preference tier, v0 selects the least-loaded eligible candidate using a stable identifier as the tie-breaker. A candidate at its soft capacity limit remains an overflow option rather than being rejected. Managed sessions prefer device-backed providers and remain within that class through soft saturation. Stateless traffic prefers residential providers, but residential soft saturation promotes a compatible unsaturated device-backed candidate ahead of saturated residential overflow. The weighted reliability, headroom, performance, cost, and stability score is emitted only as a shadow roadmap diagnostic; it does not control v0 selection.
 
 - `sessionMode` controls provider-class preference; target authentication never does. Managed sessions prefer device-backed providers and stateless traffic prefers residential providers.
-- `sessionMode: "none"` has no cross-connection affinity. Managed sessions first try their eligible recorded binding and preserve it through soft saturation; new sessions and stateless connections use normal least-loaded placement.
+- `sessionMode: "stateless"` has no cross-connection affinity. Managed sessions first try their eligible recorded binding and preserve it through soft saturation; new sessions and stateless connections use normal least-loaded placement.
 - A managed binding may rebind atomically after ineligibility, effective hard capacity, an open circuit, a pre-commit failure, or an incompatible profile update. Concurrent connections converge on the winning binding instead of deliberately splitting identities.
 - A managed cross-class fallback remains marked degraded. The next real connection probes the preferred class only after five minutes of continuous health and 30 seconds with no active connection; success rebinds atomically and failure restarts stabilization.
 - Bright Data remains eligible for managed sessions when it satisfies all constraints; Proxidize remains eligible for stateless traffic and subject to inventory and capacity.
@@ -173,7 +173,7 @@ Control-plane errors are provider-neutral and contain:
 }
 ```
 
-The Effect error discriminator `_tag` may also appear in the JSON representation. `401` means the control credential is missing or invalid; `404` intentionally covers absent, revoked, or non-owned resources; `503` means the required service capability is unavailable. Data-plane authentication failures return HTTP `407` or SOCKS5 authentication failure.
+Every control-plane error uses exactly this envelope. `401` means the control credential is missing or invalid; `404` intentionally covers absent, revoked, or non-owned resources; `503` means the required service capability is unavailable. Data-plane authentication failures return HTTP `407` or SOCKS5 authentication failure.
 
 ## Destination and transport safety
 

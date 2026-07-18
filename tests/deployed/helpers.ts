@@ -133,7 +133,7 @@ export interface PublicAccessGrantCredential {
 }
 
 export interface IssuedAccessGrantResponse {
-  grant: PublicAccessGrant;
+  grant: Omit<PublicAccessGrant, "credentials">;
   credential: PublicAccessGrantCredential & { password: string };
   endpoints: { http: string; socks5: string };
 }
@@ -285,7 +285,7 @@ export async function controlRequest(path: string, init: RequestInit = {}, token
 
 export async function createRoute(
   profile: LegacyTestProfileInput,
-  sessionMode: "managed" | "none" = "none",
+  sessionMode: "managed" | "stateless" = "stateless",
 ): Promise<CreatedRouteResponse> {
   const response = await controlRequest("/v1/profiles", {
     method: "POST",
@@ -311,6 +311,7 @@ export async function createRoute(
       ...issued.grant,
       id: issued.grant.grantId,
       routeId: issued.grant.profileId,
+      credentials: [issued.credential],
     },
     credential: { ...issued.credential, id: issued.credential.credentialId },
     proxyUsername: issued.credential.username,

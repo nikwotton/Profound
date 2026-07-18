@@ -174,7 +174,7 @@ async function controlRequest(application: RunningLocalApplication, path: string
 async function issueGrant(
   application: RunningLocalApplication,
   profile: Record<string, unknown>,
-  sessionMode: "managed" | "none",
+  sessionMode: "managed" | "stateless",
   writeLine: WriteLine,
 ): Promise<IssuedGrant> {
   writeControlRequest(writeLine, "POST", "/v1/profiles", profile);
@@ -388,7 +388,7 @@ export async function startDemo(options: DemoOptions = {}): Promise<RunningDemo>
         geography: { countryCode: "US" },
         allowConnectionRetry: true,
       },
-      "none",
+      "stateless",
       writeLine,
     );
     const residentialFirst = await requestViaHttpProxy(residential, httpTarget.url);

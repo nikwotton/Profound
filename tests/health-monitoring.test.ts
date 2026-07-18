@@ -834,7 +834,7 @@ test("status application serves durable snapshots, history, and explicit stalene
     await server.stop();
     await store.close();
   });
-  const status = await fetch(`http://127.0.0.1:${address.port}/api/status`);
+  const status = await fetch(`http://127.0.0.1:${address.port}/v1/status`);
   assert.equal(status.status, 200);
   assert.deepEqual(await status.json(), {
     snapshot,
@@ -848,7 +848,7 @@ test("status application serves durable snapshots, history, and explicit stalene
       },
     ],
   });
-  const history = await fetch(`http://127.0.0.1:${address.port}/api/status/history?limit=1`);
+  const history = await fetch(`http://127.0.0.1:${address.port}/v1/status/history?limit=1`);
   assert.deepEqual(await history.json(), { data: [snapshot] });
   const html = await (await fetch(`http://127.0.0.1:${address.port}/`)).text();
   assert.match(html, /All Traffic/);

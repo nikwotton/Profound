@@ -59,7 +59,7 @@ The dashboard is at `http://127.0.0.1:8083/`. Without a dedicated health route, 
 pnpm aws:remove --stage yourname-dev
 ```
 
-The dashboard lists non-null profile provider overrides and every current hard-capacity circuit with its provider/candidate, normalized failure class, state, and cooldown. `/api/capacity` additionally exposes the typed routing policy, current least-load evidence, shadow roadmap score components, soft pressure, and circuit state for operator diagnosis.
+The dashboard lists non-null profile provider overrides and every current hard-capacity circuit with its provider/candidate, normalized failure class, state, and cooldown. `/v1/capacity` additionally exposes the typed routing policy, current least-load evidence, shadow roadmap score components, soft pressure, and circuit state for operator diagnosis.
 
 ## Configuration contract
 
@@ -287,17 +287,17 @@ The dashboard root shows 30-day request count, transfer, active upstream connect
 
 The dashboard and its programmatic endpoints are available to authorized users and services across the company, not only the operating team. They are unauthenticated at the application layer in v0, so approved company-network access to the private service is the authorization boundary:
 
-| Endpoint                          | Purpose                                                                  |
-| --------------------------------- | ------------------------------------------------------------------------ |
-| `GET /api/status`                 | Latest snapshot plus stale/age fields                                    |
-| `GET /api/status/history?limit=N` | Durable capability history                                               |
-| `GET /api/status/geographies`     | Latest geography evidence                                                |
-| `POST /api/status/validate`       | Proxy a synthetic validation request to the aggregator                   |
-| `GET /api/usage`                  | Usage and cost rollups                                                   |
-| `GET /api/usage/reconciliations`  | Provider total comparisons and variance evidence                         |
-| `GET /api/capacity`               | Slot inventory, compatible capacity, policy, and operator recommendation |
+| Endpoint                         | Purpose                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `GET /v1/status`                 | Latest snapshot plus stale/age fields                                    |
+| `GET /v1/status/history?limit=N` | Durable capability history                                               |
+| `GET /v1/status/geographies`     | Latest geography evidence                                                |
+| `POST /v1/status/validate`       | Proxy a synthetic validation request to the aggregator                   |
+| `GET /v1/usage`                  | Usage and cost rollups                                                   |
+| `GET /v1/usage/reconciliations`  | Provider total comparisons and variance evidence                         |
+| `GET /v1/capacity`               | Slot inventory, compatible capacity, policy, and operator recommendation |
 
-`/api/usage` supports:
+`/v1/usage` supports:
 
 - `from` and `to` ISO timestamps;
 - `preset=day|week|month`;
@@ -310,10 +310,10 @@ Example:
 
 ```sh
 curl -sS \
-  'http://127.0.0.1:8083/api/usage?preset=week&interval=day&groupBy=provider'
+  'http://127.0.0.1:8083/v1/usage?preset=week&interval=day&groupBy=provider'
 ```
 
-`/api/capacity` accepts optional `country`, `city`, and `carrier` filters. It returns the latest service-private provider-account/slot inventory with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
+`/v1/capacity` accepts optional `country`, `city`, and `carrier` filters. It returns the latest service-private provider-account/slot inventory with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
 
 It also returns the typed routing policy and the latest 100 safe routing diagnostics. These diagnostics contain provider, optional provider override and service-private proxy-slot identity, policy version, active-load and soft-pressure evidence, shadow roadmap score components, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and diagnostic components are emitted on restricted selection logs, traces, and the durable attempt ledger.
 
@@ -373,9 +373,9 @@ Each reconciliation persists estimated total, reported total, variance, source v
 
 These thresholds are versioned v0 policy constants. Revisit them through code review using observed data.
 
-Usage accounting owns reconciliation-variance classification and capacity-planning recommendations derived from usage, cost, and capacity rollups. It persists idempotent warning/error events before emitting aggregate logs. Authorized dashboard users can inspect those non-capability events through the private `GET /api/usage/events` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
+Usage accounting owns reconciliation-variance classification and capacity-planning recommendations derived from usage, cost, and capacity rollups. It persists idempotent warning/error events before emitting aggregate logs. Authorized dashboard users can inspect those non-capability events through the private `GET /v1/usage/events` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
 
-Capacity pressure is also persisted as normalized evidence through the shared service contract and is available at `GET /api/usage/capacity-pressure-evidence`. The health aggregator reads fresh evidence (five minutes by default, configurable with `HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS`) and alone classifies the affected capability as degraded. Usage accounting does not classify capability state or emit capability alerts.
+Capacity pressure is also persisted as normalized evidence through the shared service contract and is available at `GET /v1/usage/capacity-pressure-evidence`. The health aggregator reads fresh evidence (five minutes by default, configurable with `HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS`) and alone classifies the affected capability as degraded. Usage accounting does not classify capability state or emit capability alerts.
 
 ## Alerting
 

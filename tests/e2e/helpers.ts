@@ -11,7 +11,7 @@ import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, Route
 export const e2eTestsEnabled = process.env["RUN_PROXY_E2E_TESTS"] === "1";
 
 export interface IssuedAccessGrantResponse {
-  grant: PublicAccessGrant;
+  grant: Omit<PublicAccessGrant, "credentials">;
   credential: PublicAccessGrantCredential & { password: string };
   endpoints: { http: string; socks5: string };
 }
@@ -94,7 +94,7 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
     controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}/grants`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionMode: "none" }),
+      body: JSON.stringify({ sessionMode: "stateless" }),
     }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) {
@@ -104,7 +104,7 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
   const issued = (await grantResponse.json()) as IssuedAccessGrantResponse;
   return {
     profile: publicProfile,
-    accessGrant: issued.grant,
+    accessGrant: { ...issued.grant, credentials: [issued.credential] },
     credential: issued.credential,
     proxyUsername: issued.credential.username,
     proxyUrls: {

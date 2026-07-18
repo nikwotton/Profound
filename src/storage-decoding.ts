@@ -49,7 +49,7 @@ const Rotation = Schema.Union(
 
 const StoredAccessGrantCredentialSchema: Schema.Schema<StoredAccessGrantCredential> = Schema.Struct({
   id: Schema.String,
-  sessionMode: Schema.Literal("managed", "none"),
+  sessionMode: Schema.Literal("managed", "stateless"),
   sessionId: exactOptional(Schema.String),
   tokenSalt: Schema.String,
   tokenHash: Schema.String,
@@ -261,7 +261,7 @@ const UsageRecordSchema: Schema.Schema<UsageRecord> = Schema.Struct({
   logicalOperationId: Schema.String,
   jobId: exactOptional(Schema.String),
   accessGrantId: Schema.String,
-  sessionMode: exactOptional(Schema.Literal("managed", "none")),
+  sessionMode: exactOptional(Schema.Literal("managed", "stateless")),
   sessionId: exactOptional(Schema.String),
   routeId: Schema.String,
   userId: Schema.String,

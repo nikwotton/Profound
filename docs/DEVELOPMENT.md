@@ -48,7 +48,7 @@ Build production JavaScript:
 pnpm build
 ```
 
-`pnpm build` does not start a server. `dev:service` and the compiled `start` command are internal SST/container entry points; invoking them directly is unsupported.
+`pnpm build` does not start a server. `internal:dev:service` is an SST entry point; invoking it directly is unsupported.
 
 ## Source map
 
@@ -81,12 +81,7 @@ pnpm build
 Run the standard local gate:
 
 ```sh
-pnpm format:check
-pnpm check
-pnpm lint
-pnpm openapi:check
-pnpm test
-pnpm build
+pnpm verify
 ```
 
 Format changed files with:
@@ -102,7 +97,6 @@ pnpm format
 | Command                    | Scope                                                                                                |
 | -------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `pnpm test`                | Full offline contract, integration, persistence, health, accounting, and infrastructure-static suite |
-| `pnpm test:unit`           | Vitest/Effect unit tests                                                                             |
 | `pnpm test:property`       | fast-check property tests                                                                            |
 | `pnpm test:release-policy` | Migrations, drain coordination, and release policy                                                   |
 | `pnpm test:e2e`            | Stage-independent black-box route, grant, proxy, rotation, and revocation lifecycle                  |
@@ -201,7 +195,7 @@ pnpm aws:remove --stage ci-manual
 
 ## OpenAPI workflow
 
-The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.7.0.json) is committed for client generation.
+The control plane is defined once with Effect HttpApi schemas. `/openapi.json` serves the live OpenAPI 3.1 document, and [the versioned artifact](../openapi/profound-control-api.v0.8.0.json) is committed for client generation.
 
 After any control schema or endpoint change:
 

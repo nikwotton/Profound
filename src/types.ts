@@ -26,7 +26,7 @@ export interface RetryPolicy {
   maxAttempts: number;
 }
 
-export type SessionMode = "managed" | "none";
+export type SessionMode = "managed" | "stateless";
 
 export interface RouteProfileInput {
   customerId: string;
@@ -36,7 +36,7 @@ export interface RouteProfileInput {
     city?: string;
   };
   carrier?: string;
-  providerOverride?: ProviderId | null;
+  providerOverride?: ProviderId;
   allowConnectionRetry: boolean;
 }
 
@@ -127,7 +127,7 @@ export interface AuthenticatedAccessGrant {
 export interface PublicAccessGrant {
   grantId: string;
   profileId: string;
-  jobId: string | null;
+  jobId?: string;
   status: AccessGrantStatus;
   credentials: PublicAccessGrantCredential[];
   createdAt: string;
@@ -168,7 +168,6 @@ export interface PublicLogicalSession {
   sessionId: string;
   grantId: string;
   profileId: string;
-  sessionMode: "managed";
   status: LogicalSessionStatus;
   createdAt: string;
   updatedAt: string;
@@ -187,7 +186,6 @@ export interface AuthenticatedRoute extends StoredRoute {
 
 export interface PublicRoute extends RouteProfileInput {
   profileId: string;
-  providerOverride: ProviderId | null;
   status: RouteStatus;
   createdAt: string;
   updatedAt: string;

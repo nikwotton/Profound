@@ -36,7 +36,7 @@ export interface UsageQuery {
   routeId?: string;
   jobId?: string;
   logicalOperationId?: string;
-  sessionMode?: "managed" | "none";
+  sessionMode?: "managed" | "stateless";
   destinationDomain?: string;
   destinationHost?: string;
   destinationPathTemplate?: string;

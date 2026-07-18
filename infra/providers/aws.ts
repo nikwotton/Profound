@@ -573,7 +573,7 @@ service:
           image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
-          dev: { command: "pnpm dev:service" },
+          dev: { command: "pnpm internal:dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "data-plane",
@@ -702,7 +702,7 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev:service" },
+          dev: { command: "pnpm internal:dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "control-plane",
@@ -919,7 +919,7 @@ service:
           image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
-          dev: { command: "pnpm dev:service" },
+          dev: { command: "pnpm internal:dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "health-aggregator",
@@ -1005,7 +1005,7 @@ service:
           image: applicationImage,
           cpu: "0.25 vCPU",
           memory: "0.5 GB",
-          dev: { command: "pnpm dev:service" },
+          dev: { command: "pnpm internal:dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "status",
@@ -1062,7 +1062,7 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev:service" },
+          dev: { command: "pnpm internal:dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "usage-accounting",
@@ -1129,7 +1129,7 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev:service" },
+          dev: { command: "pnpm internal:dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "notification",

@@ -92,10 +92,9 @@ e2eTest("a grant credential can be rotated and independently revoked", async (t)
   assert.equal(rotationResponse.status, 200);
   const rotated = (await rotationResponse.json()) as IssuedAccessGrantResponse;
   const rotatedUrl = issuedProxyEndpoint(rotated, "http");
-  assert.equal(
-    rotated.grant.credentials.find((credential) => credential.credentialId === route.credential.credentialId)?.status,
-    "overlap",
-  );
+  const grantResponse = await controlRequest(`/v1/grants/${route.accessGrant.grantId}`);
+  const grant = ((await grantResponse.json()) as { grant: typeof route.accessGrant }).grant;
+  assert.equal(grant.credentials.find((credential) => credential.credentialId === route.credential.credentialId)?.status, "overlap");
   assert.equal(rotated.credential.status, "active");
   assert.equal((await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl)).status, environment.expectedTargetStatus);
   assert.equal((await requestViaHttpProxy(rotatedUrl, environment.targetUrl)).status, environment.expectedTargetStatus);

@@ -70,7 +70,7 @@ export function toPublicAccessGrant(grant: StoredAccessGrant): PublicAccessGrant
   return {
     grantId: grant.id,
     profileId: grant.routeId,
-    jobId: grant.jobId ?? null,
+    ...(grant.jobId === undefined ? {} : { jobId: grant.jobId }),
     status: grant.status,
     credentials: grant.credentials.map((credential) => ({
       credentialId: credential.id,
@@ -102,7 +102,6 @@ export function toPublicLogicalSession(session: StoredLogicalSession): PublicLog
     sessionId: session.id,
     grantId: session.grantId,
     profileId: session.routeId,
-    sessionMode: "managed",
     status: session.status,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
@@ -117,7 +116,7 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
     customerId: route.customerId,
     ...(route.geography === undefined ? {} : { geography: route.geography }),
     ...(route.carrier === undefined ? {} : { carrier: route.carrier }),
-    providerOverride: route.providerOverride ?? null,
+    ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
     allowConnectionRetry: route.allowConnectionRetry,
     status: route.status,
     createdAt: route.createdAt,

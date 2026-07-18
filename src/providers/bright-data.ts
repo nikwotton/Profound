@@ -30,7 +30,7 @@ function sessionId(
   route: StoredRoute,
   logicalOperationId = route.id,
   candidateIndex = 0,
-  sessionMode: "managed" | "none" = "none",
+  sessionMode: "managed" | "stateless" = "stateless",
   affinityHandle?: string,
 ): string {
   if (sessionMode === "managed" && affinityHandle !== undefined && /^[a-f0-9]{20}$/.test(affinityHandle)) return affinityHandle;
@@ -45,7 +45,7 @@ export function buildBrightDataUsername(
   assignment: {
     logicalOperationId?: string;
     candidateIndex?: number;
-    sessionMode?: "managed" | "none";
+    sessionMode?: "managed" | "stateless";
     affinityHandle?: string;
   } = {},
 ): string {

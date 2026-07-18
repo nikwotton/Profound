@@ -30,7 +30,7 @@ export interface CreatedRouteResponse {
 }
 
 export interface IssuedAccessGrantApiResponse {
-  grant: PublicAccessGrant;
+  grant: Omit<PublicAccessGrant, "credentials">;
   credential: PublicAccessGrantCredential & { password: string };
   session?: PublicLogicalSession;
   endpoints: { http: string; socks5: string };
@@ -42,7 +42,7 @@ export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiRespons
       ...issued.grant,
       id: issued.grant.grantId,
       routeId: issued.grant.profileId,
-      credentials: issued.grant.credentials.map((credential) => ({ ...credential, id: credential.credentialId })),
+      credentials: [issued.credential],
     },
     credential: { ...issued.credential, id: issued.credential.credentialId },
     proxyUsername: issued.credential.username,
@@ -60,7 +60,7 @@ type TestProfileInput = Partial<RouteProfileInput> & {
   session?: unknown;
   allowedProtocols?: unknown;
   retryPolicy?: unknown;
-  sessionMode?: "managed" | "none";
+  sessionMode?: "managed" | "stateless";
   shouldRetry?: boolean;
 };
 
@@ -199,7 +199,7 @@ export async function controlRequest(
 export async function createRoute(
   app: RunningApplication,
   profile: TestProfileInput,
-  explicitSessionMode?: "managed" | "none",
+  explicitSessionMode?: "managed" | "stateless",
 ): Promise<CreatedRouteResponse> {
   const response = await controlRequest(app, "/v1/profiles", {
     method: "POST",
@@ -214,7 +214,7 @@ export async function createRoute(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        sessionMode: explicitSessionMode ?? profile.sessionMode ?? "none",
+        sessionMode: explicitSessionMode ?? profile.sessionMode ?? "stateless",
       }),
     }),
   ]);

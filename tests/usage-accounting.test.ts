@@ -283,16 +283,16 @@ test("reconciliation persists variance evidence and posts unexplained difference
     try {
       const usage = (await (
         await fetch(
-          `http://127.0.0.1:${address.port}/api/usage?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z&interval=day&groupBy=customer`,
+          `http://127.0.0.1:${address.port}/v1/usage?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z&interval=day&groupBy=customer`,
         )
       ).json()) as { data: Array<{ group: { customer?: string }; costStatus: string }> };
       assert.equal(usage.data.find((rollup) => rollup.group.customer === "Unallocated")?.costStatus, "reconciled");
       const evidence = (await (
-        await fetch(`http://127.0.0.1:${address.port}/api/usage/reconciliations?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
+        await fetch(`http://127.0.0.1:${address.port}/v1/usage/reconciliations?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
       ).json()) as { data: Array<{ varianceAttribution: string }> };
       assert.equal(evidence.data[0]?.varianceAttribution, "Unallocated");
       const alerts = (await (
-        await fetch(`http://127.0.0.1:${address.port}/api/usage/events?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
+        await fetch(`http://127.0.0.1:${address.port}/v1/usage/events?from=2026-07-15T00:00:00.000Z&to=2026-07-16T00:00:00.000Z`)
       ).json()) as { data: Array<{ kind: string }> };
       assert.equal(alerts.data[0]?.kind, "reconciliation_variance");
     } finally {
@@ -424,7 +424,7 @@ test("company-facing dashboard supports usage filters and provider-neutral crede
     "dashboard-session",
     "dashboard-job",
   );
-  await store.addAccessGrantCredential("dashboard-grant", "dashboard-stateless-credential", "dashboard-stateless-token", "none");
+  await store.addAccessGrantCredential("dashboard-grant", "dashboard-stateless-credential", "dashboard-stateless-token", "stateless");
   const sessionTimestamp = "2026-07-15T11:00:00.000Z";
   await store.createLogicalSession({
     id: "dashboard-session",
@@ -441,7 +441,7 @@ test("company-facing dashboard supports usage filters and provider-neutral crede
     record({
       provider: "proxidize",
       jobId: "dashboard-job",
-      sessionMode: "none",
+      sessionMode: "stateless",
       destinationDomain: "example.com",
       destinationHost: "api.example.com",
       destinationPort: 443,
@@ -463,29 +463,35 @@ test("company-facing dashboard supports usage filters and provider-neutral crede
     await server.stop();
     await store.close();
   });
-  const response = await fetch(`http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=provider&provider=proxidize`);
+  const response = await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=provider&provider=proxidize`);
   assert.equal(response.status, 200);
   const body = (await response.json()) as { data: Array<{ group: { provider: string }; requestCount: number }> };
   assert.equal(body.data[0]?.group.provider, "proxidize");
   assert.equal(body.data[0]?.requestCount, 1);
   const sessions = (await (
-    await fetch(`http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=session_mode&sessionMode=none`)
+    await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=session_mode&sessionMode=stateless`)
   ).json()) as { data: Array<{ group: { session_mode: string }; requestCount: number }> };
-  assert.equal(sessions.data[0]?.group.session_mode, "none");
+  assert.equal(sessions.data[0]?.group.session_mode, "stateless");
   assert.equal(sessions.data[0]?.requestCount, 1);
   const jobs = (await (
-    await fetch(`http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=job&jobId=dashboard-job`)
+    await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=job&jobId=dashboard-job`)
   ).json()) as { data: Array<{ group: { job: string }; requestCount: number }> };
   assert.equal(jobs.data[0]?.group.job, "dashboard-job");
   assert.equal(jobs.data[0]?.requestCount, 1);
   const destinations = (await (
     await fetch(
-      `http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=destination_host&destinationDomain=example.com&destinationHost=api.example.com&destinationPathTemplate=%2Fitems%2F%3Aid`,
+      `http://127.0.0.1:${address.port}/v1/usage?preset=day&interval=hour&groupBy=destination_host&destinationDomain=example.com&destinationHost=api.example.com&destinationPathTemplate=%2Fitems%2F%3Aid`,
     )
   ).json()) as { data: Array<{ group: { destination_host: string }; requestCount: number }> };
   assert.equal(destinations.data[0]?.group.destination_host, "api.example.com");
   assert.equal(destinations.data[0]?.requestCount, 1);
-  const capacity = (await (await fetch(`http://127.0.0.1:${address.port}/api/capacity`)).json()) as {
+  const mixedTimeRange = await fetch(`http://127.0.0.1:${address.port}/v1/usage?preset=day&from=2026-07-14T00%3A00%3A00.000Z`);
+  assert.equal(mixedTimeRange.status, 400);
+  assert.deepEqual(await mixedTimeRange.json(), { error: "invalid_usage_time_range" });
+  const irrelevantParameter = await fetch(`http://127.0.0.1:${address.port}/v1/usage/reconciliations?groupBy=provider`);
+  assert.equal(irrelevantParameter.status, 400);
+  assert.deepEqual(await irrelevantParameter.json(), { error: "invalid_usage_query_parameter" });
+  const capacity = (await (await fetch(`http://127.0.0.1:${address.port}/v1/capacity`)).json()) as {
     routingPolicy: { version: string };
     recentCandidateScores: Array<{ routingScore: number; routingScoreComponents: { headroom: number } }>;
     capacityCircuits: Array<{ provider: string; status: string; reason: string }>;

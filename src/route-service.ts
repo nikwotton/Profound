@@ -146,7 +146,7 @@ export interface RouteServiceEffects {
   revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Effect.Effect<void, RouteServiceError>;
   revokeAccessGrant(id: string, principalId: string): Effect.Effect<void, RouteServiceError>;
   createManagedSession(grantId: string, principalId: string): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
-  createStatelessCredential(grantId: string, principalId: string, input: unknown): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
+  createStatelessCredential(grantId: string, principalId: string): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
   listLogicalSessions(grantId: string, principalId: string): Effect.Effect<PublicLogicalSession[], RouteServiceError>;
   getLogicalSession(grantId: string, sessionId: string, principalId: string): Effect.Effect<PublicLogicalSession, RouteServiceError>;
   closeLogicalSession(grantId: string, sessionId: string, principalId: string, force?: boolean): Effect.Effect<void, RouteServiceError>;
@@ -275,8 +275,7 @@ export class RouteService {
         attempt(() => this.revokeAccessGrantCredential(grantId, credentialId, principalId)),
       revokeAccessGrant: (id, principalId) => attempt(() => this.revokeAccessGrant(id, principalId)),
       createManagedSession: (grantId, principalId) => attempt(() => this.createManagedSession(grantId, principalId)),
-      createStatelessCredential: (grantId, principalId, input) =>
-        attempt(() => this.createStatelessCredential(grantId, principalId, input)),
+      createStatelessCredential: (grantId, principalId) => attempt(() => this.createStatelessCredential(grantId, principalId)),
       listLogicalSessions: (grantId, principalId) => attempt(() => this.listLogicalSessions(grantId, principalId)),
       getLogicalSession: (grantId, sessionId, principalId) => attempt(() => this.getLogicalSession(grantId, sessionId, principalId)),
       closeLogicalSession: (grantId, sessionId, principalId, force) =>
@@ -439,7 +438,7 @@ export class RouteService {
     }
     const preferredTier = scored.filter(({ candidate }) => candidate.descriptor.providerClass === preferredClass);
     const fallbackTier = scored.filter(({ candidate }) => candidate.descriptor.providerClass !== preferredClass);
-    if (route.sessionMode === "none" && preferredTier.length > 0 && preferredTier.every(({ saturated }) => saturated)) {
+    if (route.sessionMode === "stateless" && preferredTier.length > 0 && preferredTier.every(({ saturated }) => saturated)) {
       const eligibleFallback = fallbackTier.filter(({ saturated }) => !saturated);
       if (eligibleFallback.length > 0) {
         const orderedFallback = [...eligibleFallback].sort(
@@ -734,8 +733,8 @@ export class RouteService {
     return this.accessGrants.createManagedSession(grantId, principalId);
   }
 
-  async createStatelessCredential(grantId: string, principalId: string, input: unknown): Promise<IssuedAccessGrant> {
-    return this.accessGrants.createStatelessCredential(grantId, principalId, input);
+  async createStatelessCredential(grantId: string, principalId: string): Promise<IssuedAccessGrant> {
+    return this.accessGrants.createStatelessCredential(grantId, principalId);
   }
 
   async listLogicalSessions(grantId: string, principalId: string): Promise<PublicLogicalSession[]> {

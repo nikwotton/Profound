@@ -1,40 +1,38 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, HttpApiSecurity, OpenApi } from "@effect/platform";
 import { Context, Schema } from "effect";
+import { isUnknownRecord } from "./decoding.js";
 import { GeographyPayload as Geography, RouteProfilePayload } from "./route-profile-schema.js";
 
 export { RouteProfilePayload } from "./route-profile-schema.js";
 
-export const CONTROL_API_VERSION = "0.7.0";
+export const CONTROL_API_VERSION = "0.8.0";
 
-export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
-  "Unauthorized",
-  { code: Schema.String, message: Schema.String, retryable: Schema.Boolean, requestId: Schema.String },
-  HttpApiSchema.annotations({ status: 401 }),
-) {}
+export const ApiError = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  retryable: Schema.Boolean,
+  requestId: Schema.String,
+}).annotations({ identifier: "ApiError" });
 
-export class BadRequest extends Schema.TaggedError<BadRequest>()(
-  "BadRequest",
-  { code: Schema.String, message: Schema.String, retryable: Schema.Boolean, requestId: Schema.String },
-  HttpApiSchema.annotations({ status: 400 }),
-) {}
+export type ApiError = typeof ApiError.Type;
 
-export class RouteNotFound extends Schema.TaggedError<RouteNotFound>()(
-  "RouteNotFound",
-  { code: Schema.String, message: Schema.String, retryable: Schema.Boolean, requestId: Schema.String },
-  HttpApiSchema.annotations({ status: 404 }),
-) {}
+const Unauthorized = ApiError.annotations(HttpApiSchema.annotations({ status: 401 }));
+const BadRequest = ApiError.annotations(HttpApiSchema.annotations({ status: 400 }));
+const RouteNotFound = ApiError.annotations(HttpApiSchema.annotations({ status: 404 }));
+const ServiceUnavailable = ApiError.annotations(HttpApiSchema.annotations({ status: 503 }));
+const InternalError = ApiError.annotations(HttpApiSchema.annotations({ status: 500 }));
 
-export class ServiceUnavailable extends Schema.TaggedError<ServiceUnavailable>()(
-  "ServiceUnavailable",
-  { code: Schema.String, message: Schema.String, retryable: Schema.Boolean, requestId: Schema.String },
-  HttpApiSchema.annotations({ status: 503 }),
-) {}
-
-export class InternalError extends Schema.TaggedError<InternalError>()(
-  "InternalError",
-  { code: Schema.String, message: Schema.String, retryable: Schema.Boolean, requestId: Schema.String },
-  HttpApiSchema.annotations({ status: 500 }),
-) {}
+const API_ERROR_OPENAPI_SCHEMA = {
+  type: "object",
+  required: ["code", "message", "retryable", "requestId"],
+  properties: {
+    code: { type: "string" },
+    message: { type: "string" },
+    retryable: { type: "boolean" },
+    requestId: { type: "string" },
+  },
+  additionalProperties: false,
+} as const;
 
 export class AuthenticatedUser extends Context.Tag("Profound/AuthenticatedUser")<AuthenticatedUser, { readonly userId: string }>() {}
 
@@ -43,7 +41,7 @@ export class AdminAuthorization extends HttpApiMiddleware.Tag<AdminAuthorization
   provides: AuthenticatedUser,
   security: {
     bearer: HttpApiSecurity.bearer.pipe(
-      HttpApiSecurity.annotate(OpenApi.Description, "Administrator token supplied through CONTROL_API_TOKEN"),
+      HttpApiSecurity.annotate(OpenApi.Description, "Control-plane bearer token issued by the platform operator"),
     ),
   },
 }) {}
@@ -53,7 +51,7 @@ const PublicRoute = Schema.Struct({
   customerId: Schema.String,
   geography: Schema.optional(Geography),
   carrier: Schema.optional(Schema.String),
-  providerOverride: Schema.NullOr(Schema.Literal("bright_data", "proxidize")),
+  providerOverride: Schema.optional(Schema.Literal("bright_data", "proxidize")),
   allowConnectionRetry: Schema.Boolean,
   status: Schema.Literal("ready", "rotating", "failed", "revoked"),
   createdAt: Schema.String,
@@ -63,7 +61,7 @@ const PublicRoute = Schema.Struct({
 const PublicAccessGrantCredential = Schema.Struct({
   credentialId: Schema.String,
   username: Schema.String,
-  sessionMode: Schema.Literal("managed", "none"),
+  sessionMode: Schema.Literal("managed", "stateless"),
   sessionId: Schema.optional(Schema.String),
   status: Schema.Literal("active", "overlap", "revoked", "expired"),
   createdAt: Schema.String,
@@ -77,7 +75,7 @@ const PublicAccessGrantCredential = Schema.Struct({
 const PublicAccessGrant = Schema.Struct({
   grantId: Schema.String,
   profileId: Schema.String,
-  jobId: Schema.NullOr(Schema.String),
+  jobId: Schema.optional(Schema.String),
   status: Schema.Literal("ready", "revoked"),
   credentials: Schema.Array(PublicAccessGrantCredential),
   createdAt: Schema.String,
@@ -88,7 +86,6 @@ const PublicLogicalSession = Schema.Struct({
   sessionId: Schema.String,
   grantId: Schema.String,
   profileId: Schema.String,
-  sessionMode: Schema.Literal("managed"),
   status: Schema.Literal("open", "closed"),
   createdAt: Schema.String,
   updatedAt: Schema.String,
@@ -96,18 +93,22 @@ const PublicLogicalSession = Schema.Struct({
   closedAt: Schema.optional(Schema.String),
 }).annotations({ identifier: "LogicalSession" });
 
-const SessionModePayload = Schema.Struct({ sessionMode: Schema.Literal("managed", "none") }).annotations({
-  identifier: "SessionModeInput",
-  parseOptions: { onExcessProperty: "error" },
-});
-
 const GrantIssuancePayload = Schema.Struct({
-  sessionMode: Schema.Literal("managed", "none"),
+  sessionMode: Schema.Literal("managed", "stateless"),
   jobId: Schema.optional(Schema.String),
 }).annotations({ identifier: "GrantIssuanceInput", parseOptions: { onExcessProperty: "error" } });
 
+const IssuedGrant = Schema.Struct({
+  grantId: Schema.String,
+  profileId: Schema.String,
+  jobId: Schema.optional(Schema.String),
+  status: Schema.Literal("ready", "revoked"),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+}).annotations({ identifier: "IssuedGrant" });
+
 const IssuedAccessGrant = Schema.Struct({
-  grant: PublicAccessGrant,
+  grant: IssuedGrant,
   credential: Schema.extend(PublicAccessGrantCredential, Schema.Struct({ password: Schema.String })),
   session: Schema.optional(PublicLogicalSession),
   endpoints: Schema.Struct({ http: Schema.String, socks5: Schema.String }),
@@ -189,9 +190,7 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.post("createStatelessCredential")`/v1/grants/${accessGrantId}/credentials`
-      .setPayload(SessionModePayload)
       .addSuccess(IssuedAccessGrant, { status: 201 })
-      .addError(BadRequest)
       .addError(RouteNotFound)
       .addError(ServiceUnavailable)
       .addError(InternalError),
@@ -266,4 +265,83 @@ export const ControlApi = HttpApi.make("ProfoundControlApi")
   .annotate(
     OpenApi.Description,
     "Manage provider-neutral route profiles, access grants, managed logical sessions, and explicitly stateless credentials.",
-  );
+  )
+  .annotate(OpenApi.Transform, normalizeControlOpenApi);
+
+function normalizeOpenApiNode(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeOpenApiNode);
+  if (!isUnknownRecord(value)) return value;
+  const normalized = Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, normalizeOpenApiNode(entry)]));
+  if (normalized["$ref"] === "#/components/schemas/HttpApiDecodeError") {
+    return { ...normalized, $ref: "#/components/schemas/ApiError" };
+  }
+  if (isApiErrorOpenApiSchema(normalized)) return { $ref: "#/components/schemas/ApiError" };
+  const alternatives = normalized["anyOf"];
+  if (Array.isArray(alternatives)) {
+    const unique = [...new Map(alternatives.map((alternative) => [JSON.stringify(alternative), alternative])).values()];
+    if (unique.length === 1 && Object.keys(normalized).length === 1) return unique[0];
+    normalized["anyOf"] = unique;
+  }
+  return normalized;
+}
+
+function isApiErrorOpenApiSchema(value: Record<string, unknown>): boolean {
+  if (value["type"] !== "object" || value["additionalProperties"] !== false) return false;
+  const required = value["required"];
+  const properties = value["properties"];
+  if (!isStringArray(required) || !isUnknownRecord(properties)) return false;
+  const expected = ["code", "message", "requestId", "retryable"];
+  if (required.toSorted().join(",") !== expected.join(",")) return false;
+  if (Object.keys(properties).sort().join(",") !== expected.join(",")) return false;
+  return expected.every((name) => {
+    const property = properties[name];
+    return isUnknownRecord(property) && property["type"] === (name === "retryable" ? "boolean" : "string");
+  });
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry: unknown) => typeof entry === "string");
+}
+
+function collectSchemaReferences(value: unknown, references: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) collectSchemaReferences(entry, references);
+    return;
+  }
+  if (!isUnknownRecord(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "$ref" && typeof entry === "string" && entry.startsWith("#/components/schemas/")) {
+      references.add(entry.slice("#/components/schemas/".length));
+    } else {
+      collectSchemaReferences(entry, references);
+    }
+  }
+}
+
+function normalizeControlOpenApi(specification: Record<string, unknown>): Record<string, unknown> {
+  const normalized = normalizeOpenApiNode(specification);
+  if (!isUnknownRecord(normalized)) return specification;
+  const components = normalized["components"];
+  if (!isUnknownRecord(components)) return normalized;
+  const schemas = components["schemas"];
+  if (!isUnknownRecord(schemas)) return normalized;
+
+  const schemaRecords: Record<string, unknown> = { ...schemas, ApiError: API_ERROR_OPENAPI_SCHEMA };
+  const references = new Set<string>();
+  collectSchemaReferences({ ...normalized, components: { ...components, schemas: {} } }, references);
+  const queue = [...references];
+  const processed = new Set<string>();
+  while (queue.length > 0) {
+    const name = queue.pop();
+    if (name === undefined || processed.has(name)) continue;
+    processed.add(name);
+    const dependencies = new Set<string>();
+    collectSchemaReferences(schemaRecords[name], dependencies);
+    for (const dependency of dependencies) {
+      references.add(dependency);
+      if (!processed.has(dependency)) queue.push(dependency);
+    }
+  }
+  const retained = Object.fromEntries(Object.entries(schemaRecords).filter(([name]) => references.has(name)));
+  return { ...normalized, components: { ...components, schemas: retained } };
+}

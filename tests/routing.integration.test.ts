@@ -758,7 +758,7 @@ test("stateless mobile credentials share least-loaded proxy-slot capacity withou
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionMode: "none" }),
+        body: JSON.stringify({ sessionMode: "stateless" }),
       },
       true,
     );
@@ -785,7 +785,10 @@ test("stateless mobile credentials share least-loaded proxy-slot capacity withou
   issuedSecrets.push(decodeURIComponent(new URL(rotated.proxyUrls.http).password));
   assert.equal(rotated.accessGrant.id, first.accessGrant.id);
   assert.equal((await requestViaProxy(first.proxyUrls.http, target.url)).status, 200);
-  assert.equal(rotated.accessGrant.credentials[0]?.status, "overlap");
+  const rotatedGrantResponse = await controlRequest(testApp.application, `/v1/grants/${first.accessGrant.id}`);
+  const rotatedGrant = ((await rotatedGrantResponse.json()) as { grant: { credentials: Array<{ credentialId: string; status: string }> } })
+    .grant;
+  assert.equal(rotatedGrant.credentials.find((credential) => credential.credentialId === first.credential.id)?.status, "overlap");
   assert.equal(rotated.credential.status, "active");
   assert.equal(Date.parse(rotated.credential.expiresAt) - Date.parse(rotated.credential.createdAt), 30 * 24 * 60 * 60_000);
   assert.equal(Date.parse(rotated.credential.expiresAt) - Date.parse(rotated.credential.renewalDueAt), 7 * 24 * 60 * 60_000);
@@ -1049,12 +1052,10 @@ test("logical-session APIs require an explicit mode and support rotation, close,
 
   const statelessResponse = await controlRequest(testApp.application, `/v1/grants/${managed.accessGrant.id}/credentials`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionMode: "none" }),
   });
   assert.equal(statelessResponse.status, 201);
   const statelessIssued = (await statelessResponse.json()) as IssuedAccessGrantApiResponse;
-  assert.equal(statelessIssued.credential.sessionMode, "none");
+  assert.equal(statelessIssued.credential.sessionMode, "stateless");
   assert.equal(statelessIssued.credential.sessionId, undefined);
   assert.equal(statelessIssued.session, undefined);
   const stateless = materializeIssuedAccessGrant(statelessIssued);
@@ -1333,7 +1334,7 @@ test("control API can advertise the load balancer hostname from the request", as
   const created = await requestWithAdvertisedHost("/v1/profiles", profileBody);
   assert.equal(created.status, 201);
   const { profileId } = JSON.parse(created.body) as { profileId: string };
-  const issuedResponse = await requestWithAdvertisedHost(`/v1/profiles/${profileId}/grants`, JSON.stringify({ sessionMode: "none" }));
+  const issuedResponse = await requestWithAdvertisedHost(`/v1/profiles/${profileId}/grants`, JSON.stringify({ sessionMode: "stateless" }));
   assert.equal(issuedResponse.status, 201);
   const issued = JSON.parse(issuedResponse.body) as { endpoints: { http: string; socks5: string }; credential: { password: string } };
   assert.equal(new URL(issued.endpoints.http).hostname, "router.example");

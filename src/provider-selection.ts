@@ -18,7 +18,7 @@ export function providerCompatible(
   if (protocol === undefined && !route.allowedProtocols.some((candidate) => capabilities.clientProtocols.has(candidate))) return false;
   if (sessionMode === "managed" && !capabilities.sessions) return false;
   if (route.targeting.city !== undefined && capabilities.exactCity === "unsupported") return false;
-  const requiredRotation = sessionMode === "managed" ? "manual" : sessionMode === "none" ? "per_request" : undefined;
+  const requiredRotation = sessionMode === "managed" ? "manual" : sessionMode === "stateless" ? "per_request" : undefined;
   const deviceBackedStatelessOverflow = requiredRotation === "per_request" && provider.descriptor.providerClass === "device_backed";
   if (
     requiredRotation === undefined
