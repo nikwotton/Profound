@@ -1,7 +1,7 @@
 import { scryptSync, timingSafeEqual } from "node:crypto";
-import { claimCapacityCircuitProbe, recordCapacityCircuitFailure as nextCapacityCircuitFailure } from "../src/capacity-circuit.js";
-import { NotFoundError } from "../src/errors.js";
-import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "../src/store.js";
+import { claimCapacityCircuitProbe, recordCapacityCircuitFailure as nextCapacityCircuitFailure } from "./capacity-circuit.js";
+import { NotFoundError } from "./errors.js";
+import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
 import type {
   ActiveTunnel,
   CapabilityHealthSnapshot,
@@ -24,7 +24,7 @@ import type {
   UsageReconciliation,
   UsageRecord,
   UsageRollup,
-} from "../src/types.js";
+} from "./types.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -60,7 +60,7 @@ export class InMemoryRouteStoreState {
   readonly capacityPressureEvidence = new Map<string, CapacityPressureEvidence>();
 }
 
-/** Test-only implementation. Production and deployed acceptance tests use DynamoRouteStore. */
+/** Ephemeral persistence for local development and tests. Deployed services use DynamoRouteStore. */
 export class InMemoryRouteStore implements RouteStore {
   constructor(readonly state = new InMemoryRouteStoreState()) {}
 

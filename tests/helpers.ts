@@ -1,13 +1,13 @@
 import { once } from "node:events";
 import { request as httpRequest, createServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, isIP, type Socket } from "node:net";
-import { startTestApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
+import { startStandaloneApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
 import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../src/types.js";
-import { InMemoryRouteStore, InMemoryRouteStoreState } from "./in-memory-route-store.js";
+import { InMemoryRouteStore, InMemoryRouteStoreState } from "../src/in-memory-route-store.js";
 
 export interface TestTarget {
   url: string;
@@ -158,7 +158,7 @@ export async function startTestApp(
     CONNECT_TIMEOUT_MS: "250",
     ...environment,
   });
-  const application = await startTestApplication(config, logger, {
+  const application = await startStandaloneApplication(config, logger, {
     targetValidator: async () => undefined,
     storeFactory: () => new InMemoryRouteStore(storeState),
     ...dependencies,

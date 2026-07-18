@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { InMemoryRouteStore } from "./in-memory-route-store.js";
+import { InMemoryRouteStore } from "../src/in-memory-route-store.js";
 import type { ActiveTunnel } from "../src/types.js";
 
 test("active tunnel registry and deployment drain flags share a store", async (t) => {

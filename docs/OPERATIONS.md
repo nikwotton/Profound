@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide is the shipped-v0 runbook for deploying, configuring, monitoring, and operating Profound Proxy Router. Caller integration is documented separately in the [consumer guide](USAGE.md); contribution and test workflows are in the [development guide](DEVELOPMENT.md).
+This guide is the shipped-v0 runbook for deploying, configuring, monitoring, and operating Profound Proxy Router. The [capability map](CAPABILITIES.md) explains which requirements are exercised by `pnpm demo` and which rely on the production services described here. Caller integration is documented separately in the [consumer guide](USAGE.md); contribution and test workflows are in the [development guide](DEVELOPMENT.md).
 
 ## Service architecture
 
@@ -63,7 +63,7 @@ The dashboard lists non-null profile provider overrides and every current hard-c
 
 ## Configuration contract
 
-The [configuration and secret-source audit](CONFIGURATION.md) defines the supported SST secrets, six non-secret operator deployment inputs, typed policy, internal runtime wiring, and test-only inputs. There is no standalone application environment or persistence configuration.
+The [configuration and secret-source audit](CONFIGURATION.md) defines the supported SST secrets, six non-secret operator deployment inputs, typed policy, internal runtime wiring, and local/test inputs. The standalone local runtime is fixed to loopback, mock providers, disabled export, and ephemeral memory rather than exposing deployment configuration.
 
 ### Provider credentials
 
@@ -88,7 +88,7 @@ DynamoDB is the application system of record for:
 - immutable usage records, cost rollups, and reconciliation evidence;
 - alert episodes and notification delivery state.
 
-The AWS table uses on-demand capacity and point-in-time recovery. Production removal is protected. Personal stages are disposable; remove them instead of preserving obsolete pre-v0 state. Offline tests use a test-only in-memory adapter; Dynamo-specific and deployed acceptance tests verify persistence semantics.
+The AWS table uses on-demand capacity and point-in-time recovery. Production removal is protected. Personal stages are disposable; remove them instead of preserving obsolete pre-v0 state. The local runtime and offline tests use an ephemeral in-memory adapter; Dynamo-specific and deployed acceptance tests verify persistence semantics.
 
 ## AWS deployment with SST
 

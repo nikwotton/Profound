@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { silentLogger } from "../src/logger.js";
-import { InMemoryRouteStore } from "./in-memory-route-store.js";
+import { InMemoryRouteStore } from "../src/in-memory-route-store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
 import { CAPACITY_POLICY, recommendCapacity } from "../src/capacity-policy.js";
 import { ROUTING_POLICY } from "../src/routing-policy.js";

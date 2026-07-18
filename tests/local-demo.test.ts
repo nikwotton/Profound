@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { expectArray, expectRecord, parseJson } from "../src/decoding.js";
+import { startDemo } from "../src/demo.js";
+import { silentLogger } from "../src/logger.js";
+
+test("local demo exercises the principal flows with no external services", async (t) => {
+  let output = "";
+  const pauses: string[] = [];
+  const demo = await startDemo({
+    forwardPort: 0,
+    socks5Port: 0,
+    controlPort: 0,
+    logger: silentLogger,
+    write: (line) => {
+      output += line;
+    },
+    pauseBeforeStep: async ({ number, title }) => {
+      pauses.push(`${number}:${title}`);
+    },
+  });
+  t.after(() => demo.stop());
+
+  assert.ok(demo.application.forwardAddress.port > 0);
+  assert.ok(demo.application.socks5Address.port > 0);
+  assert.ok(demo.application.controlAddress.port > 0);
+  assert.deepEqual(pauses, [
+    "1:Control-plane readiness",
+    "2:Public-data profile → Bright Data residential routing",
+    "3:Authenticated profile → stable Proxidize mobile device",
+    "4:Native HTTPS CONNECT and SOCKS5 tunnelling",
+    "5:One-time credential rotation and revocation",
+  ]);
+  assert.match(output, /both simulated providers are healthy/);
+  assert.match(output, /fresh exits/);
+  assert.match(output, /stable Proxidize mobile device/);
+  assert.match(output, /HTTPS CONNECT and SOCKS5/);
+  assert.match(output, /revoked credential now receives HTTP 407/);
+  assert.match(output, /→ GET \/health\/ready/);
+  assert.match(output, /request body: {"customerId":"demo-public-data"/);
+  assert.match(output, /response body: {"profileId":"[^"]+"}/);
+  assert.match(output, /response headers: {[^\n]*"x-mock-exit-ip":"198\.51\.100\./);
+  assert.match(output, /response body: {"method":"GET","path":"\/audit\?flow=demo"/);
+  assert.match(output, /→ CONNECT 127\.0\.0\.1:\d+ HTTP\/1\.1/);
+  assert.match(output, /method negotiation: {"requestHex":"050102","responseHex":"0502"}/);
+  assert.match(output, /← HTTP 407/);
+  assert.doesNotMatch(output, /"password":"(?!\[REDACTED\])[^"]+"/);
+
+  const profiles = await fetch(`http://127.0.0.1:${demo.application.controlAddress.port}/v1/profiles`, {
+    headers: { authorization: `Bearer ${demo.application.controlToken}` },
+  });
+  assert.equal(profiles.status, 200);
+  const body = expectRecord(parseJson(await profiles.text(), "profiles response"), "profiles response");
+  assert.equal(expectArray(body["data"], "profiles response.data").length, 2);
+});

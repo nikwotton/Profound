@@ -7,8 +7,8 @@ V0 includes:
 - native HTTP forwarding, HTTPS `CONNECT`, and SOCKS5 TCP `CONNECT`;
 - reusable, secret-free route profiles and independently revocable access grants;
 - versioned, capacity-aware candidate scoring, safe pre-commit retry, and atomic per-connection proxy-slot assignment;
-- mock providers in personal SST stages that require no vendor account or payment;
-- DynamoDB as the only application runtime store;
+- mock providers in an entirely local runtime and personal SST stages that require no vendor account or payment;
+- ephemeral in-memory persistence for local review and DynamoDB persistence for deployed stages;
 - health aggregation, signed external canaries, alerts, usage accounting, and a company-facing dashboard;
 - an AWS deployment built with SST and separate ECS Fargate services.
 
@@ -21,6 +21,7 @@ The deployed control API, proxy gateways, and dashboard are company-wide service
 | Audience                                   | Guide                                                                      |
 | ------------------------------------------ | -------------------------------------------------------------------------- |
 | Application developers and proxy consumers | [Consumer guide](docs/USAGE.md)                                            |
+| Product and architecture reviewers         | [Demo vs production capability map](docs/CAPABILITIES.md)                  |
 | Platform operators and on-call engineers   | [Operations guide](docs/OPERATIONS.md)                                     |
 | Contributors and maintainers               | [Development guide](docs/DEVELOPMENT.md)                                   |
 | Repository administrators                  | [Repository and release settings](docs/repository-and-release-settings.md) |
@@ -29,12 +30,14 @@ The deployed control API, proxy gateways, and dashboard are company-wide service
 
 The OpenAPI contract covers management operations. Forwarding remains native HTTP proxy and SOCKS5 protocol traffic, so consumers do not wrap requests in a Profound-specific envelope.
 
+The [capability map](docs/CAPABILITIES.md) distinguishes what the zero-account `pnpm demo` directly proves from the durability, observability, accounting, health, scaling, and release services used by a production deployment.
+
 ## Requirements
 
 - Node.js 22.13 or newer
 - pnpm 10.12.1
-- AWS credentials for SST development and deployment
-- Docker when building or deploying container images
+- AWS credentials for SST development and deployment only
+- Docker when building or deploying container images only
 
 ## Install
 
@@ -42,10 +45,30 @@ Installing dependencies does not start the service:
 
 ```sh
 pnpm install
-pnpm sst install
 ```
 
-The second command installs SST's generated infrastructure providers and types. Neither command starts a server.
+This command does not start a server. Run `pnpm sst install` separately only when working with SST; it installs SST's generated infrastructure providers and types without starting a server.
+
+## Run the offline demo
+
+Start the complete single-process local stack and watch it exercise the main usage flows:
+
+```sh
+pnpm demo
+```
+
+No AWS, Axiom, Bright Data, Proxidize, Docker, or other external account is needed. The command starts the real control API, HTTP/HTTPS forward proxy, and SOCKS5 proxy with in-memory persistence and local provider simulators. It then demonstrates readiness, per-request residential rotation, mobile-device affinity, HTTP forwarding, HTTPS `CONNECT`, SOCKS5 tunnelling, credential rotation, and revocation against controlled loopback recipients. In an interactive terminal, press Enter to run each step individually. Each step prints its live sanitized request, response, selected mock identity metadata, and protocol details; credentials remain redacted. Redirected output and `pnpm demo -- --no-interactive` run the walkthrough continuously without prompts.
+
+After the walkthrough, the servers stay available for inspection:
+
+| Interface                | Address                      |
+| ------------------------ | ---------------------------- |
+| HTTP/HTTPS forward proxy | `127.0.0.1:8080`             |
+| SOCKS5 proxy             | `127.0.0.1:1080`             |
+| Control API              | `http://127.0.0.1:8081`      |
+| Swagger UI               | `http://127.0.0.1:8081/docs` |
+
+Use the local-only control token `change-me` in Swagger UI. Press Ctrl-C to stop the demo and discard its ephemeral data. To start the same local stack without the scripted walkthrough, run `pnpm dev:local`.
 
 ## Start with SST
 

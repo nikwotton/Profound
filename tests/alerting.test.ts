@@ -4,7 +4,7 @@ import test from "node:test";
 import { HealthAlertCoordinator, parseHealthAlertDestinationConfig, WebhookNotificationAdapter } from "../src/alerting.js";
 import { silentLogger } from "../src/logger.js";
 import { requireServiceOwnedCapabilityAlerts } from "../src/runtime-services.js";
-import { InMemoryRouteStore } from "./in-memory-route-store.js";
+import { InMemoryRouteStore } from "../src/in-memory-route-store.js";
 import type { CapabilityHealthSnapshot, HealthAlertEvent } from "../src/types.js";
 
 function snapshot(id: string, generatedAt: string, status: "operational" | "degraded" | "unavailable"): CapabilityHealthSnapshot {

@@ -20,7 +20,7 @@ import type { ProviderAdapter } from "../src/providers/provider.js";
 import { PublicCanaryServer } from "../src/public-canary.js";
 import { startPublicCanaryService } from "../src/runtime-services.js";
 import { SignedCanaryProbe } from "../src/signed-canary-probe.js";
-import { InMemoryRouteStore } from "./in-memory-route-store.js";
+import { InMemoryRouteStore } from "../src/in-memory-route-store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
 import { v0TraceSampler } from "../src/telemetry.js";
 import type { CapabilityHealthSnapshot, ProviderDescriptor, ProviderHealth, ProviderId, UpstreamEndpoint } from "../src/types.js";

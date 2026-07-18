@@ -84,7 +84,7 @@ MaxMind account and license credentials are build-time inputs to `pnpm geoip:pre
 
 SST owns runtime values such as `SERVICE_MODE`, `PROVIDER_MODE`, `ROUTE_TABLE_NAME`, component hosts and ports, advertised proxy addresses, health/service URLs, `CONTROL_API_USER_ID`, `DEPLOYMENT_ID`, OpenTelemetry identity, and every policy value listed above. Operators must not set them independently because doing so can split components from their generated resources or from the reviewed v0 policy. The repository exposes no standalone application environment contract.
 
-Offline tests inject a test-only in-memory `RouteStore`. This adapter is not an application runtime option and does not claim to verify durability; Dynamo-specific and deployed acceptance tests cover persistence semantics.
+The local-only runtime and offline tests inject an ephemeral in-memory `RouteStore`. It intentionally does not claim to verify durability; Dynamo-specific and deployed acceptance tests cover persistence semantics. Deployed services always use DynamoDB.
 
 ## Test-only inputs
 

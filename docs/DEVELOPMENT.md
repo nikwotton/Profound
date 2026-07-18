@@ -21,16 +21,24 @@ Install dependencies without starting a service:
 
 ```sh
 pnpm install
-pnpm sst install
 ```
 
 The repository explicitly allows the required `esbuild` install script and ignores understood optional native build scripts. Resolve new package-manager warnings rather than documenting around them.
 
 ## Start and build
 
+Run the self-contained reviewer walkthrough with local provider simulators and ephemeral in-memory persistence:
+
+```sh
+pnpm demo
+```
+
+In a terminal, the walkthrough waits for Enter before each major step; use `pnpm demo -- --no-interactive` to run all steps continuously. Redirected output is automatically non-interactive, so automation cannot wait on a prompt. The walkthrough leaves its loopback servers running until Ctrl-C. Run `pnpm dev:local` for the same local-only runtime without the walkthrough. Neither command reads cloud, telemetry-exporter, or vendor credentials.
+
 Start a personal SST development stage. SST provisions the supporting AWS resources and starts each application service locally with generated configuration:
 
 ```sh
+pnpm sst install
 pnpm sst:dev --stage yourname-dev
 ```
 
@@ -55,7 +63,7 @@ pnpm build
 | `src/simulators/`                   | Offline provider contracts                              |
 | `src/store.ts`                      | Persistence interface and credential helpers            |
 | `src/dynamo-store.ts`               | Production DynamoDB implementation                      |
-| `tests/in-memory-route-store.ts`    | Test-only in-memory persistence adapter                 |
+| `src/in-memory-route-store.ts`      | Ephemeral local and test persistence adapter            |
 | `src/health-aggregator.ts`          | Capability-health evaluation                            |
 | `src/public-canary.ts`              | Signed source/geography canary                          |
 | `src/status-app.ts`                 | Company-facing dashboard and status/usage APIs          |

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { basicAuth } from "../src/net-utils.js";
 import { expectBufferChunk, expectRecord, parseJson } from "../src/decoding.js";
 import { CAPACITY_POLICY } from "../src/capacity-policy.js";
-import { InMemoryRouteStore } from "./in-memory-route-store.js";
+import { InMemoryRouteStore } from "../src/in-memory-route-store.js";
 import {
   controlRequest,
   createRoute,

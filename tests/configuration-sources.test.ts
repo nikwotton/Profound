@@ -30,20 +30,27 @@ const expectedOperatorDeploymentInputs = [
 
 const expectedCiDeploymentInputs = ["RELEASE_IMAGE_URI", "RELEASE_SHA"];
 
-test("the repository exposes no standalone application environment or dev command", () => {
+test("the fixed local runtime adds no standalone environment configuration contract", () => {
   assert.equal(existsSync(".env.example"), false);
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { scripts?: Record<string, string> };
   assert.equal(packageJson.scripts?.["dev"], undefined);
+  assert.equal(packageJson.scripts?.["dev:local"], "tsx src/local.ts");
+  assert.equal(packageJson.scripts?.["demo"], "tsx scripts/demo.ts");
   assert.equal(packageJson.scripts?.["dev:service"], "tsx watch src/index.ts");
 
-  const runtime = ["src/app.ts", "src/config.ts", "src/index.ts", "src/runtime-services.ts"]
+  const runtime = ["src/app.ts", "src/config.ts", "src/index.ts", "src/local-runtime.ts", "src/runtime-services.ts"]
     .map((path) => readFileSync(path, "utf8"))
     .join("\n");
   assert.doesNotMatch(runtime, /PERSISTENCE_BACKEND|SQLITE_PATH/);
   assert.doesNotMatch(readFileSync("src/store.ts", "utf8"), /node:sqlite|SqliteRouteStore/);
   assert.doesNotMatch(readFileSync("src/index.ts", "utf8"), /case "proxy"/);
   assert.doesNotMatch(readFileSync("src/runtime-services.ts", "utf8"), /SqliteRouteStore/);
-  assert.match(readFileSync("tests/in-memory-route-store.ts", "utf8"), /class InMemoryRouteStore/);
+  assert.match(readFileSync("src/in-memory-route-store.ts", "utf8"), /class InMemoryRouteStore/);
+  const localRuntime = readFileSync("src/local-runtime.ts", "utf8");
+  assert.match(localRuntime, /PROVIDER_MODE: "mock"/);
+  assert.match(localRuntime, /OTEL_SDK_DISABLED: "true"/);
+  assert.match(localRuntime, /storeFactory: \(\) => new InMemoryRouteStore\(\)/);
+  assert.doesNotMatch(localRuntime, /process\.env|PERSISTENCE_BACKEND/);
 
   const infrastructure = readFileSync("infra/providers/aws.ts", "utf8");
   assert.doesNotMatch(infrastructure, /PERSISTENCE_BACKEND|command: "pnpm dev"/);

@@ -12,8 +12,11 @@
 - During pre-v0 development, represent only the current design; do not preserve compatibility or migrations for earlier document or code revisions, and reset disposable data instead.
 - When a task requires resolving discrepancies, implement and verify discovered discrepancies before reporting the audit complete.
 - When a recurring audit changes repository files, finish that cycle by committing and pushing the changes, then verify CI passes on the pushed commit before reporting completion.
+- When using an isolated clone or worktree to preserve local changes, do not report completion until the primary checkout is reconciled with the pushed branch or its remaining divergence is explicitly reported and approved.
 - Expose distinct developer workflows as explicit commands; keep environment-selected service dispatch internal to orchestrators and deployment runtimes.
 - Keep caller-facing black-box E2E tests independent of deployment-stage and infrastructure metadata; test provider-specific infrastructure through a separate acceptance suite.
 - Give top-level test commands safe defaults when possible; do not require undocumented environment setup for their basic supported path.
 - Give each operator-supplied value one source of truth: deployed secrets come from the deployment secret store, non-secret knobs come from stage configuration, and runtime environment variables only transport those values.
 - Keep pre-v0 operator configuration minimal: expose only values that must vary by installation, and keep tuning thresholds, feature policy, generated metadata, and safe defaults in typed code.
+- When a demo exercises live flows, print the actual sanitized requests, responses, and protocol details for each step rather than only outcome descriptions.
+- Pace long terminal demos between major steps when interactive, and provide a non-interactive mode that is safe for automation and redirected output.

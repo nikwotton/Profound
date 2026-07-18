@@ -184,8 +184,8 @@ async function createRoutingRuntime(
   }
 }
 
-/** Offline integration-test harness; production and SST development start split service modes. */
-export async function startTestApplication(
+/** Single-process runtime for offline local development and integration tests. */
+export async function startStandaloneApplication(
   config: AppConfig,
   logger: Logger,
   dependencies: ApplicationDependencies = {},
