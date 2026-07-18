@@ -1,5 +1,6 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
+import { AccessGrantService, type IssuedAccessGrant } from "./access-grant-service.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import { capacityCircuitAllowsCandidate } from "./capacity-circuit.js";
 import {
@@ -18,6 +19,8 @@ import {
 import { abortReason } from "./establishment-budget.js";
 import type { Logger } from "./logger.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
+import { preferredProviderClass, providerCompatible, selectCompatibleProvider } from "./provider-selection.js";
+import { RotationCoordinator, type RotationContext } from "./route-rotation.js";
 import { DEPLOYMENT_POLL_INTERVAL_MS } from "./release-policy.js";
 import {
   historicalRoutingEvidence,
@@ -27,7 +30,7 @@ import {
   type RoutingScoreComponents,
   type ScoredRoutingCandidate,
 } from "./routing-policy.js";
-import { toPublicAccessGrant, toPublicRoute, type RouteStore } from "./store.js";
+import { toPublicRoute, type RoutingStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import { ACTIVE_CONNECTION_TTL_MS } from "./types.js";
 import type {
@@ -38,7 +41,6 @@ import type {
   DataPlaneProtocol,
   ListenAddress,
   ProviderDescriptor,
-  ProviderClass,
   ProviderHealth,
   ProviderId,
   ProxyTarget,
@@ -46,21 +48,13 @@ import type {
   PublicAccessGrantCredential,
   PublicRoute,
   RetryPolicy,
-  RouteProfile,
   StoredRoute,
   UpstreamEndpoint,
   UsageRecord,
 } from "./types.js";
 import { validateRouteProfile } from "./validation.js";
 
-export interface IssuedAccessGrant {
-  grant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential & { password: string };
-  endpoints: {
-    http: string;
-    socks5: string;
-  };
-}
+export type { IssuedAccessGrant } from "./access-grant-service.js";
 
 export interface ResolutionState {
   readonly attemptsByProvider: Map<ProviderId, number>;
@@ -75,7 +69,7 @@ export interface ResolutionState {
 }
 
 export interface RouteServiceDependencies {
-  store: RouteStore;
+  store: RoutingStore;
   brightData: ProviderAdapter<"bright_data">;
   proxidize: MobileProviderAdapter;
   proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress };
@@ -117,62 +111,14 @@ const MAX_PROVIDERS_PER_OPERATION = 3;
 const MAX_PEERS_PER_PROVIDER = 2;
 const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = 3;
 const SLOT_MONTH_SECONDS = (365.25 / 12) * 24 * 60 * 60;
-const TARGETING_KEYS = ["country", "region", "city", "postalCode", "asn", "carrier"] as const;
 
-export interface ResolutionContext {
-  logicalOperationId: string;
-  signal: AbortSignal;
-}
+export type ResolutionContext = RotationContext;
 
 function canonicalCity(value: string): string {
   return value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
-}
-
-function compatible(provider: ProviderAdapter, route: RouteProfile, protocol?: DataPlaneProtocol, target?: ProxyTarget): boolean {
-  const capabilities = provider.descriptor.capabilities;
-  if (protocol !== undefined && !capabilities.clientProtocols.has(protocol)) return false;
-  if (protocol === undefined && !route.allowedProtocols.some((candidate) => capabilities.clientProtocols.has(candidate))) {
-    return false;
-  }
-  if (route.isAuthenticated ? !capabilities.authenticatedTraffic : !capabilities.unauthenticatedTraffic) return false;
-  if (route.session.mode === "sticky" && !capabilities.sessions) return false;
-  if (route.isAuthenticated && capabilities.exactCity === "unsupported") return false;
-  const deviceBackedUnauthenticatedOverflow =
-    !route.isAuthenticated && route.rotation.mode === "per_request" && provider.descriptor.providerClass === "device_backed";
-  if (!capabilities.rotation.has(route.rotation.mode) && !deviceBackedUnauthenticatedOverflow) return false;
-  if (target !== undefined && capabilities.targetPorts !== "any_public" && !capabilities.targetPorts.has(target.port)) {
-    return false;
-  }
-  if (
-    route.targeting.country !== undefined &&
-    capabilities.countries !== undefined &&
-    !capabilities.countries.has(route.targeting.country)
-  ) {
-    return false;
-  }
-  return TARGETING_KEYS.every((key) => route.targeting[key] === undefined || capabilities.geography.has(key));
-}
-
-function preferredProviderClass(route: Pick<RouteProfile, "isAuthenticated">): ProviderClass {
-  return route.isAuthenticated ? "device_backed" : "residential";
-}
-
-function compareProviders(
-  left: ProviderAdapter,
-  right: ProviderAdapter,
-  route: Pick<RouteProfile, "isAuthenticated">,
-  currentProvider?: ProviderId,
-): number {
-  const preferredClass = preferredProviderClass(route);
-  const classDifference =
-    Number(left.descriptor.providerClass !== preferredClass) - Number(right.descriptor.providerClass !== preferredClass);
-  if (classDifference !== 0) return classDifference;
-  if (left.descriptor.id === currentProvider) return -1;
-  if (right.descriptor.id === currentProvider) return 1;
-  return left.descriptor.costRank - right.descriptor.costRank;
 }
 
 export class RouteService {
@@ -182,24 +128,20 @@ export class RouteService {
   readonly #activeByGrant = new Map<string, Set<() => void>>();
   readonly #rotationDisabledSlots = new Set<string>();
 
-  private readonly store: RouteStore;
+  private readonly store: RoutingStore;
   private readonly proxidize: MobileProviderAdapter;
-  private readonly proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress };
-  private readonly advertisedProxyHost: string;
-  private readonly advertisedHttpProxyProtocol: "http" | "https";
   private readonly logger: Logger;
   private readonly telemetry: Telemetry;
   private readonly retryDefaults: RetryPolicy;
   private readonly deploymentId: string;
   private readonly now: () => number;
   private readonly random: () => number;
+  private readonly accessGrants: AccessGrantService;
+  private readonly rotations: RotationCoordinator;
 
   constructor(dependencies: RouteServiceDependencies) {
     this.store = dependencies.store;
     this.proxidize = dependencies.proxidize;
-    this.proxyAddresses = dependencies.proxyAddresses;
-    this.advertisedProxyHost = dependencies.advertisedProxyHost;
-    this.advertisedHttpProxyProtocol = dependencies.advertisedHttpProxyProtocol;
     this.logger = dependencies.logger;
     this.telemetry = dependencies.telemetry;
     this.retryDefaults = dependencies.retryDefaults;
@@ -210,6 +152,24 @@ export class RouteService {
       [dependencies.brightData.descriptor.id, dependencies.brightData],
       [dependencies.proxidize.descriptor.id, dependencies.proxidize],
     ]);
+    this.accessGrants = new AccessGrantService(
+      this.store,
+      {
+        proxyAddresses: dependencies.proxyAddresses,
+        advertisedProxyHost: dependencies.advertisedProxyHost,
+        advertisedHttpProxyProtocol: dependencies.advertisedHttpProxyProtocol,
+        terminateActiveGrant: (grantId) => this.#terminate(this.#activeByGrant.get(grantId)),
+      },
+      this.logger,
+    );
+    this.rotations = new RotationCoordinator({
+      store: this.store,
+      providers: this.#providers,
+      proxidize: this.proxidize,
+      logger: this.logger,
+      telemetry: this.telemetry,
+      now: this.now,
+    });
     const attempt = <A>(operation: () => Promise<A>): Effect.Effect<A, RouteServiceError> =>
       Effect.tryPromise({
         try: operation,
@@ -570,13 +530,7 @@ export class RouteService {
   async create(input: unknown, userId: string): Promise<PublicRoute> {
     const profile = validateRouteProfile(input, userId, this.retryDefaults);
     const id = randomUUID();
-    const candidates = [...this.#providers.values()]
-      .filter(
-        (provider) =>
-          compatible(provider, profile) && (profile.providerOverride === undefined || provider.descriptor.id === profile.providerOverride),
-      )
-      .sort((left, right) => compareProviders(left, right, profile));
-    const providerAdapter = candidates[0];
+    const providerAdapter = selectCompatibleProvider(this.#providers.values(), profile);
     if (providerAdapter === undefined) {
       if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
       throw new ProviderUnavailableError("No configured provider is compatible with the proxy policy");
@@ -597,13 +551,7 @@ export class RouteService {
   async update(id: string, input: unknown, userId: string): Promise<PublicRoute> {
     const existing = await this.#ownedRoute(id, userId);
     const profile = validateRouteProfile(input, existing.userId, this.retryDefaults);
-    const candidates = [...this.#providers.values()]
-      .filter(
-        (provider) =>
-          compatible(provider, profile) && (profile.providerOverride === undefined || provider.descriptor.id === profile.providerOverride),
-      )
-      .sort((left, right) => compareProviders(left, right, profile, existing.provider));
-    const provider = candidates[0]?.descriptor.id;
+    const provider = selectCompatibleProvider(this.#providers.values(), profile, existing.provider)?.descriptor.id;
     if (provider === undefined) {
       if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
       throw new ProviderUnavailableError("No configured provider is compatible with the profile policy");
@@ -620,96 +568,32 @@ export class RouteService {
     return toPublicRoute(updated);
   }
 
-  #proxyEndpoints(): IssuedAccessGrant["endpoints"] {
-    const addresses = this.proxyAddresses();
-    return {
-      http: `${this.advertisedHttpProxyProtocol}://${this.advertisedProxyHost}:${addresses.http.port}`,
-      // socks5h asks URL-aware clients to preserve domain names for proxy-side resolution.
-      socks5: `socks5h://${this.advertisedProxyHost}:${addresses.socks5.port}`,
-    };
-  }
-
-  async #issueAccessGrant(routeId: string, principalId: string): Promise<IssuedAccessGrant> {
-    await this.store.get(routeId);
-    const grantId = randomUUID();
-    const credentialId = randomUUID();
-    const token = randomBytes(32).toString("base64url");
-    const grant = await this.store.createAccessGrant(grantId, routeId, principalId, credentialId, token);
-    const publicGrant = toPublicAccessGrant(grant);
-    const credential = publicGrant.credentials.find((candidate) => candidate.credentialId === credentialId);
-    if (credential === undefined) throw new Error("New access-grant credential was not persisted");
-    this.logger.info("Access grant issued", { routeId, accessGrantId: grantId, userId: principalId });
-    return {
-      grant: publicGrant,
-      credential: { ...credential, password: token },
-      endpoints: this.#proxyEndpoints(),
-    };
-  }
-
   async createAccessGrant(routeId: string, principalId: string): Promise<IssuedAccessGrant> {
-    await this.#ownedRoute(routeId, principalId);
-    return this.#issueAccessGrant(routeId, principalId);
+    return this.accessGrants.create(routeId, principalId);
   }
 
   async listAccessGrants(routeId: string, principalId: string): Promise<PublicAccessGrant[]> {
-    await this.#ownedRoute(routeId, principalId);
-    return (await this.store.listAccessGrants(routeId, principalId)).map(toPublicAccessGrant);
+    return this.accessGrants.list(routeId, principalId);
   }
 
   async getAccessGrant(id: string, principalId: string): Promise<PublicAccessGrant> {
-    return toPublicAccessGrant(await this.#ownedAccessGrant(id, principalId, true));
+    return this.accessGrants.get(id, principalId);
   }
 
   async getAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Promise<PublicAccessGrantCredential> {
-    const grant = await this.getAccessGrant(grantId, principalId);
-    const credential = grant.credentials.find((candidate) => candidate.credentialId === credentialId);
-    if (credential === undefined) throw new NotFoundError();
-    return credential;
+    return this.accessGrants.getCredential(grantId, credentialId, principalId);
   }
 
   async rotateAccessGrantCredential(id: string, principalId: string, suspectedCompromise = false): Promise<IssuedAccessGrant> {
-    const existing = await this.#ownedAccessGrant(id, principalId);
-    const credentialId = randomUUID();
-    const token = randomBytes(32).toString("base64url");
-    const rotated = await this.store.rotateAccessGrantCredential(existing.id, credentialId, token, suspectedCompromise);
-    const grant = toPublicAccessGrant(rotated);
-    const credential = grant.credentials.find((candidate) => candidate.credentialId === credentialId);
-    if (credential === undefined) throw new Error("Rotated access-grant credential was not persisted");
-    this.logger.info("Access grant credential rotated", {
-      routeId: existing.routeId,
-      accessGrantId: existing.id,
-      userId: principalId,
-      suspectedCompromise,
-    });
-    return {
-      grant,
-      credential: { ...credential, password: token },
-      endpoints: this.#proxyEndpoints(),
-    };
+    return this.accessGrants.rotateCredential(id, principalId, suspectedCompromise);
   }
 
   async revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Promise<void> {
-    await this.#ownedAccessGrant(grantId, principalId, true);
-    await this.store.revokeAccessGrantCredential(grantId, credentialId);
-    this.logger.info("Access grant credential revoked", { accessGrantId: grantId, credentialId, userId: principalId });
+    await this.accessGrants.revokeCredential(grantId, credentialId, principalId);
   }
 
   async revokeAccessGrant(id: string, principalId: string, terminateActive = false): Promise<void> {
-    const grant = await this.#ownedAccessGrant(id, principalId, true);
-    await this.store.revokeAccessGrant(id, terminateActive);
-    if (terminateActive) this.#terminate(this.#activeByGrant.get(id));
-    this.logger.info("Access grant revoked", {
-      routeId: grant.routeId,
-      accessGrantId: id,
-      userId: principalId,
-      terminateActive,
-    });
-  }
-
-  async #ownedAccessGrant(id: string, principalId: string, includeRevoked = false) {
-    const grant = await this.store.getAccessGrant(id, includeRevoked);
-    if (grant.principalId !== principalId) throw new NotFoundError();
-    return grant;
+    await this.accessGrants.revoke(id, principalId, terminateActive);
   }
 
   async #ownedRoute(id: string, userId: string, includeRevoked = false): Promise<StoredRoute> {
@@ -879,7 +763,7 @@ export class RouteService {
     let current = this.#routeForGrant(await this.store.get(route.id), grant);
     if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
     current = this.#routeForGrant(
-      await this.#applyScheduledRotation(current, context),
+      await this.rotations.applyScheduled(current, context),
       await this.store.getAccessGrant(route.accessGrantId),
     );
     this.assertProtocolAllowed(current, protocol);
@@ -891,7 +775,7 @@ export class RouteService {
       await this.#rankProviders(
         [...this.#providers.values()].filter(
           (provider) =>
-            compatible(provider, current, protocol, target) &&
+            providerCompatible(provider, current, protocol, target) &&
             (current.providerOverride === undefined || provider.descriptor.id === current.providerOverride),
         ),
         current,
@@ -1095,140 +979,9 @@ export class RouteService {
     });
   }
 
-  async #applyScheduledRotation(route: StoredRoute, context: ResolutionContext): Promise<StoredRoute> {
-    if (route.provider !== "proxidize" || route.rotation.mode !== "interval") return route;
-    if (context.signal.aborted) throw new ProviderUnavailableError("Candidate establishment was cancelled");
-    const dueBefore = new Date(this.now() - route.rotation.intervalSeconds * 1_000).toISOString();
-    if (route.lastRotationAt > dueBefore) return route;
-    const claimed = await this.store.claimScheduledRotation(route.id, dueBefore);
-    if (claimed === undefined) {
-      const current = await this.store.get(route.id);
-      if (current.status !== "ready") throw new ProviderUnavailableError(`Route is ${current.status}`);
-      return current;
-    }
-    const rotationStartedAt = Date.now();
-    const rotationSpan = this.telemetry.startSpan("proxy.rotation", {
-      "proxy.operation.id": context.logicalOperationId,
-      "proxy.route.id": route.id,
-      provider: route.provider,
-      "proxy.candidate.id": route.endpointId ?? "unknown",
-    });
-    try {
-      await this.proxidize.rotate(
-        { ...claimed, ...(route.endpointId === undefined ? {} : { endpointId: route.endpointId }) },
-        context.signal,
-      );
-      const completed = await this.store.completeRotation(route.id);
-      rotationSpan.addEvent("proxy.candidate.rotation", {
-        "proxy.candidate.id": route.endpointId ?? "unknown",
-        "proxy.assignment.change_reason": "rotation",
-      });
-      this.telemetry.finishSpan(rotationSpan, rotationStartedAt, {
-        plane: "control",
-        protocol: "rotation",
-        outcome: "success",
-        provider: route.provider,
-      });
-      this.telemetry.recordRotation(route.provider, "success");
-      this.logger.info("Scheduled route rotation completed", {
-        logicalOperationId: context.logicalOperationId,
-        routeId: route.id,
-        provider: route.provider,
-        endpointId: route.endpointId,
-        changeReason: "rotation",
-      });
-      return completed;
-    } catch (error) {
-      await this.store.setStatus(route.id, "failed", safeErrorMessage(error)).catch(() => undefined);
-      this.telemetry.finishSpan(
-        rotationSpan,
-        rotationStartedAt,
-        {
-          plane: "control",
-          protocol: "rotation",
-          outcome: "failure",
-          provider: route.provider,
-        },
-        error,
-      );
-      this.telemetry.recordRotation(route.provider, "failure");
-      throw error;
-    }
-  }
-
   async rotate(id: string, principalId: string): Promise<PublicRoute> {
-    const grant = (await this.store.listAccessGrants(id, principalId))[0];
-    if (grant === undefined) throw new NotFoundError();
-    const route: AuthenticatedRoute = this.#routeForGrant(await this.store.get(id), grant);
-    if (route.provider === "proxidize") {
-      throw new AppError("Device-backed slot assignment and rerouting are internal", "rotation_not_supported", 409);
-    }
-    await this.store.setStatus(id, "rotating");
-    setImmediate(() => void this.#performRotation(route));
-    return toPublicRoute(await this.store.get(id));
+    return this.rotations.request(id, principalId);
   }
-
-  async #performRotation(route: StoredRoute): Promise<void> {
-    const rotationOperationId = randomUUID();
-    const rotationStartedAt = Date.now();
-    const rotationSpan = this.telemetry.startSpan("proxy.rotation", {
-      "proxy.operation.id": rotationOperationId,
-      "proxy.route.id": route.id,
-      provider: route.provider,
-      "proxy.candidate.id": route.endpointId ?? "unknown",
-    });
-    try {
-      const provider = this.#providers.get(route.provider);
-      if (provider === undefined) throw new ProviderUnavailableError("Route provider is not configured");
-      if (route.provider === "bright_data") await this.store.incrementRotationEpoch(route.id);
-      await provider.rotate({
-        ...(await this.store.get(route.id)),
-        ...(route.endpointId === undefined ? {} : { endpointId: route.endpointId }),
-      });
-      await this.store.completeRotation(route.id);
-      rotationSpan.addEvent("proxy.candidate.rotation", {
-        "proxy.candidate.id": route.endpointId ?? "unknown",
-        "proxy.assignment.change_reason": "rotation",
-      });
-      this.telemetry.finishSpan(rotationSpan, rotationStartedAt, {
-        plane: "control",
-        protocol: "rotation",
-        outcome: "success",
-        provider: route.provider,
-      });
-      this.telemetry.recordRotation(route.provider, "success");
-      this.logger.info("Route rotation completed", {
-        logicalOperationId: rotationOperationId,
-        routeId: route.id,
-        provider: route.provider,
-        endpointId: route.endpointId,
-        changeReason: "rotation",
-      });
-    } catch (error) {
-      const message = safeErrorMessage(error);
-      await this.store.setStatus(route.id, "failed", message).catch(() => undefined);
-      this.telemetry.finishSpan(
-        rotationSpan,
-        rotationStartedAt,
-        {
-          plane: "control",
-          protocol: "rotation",
-          outcome: "failure",
-          provider: route.provider,
-        },
-        error,
-      );
-      this.telemetry.recordRotation(route.provider, "failure");
-      this.logger.warn("Route rotation failed", {
-        logicalOperationId: rotationOperationId,
-        routeId: route.id,
-        provider: route.provider,
-        endpointId: route.endpointId,
-        changeReason: "rotation",
-      });
-    }
-  }
-
   async refreshHealth(): Promise<ProviderHealth[]> {
     const health = await Promise.all([...this.#providers.values()].map((provider) => provider.health()));
     await Promise.all(health.map((item) => this.store.saveHealth(item)));

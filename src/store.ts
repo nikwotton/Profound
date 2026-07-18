@@ -97,11 +97,18 @@ export function toPublicRoute(route: StoredRoute): PublicRoute {
   };
 }
 
-export interface RouteStore {
+export interface RouteRepository {
   create(id: string, profile: RouteProfile, provider: StoredRoute["provider"], endpointId?: string): Promise<StoredRoute>;
   update(id: string, profile: RouteProfile, provider: StoredRoute["provider"]): Promise<StoredRoute>;
   get(id: string, includeRevoked?: boolean): Promise<StoredRoute>;
   list(): Promise<StoredRoute[]>;
+  revoke(id: string, terminateActive?: boolean): Promise<void>;
+  shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean>;
+  setEndpoint(id: string, endpointId?: string): Promise<StoredRoute>;
+  setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute>;
+}
+
+export interface AccessGrantRepository {
   createAccessGrant(id: string, routeId: string, principalId: string, credentialId: string, token: string): Promise<StoredAccessGrant>;
   getAccessGrant(id: string, includeRevoked?: boolean): Promise<StoredAccessGrant>;
   listAccessGrants(routeId: string, principalId?: string): Promise<StoredAccessGrant[]>;
@@ -109,8 +116,9 @@ export interface RouteStore {
   rotateAccessGrantCredential(id: string, credentialId: string, token: string, suspectedCompromise?: boolean): Promise<StoredAccessGrant>;
   revokeAccessGrantCredential(id: string, credentialId: string): Promise<void>;
   revokeAccessGrant(id: string, terminateActive?: boolean): Promise<void>;
-  revoke(id: string, terminateActive?: boolean): Promise<void>;
-  shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean>;
+}
+
+export interface ActiveTunnelRepository {
   registerActiveTunnel(tunnel: ActiveTunnel): Promise<void>;
   claimActiveTunnelSlot(
     candidateEndpointIds: readonly string[],
@@ -121,6 +129,9 @@ export interface RouteStore {
   removeActiveTunnel(id: string): Promise<void>;
   listActiveTunnels(deploymentId: string, now?: string): Promise<ActiveTunnel[]>;
   listAllActiveTunnels(now?: string): Promise<ActiveTunnel[]>;
+}
+
+export interface CapacityCircuitRepository {
   getCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string, now?: string): Promise<CapacityCircuitState | undefined>;
   claimCapacityCircuit(
     provider: StoredRoute["provider"],
@@ -135,27 +146,43 @@ export interface RouteStore {
   ): Promise<CapacityCircuitState>;
   resetCapacityCircuit(provider: StoredRoute["provider"], candidateKey: string): Promise<void>;
   listCapacityCircuits(now?: string): Promise<CapacityCircuitState[]>;
+}
+
+export interface DeploymentRepository {
   getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined>;
   saveDeploymentDrain(state: DeploymentDrainState): Promise<void>;
   shouldTerminateDeployment(deploymentId: string): Promise<boolean>;
-  setEndpoint(id: string, endpointId?: string): Promise<StoredRoute>;
-  setStatus(id: string, status: RouteStatus, lastError?: string): Promise<StoredRoute>;
+}
+
+export interface RotationRepository {
   claimScheduledRotation(id: string, dueBefore: string): Promise<StoredRoute | undefined>;
   completeRotation(id: string): Promise<StoredRoute>;
   incrementRotationEpoch(id: string): Promise<StoredRoute>;
+}
+
+export interface ProviderHealthRepository {
   saveHealth(health: ProviderHealth): Promise<void>;
   listHealth(): Promise<ProviderHealth[]>;
   saveProviderInventory(snapshot: ProviderInventorySnapshot): Promise<void>;
   latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined>;
+}
+
+export interface CapabilityHealthRepository {
   saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void>;
   latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined>;
   capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]>;
+}
+
+export interface HealthAlertRepository {
   getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined>;
   saveHealthAlertState(state: HealthAlertState): Promise<void>;
   createHealthAlertEvent(event: HealthAlertEvent, destinationIds: readonly string[]): Promise<boolean>;
   pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]>;
   saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void>;
   healthAlertHistory(limit: number): Promise<HealthAlertEvent[]>;
+}
+
+export interface UsageRepository {
   recordUsage(record: UsageRecord): Promise<boolean>;
   listUsageRecords(from: string, to: string): Promise<UsageRecord[]>;
   saveUsageRollup(rollup: UsageRollup): Promise<void>;
@@ -166,5 +193,30 @@ export interface RouteStore {
   listUsageAlertEvents(from: string, to: string): Promise<UsageAlertEvent[]>;
   saveCapacityPressureEvidence(evidence: CapacityPressureEvidence): Promise<void>;
   listCapacityPressureEvidence(observedAfter: string): Promise<CapacityPressureEvidence[]>;
+}
+
+export interface RouteStore
+  extends
+    RouteRepository,
+    AccessGrantRepository,
+    ActiveTunnelRepository,
+    CapacityCircuitRepository,
+    DeploymentRepository,
+    RotationRepository,
+    ProviderHealthRepository,
+    CapabilityHealthRepository,
+    HealthAlertRepository,
+    UsageRepository {
   close(): Promise<void>;
 }
+
+export interface RoutingStore
+  extends
+    RouteRepository,
+    AccessGrantRepository,
+    ActiveTunnelRepository,
+    CapacityCircuitRepository,
+    DeploymentRepository,
+    RotationRepository,
+    ProviderHealthRepository,
+    UsageRepository {}

@@ -1,56 +1,9 @@
 /// <reference path="../../.sst/platform/config.d.ts" />
 
 import { existsSync } from "node:fs";
+import { v0Policy } from "./aws-policy.js";
+import { containerHttpHealth, privateHttpLoadBalancer } from "./aws-service-config.js";
 import { resolveStageConfiguration } from "../stage-config.js";
-
-const v0Policy = {
-  loadBalancer: {
-    tcpIdleTimeoutSeconds: 1_200,
-    deregistrationDelaySeconds: 300,
-  },
-  routing: {
-    allowedTargetPorts: "80,443",
-    connectTimeoutMs: "10000",
-    operationTimeoutMs: "30000",
-    retryMaxAttempts: "4",
-  },
-  telemetry: {
-    axiomEndpoint: "https://api.axiom.co",
-    retentionDays: 30,
-  },
-  canary: {
-    requestsPerMinute: "60",
-    throttleBurst: 30,
-    throttleRate: 10,
-    geoIpDatabaseSource: ".sst/geoip/GeoLite2-City.mmdb",
-    geoIpMaxAccuracyRadiusKm: "100",
-  },
-  health: {
-    providerRefreshMs: "60000",
-    passiveMaxAgeMs: "300000",
-    syntheticCooldownMs: "300000",
-    alertDegradedDelayMs: "300000",
-    alertWebhookTimeoutMs: "5000",
-    alertWebhookMaxAttempts: "5",
-    alertWebhookInitialBackoffMs: "1000",
-    alertDestinationIds: "",
-    alertConfigurationVersion: "unconfigured",
-    statusStaleAfterMs: "300000",
-  },
-  usageAccounting: {
-    intervalMs: "60000",
-    providerCostTotalsJson: "[]",
-    provisionedProxySlotCapacityJson: "[]",
-    sourceUrl: undefined as string | undefined,
-    sourceTimeoutMs: "10000",
-    varianceAbsoluteFloorUsd: "1",
-    varianceWarningRelative: "0.05",
-    varianceErrorRelative: "0.15",
-  },
-  notification: {
-    pollIntervalMs: "5000",
-  },
-} as const;
 
 export const awsDeployment: Parameters<typeof $config>[0] = {
   app(input: { stage: string }) {
@@ -767,16 +720,7 @@ service:
             ...($dev ? { CONTROL_API_TOKEN: devControlApiToken } : {}),
           },
           ssm: controlAppSsm,
-          health: {
-            command: [
-              "CMD-SHELL",
-              "node -e \"fetch('http://127.0.0.1:8081/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
-            ],
-            startPeriod: "30 seconds",
-            interval: "30 seconds",
-            timeout: "5 seconds",
-            retries: 3,
-          },
+          health: containerHttpHealth(8081, "/health/ready", "30 seconds"),
           logging: { retention: "1 month" },
         },
       ],
@@ -1014,24 +958,11 @@ service:
             ...(providerSecrets ?? {}),
             ...(syntheticRouteSecrets ?? {}),
           },
-          health: {
-            command: [
-              "CMD-SHELL",
-              "node -e \"fetch('http://127.0.0.1:8082/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
-            ],
-            startPeriod: "30 seconds",
-            interval: "30 seconds",
-            timeout: "5 seconds",
-            retries: 3,
-          },
+          health: containerHttpHealth(8082, "/health/ready", "30 seconds"),
           logging: { retention: "1 month" },
         },
       ],
-      loadBalancer: {
-        public: false,
-        rules: [{ listen: "80/http", forward: "8082/http", container: "app" }],
-        health: { "8082/http": { path: "/health/ready", interval: "30 seconds" } },
-      },
+      loadBalancer: privateHttpLoadBalancer(8082, "/health/ready"),
       scaling: { min: 1, max: 1 },
       wait: true,
       transform: {
@@ -1084,24 +1015,11 @@ service:
             ...($dev ? { HEALTH_AGGREGATOR_TOKEN: devHealthAggregatorToken } : {}),
           },
           ssm: { HEALTH_AGGREGATOR_TOKEN: healthAggregatorToken },
-          health: {
-            command: [
-              "CMD-SHELL",
-              "node -e \"fetch('http://127.0.0.1:8083/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
-            ],
-            startPeriod: "20 seconds",
-            interval: "30 seconds",
-            timeout: "5 seconds",
-            retries: 3,
-          },
+          health: containerHttpHealth(8083, "/health/live"),
           logging: { retention: "1 month" },
         },
       ],
-      loadBalancer: {
-        public: false,
-        rules: [{ listen: "80/http", forward: "8083/http", container: "app" }],
-        health: { "8083/http": { path: "/health/live", interval: "30 seconds" } },
-      },
+      loadBalancer: privateHttpLoadBalancer(8083, "/health/live"),
       scaling: { min: 1, max: production ? 2 : 1, cpuUtilization: 60, memoryUtilization: 70 },
       wait: true,
       transform: {
@@ -1161,24 +1079,11 @@ service:
             ...otelEnvironment(`profound-proxy-usage-accounting-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: usageAccountingSourceToken === undefined ? {} : { USAGE_ACCOUNTING_SOURCE_TOKEN: usageAccountingSourceToken },
-          health: {
-            command: [
-              "CMD-SHELL",
-              "node -e \"fetch('http://127.0.0.1:8085/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
-            ],
-            startPeriod: "20 seconds",
-            interval: "30 seconds",
-            timeout: "5 seconds",
-            retries: 3,
-          },
+          health: containerHttpHealth(8085, "/health/ready"),
           logging: { retention: "1 month" },
         },
       ],
-      loadBalancer: {
-        public: false,
-        rules: [{ listen: "80/http", forward: "8085/http", container: "app" }],
-        health: { "8085/http": { path: "/health/ready", interval: "30 seconds" } },
-      },
+      loadBalancer: privateHttpLoadBalancer(8085, "/health/ready"),
       scaling: { min: 1, max: 1 },
       wait: true,
       transform: {
@@ -1235,24 +1140,11 @@ service:
             ...otelEnvironment(`profound-proxy-notification-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: alertDestinationSecret === undefined ? {} : { HEALTH_ALERT_DESTINATIONS_JSON: alertDestinationSecret },
-          health: {
-            command: [
-              "CMD-SHELL",
-              "node -e \"fetch('http://127.0.0.1:8084/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
-            ],
-            startPeriod: "20 seconds",
-            interval: "30 seconds",
-            timeout: "5 seconds",
-            retries: 3,
-          },
+          health: containerHttpHealth(8084, "/health/ready"),
           logging: { retention: "1 month" },
         },
       ],
-      loadBalancer: {
-        public: false,
-        rules: [{ listen: "80/http", forward: "8084/http", container: "app" }],
-        health: { "8084/http": { path: "/health/ready", interval: "30 seconds" } },
-      },
+      loadBalancer: privateHttpLoadBalancer(8084, "/health/ready"),
       scaling: { min: 1, max: 1 },
       wait: true,
       transform: {

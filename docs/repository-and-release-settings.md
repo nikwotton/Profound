@@ -10,17 +10,12 @@ Protect `main` with:
 - the branch required to be up to date before merge;
 - required `verify` and `production-shaped` checks;
 - at least one approval;
-- CODEOWNER review for owned paths;
 - stale approvals dismissed when material commits are pushed;
 - conversations resolved before merge;
 - force pushes and branch deletion disabled;
 - administrator bypass limited to documented emergencies.
 
 Allow merge commits only. The release workflow reasons about cumulative main commits and immutable image promotion. Delete merged branches automatically. Enable the merge queue only when pull-request volume warrants it; required workflows already accept `merge_group` events.
-
-## CODEOWNERS
-
-Keep [`.github/CODEOWNERS`](../.github/CODEOWNERS) aligned with actual ownership. Changes to infrastructure, workflows, migrations, provider contracts, security/authentication, usage accounting, and redaction should require the appropriate platform or security owner rather than relying on a general approval.
 
 AI review may remain advisory. Manual approval is authoritative for v0.
 
@@ -33,6 +28,8 @@ AI review may remain advisory. Manual approval is authoritative for v0.
 - Retain build, OpenAPI, test, migration, and deployment artifacts for the organization's incident/debug window.
 
 Dependabot configuration is committed in [`.github/dependabot.yml`](../.github/dependabot.yml). Review dependency changes through the same required checks; do not auto-merge infrastructure or runtime dependencies without ownership review.
+
+For private repositories, enable GitHub Advanced Security before requiring the CodeQL or dependency-review jobs. The workflows skip those jobs when the repository does not support them and activate them automatically once Advanced Security is enabled.
 
 ## Environments
 
@@ -58,6 +55,8 @@ At minimum configure:
 - `AWS_DEPLOY_ROLE_ARN`
 - `ECR_REPOSITORY`
 
+The pull-request AWS acceptance job is skipped until `AWS_REGION` and `AWS_DEPLOY_ROLE_ARN` are configured. Do not require `production-shaped` in branch protection until its variables, protected environment, and secrets are present and a test deployment has passed.
+
 The deploy role should have only the permissions required by SST, ECR promotion, migrations, deployed verification, and cleanup for its environment. Production and non-production should use distinct trust conditions and, where practical, distinct roles/accounts.
 
 ## Deployment variables
@@ -82,10 +81,9 @@ Runtime/vendor values belong in SST secrets, not GitHub variables or repository 
 Create these migration labels:
 
 - `migration:none`
-- `migration:backward-compatible`
-- `migration:forward-only`
+- `migration:compatible`
+- `migration:backfill`
 - `migration:destructive`
-- `migration:none-reviewed`
 
 Also create `provider-freshness` for reviewed provider-source updates. Keep label spelling synchronized with the pull-request template and policy validator.
 
@@ -110,7 +108,6 @@ Generated client SDK compilation remains a roadmap item until consumer languages
 Before the first production release, verify:
 
 - branch protection and required checks behave on a test pull request;
-- CODEOWNER changes cannot merge without owner review;
 - OIDC can deploy without stored AWS keys and cannot assume the wrong environment role;
 - staging deploy, migration, black-box E2E and AWS acceptance suites, rollback, and removal complete;
 - production approval blocks an unapproved promotion;

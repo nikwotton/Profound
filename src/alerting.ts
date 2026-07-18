@@ -1,7 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { isUnknownRecord } from "./decoding.js";
 import type { Logger } from "./logger.js";
-import type { RouteStore } from "./store.js";
+import type { HealthAlertRepository } from "./store.js";
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
@@ -87,7 +87,7 @@ export class WebhookNotificationAdapter {
   readonly #destinations: Map<string, HealthAlertDestination>;
 
   constructor(
-    private readonly store: RouteStore,
+    private readonly store: HealthAlertRepository,
     destinations: readonly HealthAlertDestination[],
     private readonly options: WebhookNotificationAdapterOptions,
     private readonly logger: Logger,
@@ -190,7 +190,7 @@ function eventSeverity(status: CapabilityStatus): HealthAlertEvent["severity"] {
 
 export class HealthAlertCoordinator implements HealthAlertEvaluator {
   constructor(
-    private readonly store: RouteStore,
+    private readonly store: HealthAlertRepository,
     private readonly options: HealthAlertCoordinatorOptions,
     private readonly logger: Logger,
   ) {}
