@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { awsInfrastructureSource } from "./aws-infrastructure-source.js";
 
 function file(path: string): string {
   return readFileSync(path, "utf8");
@@ -56,7 +57,7 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
 test("gateway releases persist active tunnels and enforce the staged drain escalation policy", () => {
   const connectionTracker = file("src/active-connection-tracker.ts");
   const coordinator = file("src/deployment-coordinator.ts");
-  const stack = file("infra/providers/aws.ts");
+  const stack = awsInfrastructureSource();
   assert.match(connectionTracker, /registerActiveTunnel/);
   assert.match(connectionTracker, /shouldTerminateDeployment/);
   assert.match(coordinator, /coordinateDeploymentDrain/);

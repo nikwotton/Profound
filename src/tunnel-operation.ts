@@ -8,10 +8,11 @@ import { AppError, ProviderUnavailableError, assignmentFromError, isRetryableUps
 import type { Logger } from "./logger.js";
 import { attemptUsageRecord } from "./proxy-attempt-accounting.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
-import { sessionRoutingTelemetryAttributes, type RouteService } from "./route-service.js";
+import type { RouteService } from "./route-service.js";
+import { sessionRoutingTelemetryAttributes } from "./routing-resolution.js";
 import type { TargetValidation } from "./target-security.js";
 import type { Telemetry } from "./telemetry.js";
-import type { AuthenticatedRoute, ProxyTarget, UpstreamEndpoint } from "./types.js";
+import type { AuthenticatedRoute, ProxyTarget, UpstreamEndpoint } from "./domain/routing.js";
 import { openUpstreamTunnel, type OpenedUpstreamTunnel } from "./upstream-tunnel.js";
 import { byteCounter } from "./stream-utils.js";
 

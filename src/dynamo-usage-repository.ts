@@ -18,7 +18,7 @@ import {
   decodeUsageRollup,
 } from "./storage-decoding.js";
 import type { UsageRepository } from "./store.js";
-import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./types.js";
+import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./domain/usage.js";
 
 export class DynamoUsageRepository implements UsageRepository {
   constructor(

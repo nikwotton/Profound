@@ -2,15 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { DynamoRouteStore } from "../src/dynamo-store.js";
-import type {
-  CapabilityHealthSnapshot,
-  CapacityPressureEvidence,
-  HealthAlertEvent,
-  HealthAlertState,
-  ProviderHealth,
-  RouteProfile,
-  UsageAlertEvent,
-} from "../src/types.js";
+import type { CapabilityHealthSnapshot, HealthAlertEvent, HealthAlertState, ProviderHealth } from "../src/domain/health.js";
+import type { CapacityPressureEvidence, UsageAlertEvent } from "../src/domain/usage.js";
+import type { RouteProfile } from "../src/domain/routing.js";
 
 interface CapturedCommand {
   constructor: { name: string };

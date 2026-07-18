@@ -2,7 +2,7 @@ import { DynamoRouteStore } from "./dynamo-store.js";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { DEPLOYMENT_POLL_INTERVAL_MS, evaluateDeploymentDrain } from "./release-policy.js";
 import type { RouteStore } from "./store.js";
-import type { ActiveTunnel, DeploymentDrainState } from "./types.js";
+import type { ActiveTunnel, DeploymentDrainState } from "./domain/routing.js";
 
 export interface DeploymentDrainNotification {
   action: "notify" | "escalate" | "terminate";

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { awsInfrastructureSource } from "./aws-infrastructure-source.js";
 
 test("SST isolates AWS resources behind a provider-selected deployment module", () => {
   const root = readFileSync("sst.config.ts", "utf8");
-  const aws = readFileSync("infra/providers/aws.ts", "utf8");
+  const aws = awsInfrastructureSource();
   const awsPolicy = readFileSync("infra/providers/aws-policy.ts", "utf8");
   const awsTelemetry = readFileSync("infra/providers/aws-telemetry-config.ts", "utf8");
 

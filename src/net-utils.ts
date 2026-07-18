@@ -1,6 +1,6 @@
 import type { Server } from "node:net";
 import { AppError } from "./errors.js";
-import type { ListenAddress } from "./types.js";
+import type { ListenAddress } from "./domain/network.js";
 
 export async function listen(server: Server, host: string, port: number): Promise<ListenAddress> {
   await new Promise<void>((resolve, reject) => {

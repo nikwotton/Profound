@@ -7,7 +7,8 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer";
 import { Layer } from "effect";
 import { safeErrorMessage } from "./errors.js";
 import { assignmentAttributes } from "./assignment-evidence.js";
-import type { AssignmentEvidence, PassiveHealthSignal, ProviderId, SessionMode } from "./types.js";
+import type { AssignmentEvidence, ProviderId, SessionMode } from "./domain/routing.js";
+import type { PassiveHealthSignal } from "./domain/health.js";
 
 export interface TelemetryOptions {
   serviceName: string;

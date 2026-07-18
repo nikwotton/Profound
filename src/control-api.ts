@@ -16,9 +16,9 @@ import {
 import { AppError, type RouteServiceError, safeErrorMessage } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { closeServer, listen } from "./net-utils.js";
-import { RouteService } from "./route-service.js";
+import type { ControlPlaneRouteService } from "./route-administration.js";
 import { Telemetry } from "./telemetry.js";
-import type { ListenAddress } from "./types.js";
+import type { ListenAddress } from "./domain/network.js";
 
 export interface ControlApiOptions {
   host: string;
@@ -125,7 +125,7 @@ function internalError(): InternalError {
   return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
 }
 
-function makeHandler(routes: RouteService, options: ControlApiOptions) {
+function makeHandler(routes: ControlPlaneRouteService, options: ControlApiOptions) {
   const AuthorizationLive = Layer.succeed(AdminAuthorization, {
     bearer: (token) => {
       const userId = authenticatedUser(Redacted.value(token), options.controlIdentities);
@@ -389,7 +389,7 @@ export class ControlApiServer {
   #address?: ListenAddress;
 
   constructor(
-    routes: RouteService,
+    routes: ControlPlaneRouteService,
     private readonly options: ControlApiOptions,
   ) {
     const webHandler = makeHandler(routes, options);

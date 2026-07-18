@@ -50,33 +50,32 @@ Build production JavaScript:
 pnpm build
 ```
 
-`pnpm build` does not start a server. `internal:dev:service` is an SST entry point; invoking it directly is unsupported.
+`pnpm build` emits deployable application code only and does not compile tests, local provider simulators, demos, controlled recipients, or start a server. Development container workflows use `pnpm build:dev`; test commands use `pnpm build:test`. `internal:dev:service` is an SST entry point; invoking it directly is unsupported.
 
 ## Source map
 
-| Path                                | Responsibility                                          |
-| ----------------------------------- | ------------------------------------------------------- |
-| `src/control-contract.ts`           | Effect HttpApi schemas and the control API contract     |
-| `src/control-api.ts`                | Control-plane handlers                                  |
-| `src/forward-proxy.ts`              | HTTP forwarding and HTTPS `CONNECT` listener            |
-| `src/socks5-proxy.ts`               | SOCKS5 authentication and TCP `CONNECT`                 |
-| `src/route-service.ts`              | Route/grant lifecycle and candidate routing             |
-| `src/providers/`                    | Provider abstraction and Bright Data/Proxidize adapters |
-| `src/simulators/`                   | Offline provider contracts                              |
-| `src/store.ts`                      | Persistence interface and credential helpers            |
-| `src/dynamo-store.ts`               | Production DynamoDB implementation                      |
-| `src/in-memory-route-store.ts`      | Ephemeral local and test persistence adapter            |
-| `src/health-aggregator.ts`          | Capability-health evaluation                            |
-| `src/public-canary.ts`              | Signed source/geography canary                          |
-| `src/status-app.ts`                 | Company-facing dashboard and status/usage APIs          |
-| `src/usage-accounting.ts`           | Ledger summarization, cost attribution, reconciliation  |
-| `src/alerting.ts`                   | Durable health alerts and webhook delivery              |
-| `src/telemetry.ts`, `src/logger.ts` | OTLP instrumentation and redaction                      |
-| `infra/providers/aws.ts`            | AWS/SST topology                                        |
-| `infra/stage-config.ts`             | Central stage classification and defaults               |
-| `config/providers/`                 | Pinned provider contracts and prices                    |
-| `migrations/`                       | Current-design migration declarations                   |
-| `tests/deployed/spec-matrix.ts`     | Design-decision-to-test inventory                       |
+| Path                                                 | Responsibility                                                      |
+| ---------------------------------------------------- | ------------------------------------------------------------------- |
+| `src/control-contract.ts`                            | Effect HttpApi schemas and the control API contract                 |
+| `src/control-api.ts`, `src/route-administration.ts`  | Control-plane handlers and profile/grant/session administration     |
+| `src/forward-proxy.ts`, `src/socks5-proxy.ts`        | HTTP, HTTPS `CONNECT`, and SOCKS5 data-plane listeners              |
+| `src/route-service.ts`, `src/routing-*.ts`           | Data-plane routing, resolution, scoring, and candidate accounting   |
+| `src/domain/`                                        | Routing, usage, health, and network domain models                   |
+| `src/providers/`                                     | Provider abstraction and Bright Data/Proxidize adapters             |
+| `src/simulators/`                                    | Offline provider contracts; omitted from production images          |
+| `src/services/`                                      | Independently deployable health, status, accounting, and workers    |
+| `src/store.ts`                                       | Segregated persistence interfaces and credential helpers            |
+| `src/dynamo-store.ts`, `src/dynamo-*-repository.ts`  | DynamoDB facade plus route, runtime, health, and usage repositories |
+| `src/in-memory-route-store.ts`                       | Ephemeral local and test persistence adapter                        |
+| `src/health-aggregator.ts`, `src/public-canary.ts`   | Capability-health evaluation and signed geography validation        |
+| `src/status-app.ts`, `src/usage-accounting-core.ts`  | Dashboard/analytics and cost reconciliation                         |
+| `src/alerting.ts`                                    | Durable health alerts and webhook delivery                          |
+| `src/telemetry.ts`, `src/logger.ts`                  | OTLP instrumentation and redaction                                  |
+| `infra/providers/aws.ts`, `infra/providers/aws-*.ts` | AWS/SST orchestration and concern-specific resource factories       |
+| `infra/stage-config.ts`                              | Central stage classification and defaults                           |
+| `config/providers/`                                  | Pinned provider contracts and prices                                |
+| `migrations/`                                        | Current-design migration declarations                               |
+| `tests/deployed/spec-matrix.ts`                      | Design-decision-to-test inventory                                   |
 
 ## Quality checks
 

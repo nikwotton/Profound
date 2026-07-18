@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { toPublicAccessGrant } from "../src/store.js";
-import type { RouteProfile, StoredAccessGrant } from "../src/types.js";
+import type { RouteProfile, StoredAccessGrant } from "../src/domain/routing.js";
 import { InMemoryRouteStore, InMemoryRouteStoreState } from "../src/in-memory-route-store.js";
 
 const base = Date.parse("2026-07-15T00:00:00.000Z");

@@ -1,5 +1,5 @@
 import type { Attributes } from "@opentelemetry/api";
-import type { AssignmentEvidence } from "./types.js";
+import type { AssignmentEvidence } from "./domain/routing.js";
 
 export function assignmentAttributes(evidence: AssignmentEvidence): Attributes {
   return {

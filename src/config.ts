@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { serviceVersion } from "./build-metadata.js";
 import { isUnknownRecord } from "./decoding.js";
 import { ValidationError } from "./errors.js";
 import { TRANSPORT_POLICY, V0_POLICY } from "./service-policies.js";
@@ -172,7 +173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ),
     },
     proxidizeExactCity,
-    telemetry: { serviceName: env["OTEL_SERVICE_NAME"] ?? "profound-proxy-router", serviceVersion: "0.3.0" },
+    telemetry: { serviceName: env["OTEL_SERVICE_NAME"] ?? "profound-proxy-router", serviceVersion: serviceVersion(env) },
     brightData: {
       host: env["BRIGHT_DATA_HOST"] ?? "brd.superproxy.io",
       port: integer(env["BRIGHT_DATA_PORT"], 33_335, "BRIGHT_DATA_PORT", 1),

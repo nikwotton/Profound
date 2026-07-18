@@ -3,7 +3,8 @@ import { connect } from "node:net";
 import { expectRecord } from "../decoding.js";
 import { ProviderUnavailableError, attributeProvider } from "../errors.js";
 import type { ProviderAdapter, ResolveOptions } from "./provider.js";
-import type { ProviderHealth, StoredRoute, Targeting, UpstreamEndpoint } from "../types.js";
+import type { ProviderHealth } from "../domain/health.js";
+import type { StoredRoute, Targeting, UpstreamEndpoint } from "../domain/routing.js";
 
 export interface BrightDataConfig {
   host: string;

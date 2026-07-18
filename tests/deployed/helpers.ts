@@ -16,7 +16,7 @@ import {
 } from "../../src/control-contract.js";
 import { expectBufferChunk, parseJson } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
-import type { RouteProfileInput } from "../../src/types.js";
+import type { RouteProfileInput } from "../../src/domain/routing.js";
 import {
   collectHttpResponse,
   openProxySocket,

@@ -5,9 +5,10 @@ import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provide
 import { preferredProviderClass } from "./provider-selection.js";
 import { historicalRoutingEvidence, ROUTING_POLICY, scoreRoutingCandidate, type ScoredRoutingCandidate } from "./routing-policy.js";
 import { V0_POLICY } from "./service-policies.js";
-import type { ResolutionState } from "./route-service.js";
+import type { ResolutionState } from "./routing-resolution.js";
 import type { RoutingStore } from "./store.js";
-import type { AuthenticatedRoute, ProviderId, UsageRecord } from "./types.js";
+import type { AuthenticatedRoute, ProviderId } from "./domain/routing.js";
+import type { UsageRecord } from "./domain/usage.js";
 
 export const MAX_PEERS_PER_PROVIDER = V0_POLICY.establishmentBudget.candidatesPerProvider;
 export const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = V0_POLICY.establishmentBudget.candidatesPerProvider;

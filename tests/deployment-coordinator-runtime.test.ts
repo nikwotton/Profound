@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { coordinateDeploymentDrain, type DeploymentDrainNotification } from "../src/deployment-coordinator.js";
-import type { ActiveTunnel, DeploymentDrainState } from "../src/types.js";
+import type { ActiveTunnel, DeploymentDrainState } from "../src/domain/routing.js";
 
 function tunnel(id: string, deploymentId: string, startedAt: string, expiresAt: string): ActiveTunnel {
   return {

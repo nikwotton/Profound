@@ -10,14 +10,14 @@ import type {
   CapabilityHealth,
   CapabilityHealthSnapshot,
   CapabilityName,
-  CapacityPressureEvidence,
   GeographyHealth,
-  ListenAddress,
   PassiveHealthSignal,
-  ProviderClass,
   ProviderHealth,
   SyntheticValidationResult,
-} from "./types.js";
+} from "./domain/health.js";
+import type { CapacityPressureEvidence } from "./domain/usage.js";
+import type { ListenAddress } from "./domain/network.js";
+import type { ProviderClass } from "./domain/routing.js";
 
 export interface SyntheticValidationScope {
   capability?: Exclude<CapabilityName, "health_verification">;

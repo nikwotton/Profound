@@ -9,7 +9,7 @@ import { basicAuth, closeServer, listen } from "./net-utils.js";
 import { StatusApplicationServer } from "./status-app.js";
 import { decodeUsageRollup } from "./storage-decoding.js";
 import type { RouteStore } from "./store.js";
-import type { UsageRecord, UsageRollup } from "./types.js";
+import type { UsageRecord, UsageRollup } from "./domain/usage.js";
 import { provisionedProxySlotCapacityRecord, UsageAccountingWorker } from "./usage-accounting.js";
 
 const DEMO_QUERY_SECRET = "demo-query-secret";

@@ -5,7 +5,7 @@ import { expectBufferChunk } from "./decoding.js";
 import { abortReason } from "./establishment-budget.js";
 import { basicAuth } from "./net-utils.js";
 import { resolvedAddressesFromHeader, type ProviderResolutionMetadata } from "./destination-resolution.js";
-import type { UpstreamEndpoint } from "./types.js";
+import type { UpstreamEndpoint } from "./domain/routing.js";
 
 export interface TunnelTarget {
   host: string;

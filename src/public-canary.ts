@@ -5,7 +5,7 @@ import { RequestTooLargeError } from "./errors.js";
 import { isCanaryChallenge, verifyCanaryChallenge } from "./canary-challenge.js";
 import type { GeoIpResolver } from "./geoip.js";
 import type { Logger } from "./logger.js";
-import type { ListenAddress } from "./types.js";
+import type { ListenAddress } from "./domain/network.js";
 
 export interface PublicCanaryOptions {
   host: string;

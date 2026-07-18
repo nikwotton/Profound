@@ -9,7 +9,7 @@ import { AddressNotFoundError, Reader, type ReaderModel } from "@maxmind/geoip2-
 import { extract } from "tar";
 import { isUnknownRecord } from "./decoding.js";
 import type { Logger } from "./logger.js";
-import type { GeoIpDatasetMetadata, GeoIpLookupResult } from "./types.js";
+import type { GeoIpDatasetMetadata, GeoIpLookupResult } from "./domain/health.js";
 
 const VENDOR = "MaxMind" as const;
 const EDITION = "GeoLite2-City" as const;

@@ -10,7 +10,8 @@ import { silentLogger } from "../src/logger.js";
 import type { ProviderAdapter } from "../src/providers/provider.js";
 import { InMemoryRouteStore } from "../src/in-memory-route-store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
-import type { CapabilityHealthSnapshot, ProviderDescriptor, ProviderHealth, ProviderId, UpstreamEndpoint } from "../src/types.js";
+import type { CapabilityHealthSnapshot, ProviderHealth } from "../src/domain/health.js";
+import type { ProviderDescriptor, ProviderId, UpstreamEndpoint } from "../src/domain/routing.js";
 
 function descriptor(id: ProviderId): ProviderDescriptor {
   return {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createLogger } from "../src/logger.js";
-import { sessionRoutingTelemetryAttributes, sessionRoutingUsageContext, type ResolutionState } from "../src/route-service.js";
+import { sessionRoutingTelemetryAttributes, sessionRoutingUsageContext, type ResolutionState } from "../src/routing-resolution.js";
 import { createRoute, requestViaProxy, socks5AuthenticationStatus, startHttpTarget, startTestApp } from "./helpers.js";
 
 test("managed access-grant credentials, logical sessions, affinity, and route requirements survive a service restart", async (t) => {

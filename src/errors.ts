@@ -1,4 +1,4 @@
-import type { AssignmentEvidence, ProviderId } from "./types.js";
+import type { AssignmentEvidence, ProviderId } from "./domain/routing.js";
 
 export type AppErrorKind =
   | "application"

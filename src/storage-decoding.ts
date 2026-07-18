@@ -1,24 +1,16 @@
 import { Schema } from "effect";
 import type {
   ActiveTunnel,
-  CapabilityHealthSnapshot,
   CapacityCircuitState,
-  CapacityPressureEvidence,
   DeploymentDrainState,
-  HealthAlertDelivery,
-  HealthAlertEvent,
-  HealthAlertState,
-  ProviderHealth,
   ProviderInventorySnapshot,
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredLogicalSession,
   StoredRoute,
-  UsageAlertEvent,
-  UsageReconciliation,
-  UsageRecord,
-  UsageRollup,
-} from "./types.js";
+} from "./domain/routing.js";
+import type { CapabilityHealthSnapshot, HealthAlertDelivery, HealthAlertEvent, HealthAlertState, ProviderHealth } from "./domain/health.js";
+import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./domain/usage.js";
 
 const mutableArray = <S extends Schema.Schema.Any>(schema: S) => Schema.mutable(Schema.Array(schema));
 const exactOptional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });

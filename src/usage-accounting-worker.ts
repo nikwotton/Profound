@@ -1,8 +1,9 @@
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import { ACCOUNTING_POLICY } from "./service-policies.js";
 import type { UsageRepository } from "./store.js";
-import type { CapacityPressureEvidence, ProviderId, UsageAlertEvent, UsageInterval, UsageReconciliation, UsageRollup } from "./types.js";
-import { summarizeUsage, type ProviderCostTotal, type UsageVarianceThresholds } from "./usage-accounting.js";
+import type { CapacityPressureEvidence, UsageAlertEvent, UsageInterval, UsageReconciliation, UsageRollup } from "./domain/usage.js";
+import type { ProviderId } from "./domain/routing.js";
+import { summarizeUsage, type ProviderCostTotal, type UsageVarianceThresholds } from "./usage-accounting-core.js";
 
 const DEFAULT_VARIANCE_THRESHOLDS: UsageVarianceThresholds = {
   absoluteFloorUsd: ACCOUNTING_POLICY.varianceAbsoluteFloorUsd,

@@ -16,13 +16,16 @@ import {
 import type { Logger } from "./logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "./net-utils.js";
 import { attemptUsageRecord } from "./proxy-attempt-accounting.js";
-import { RouteService, sessionRoutingTelemetryAttributes } from "./route-service.js";
+import { RouteService } from "./route-service.js";
+import { sessionRoutingTelemetryAttributes } from "./routing-resolution.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
 import { establishTunnel } from "./tunnel-operation.js";
 import { byteCounter } from "./stream-utils.js";
-import { type AuthenticatedRoute, type ListenAddress, type UpstreamEndpoint, type UsageOutcome } from "./types.js";
+import { type AuthenticatedRoute, type UpstreamEndpoint } from "./domain/routing.js";
+import { type ListenAddress } from "./domain/network.js";
+import { type UsageOutcome } from "./domain/usage.js";
 
 export interface ForwardProxyOptions {
   host: string;

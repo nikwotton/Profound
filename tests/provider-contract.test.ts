@@ -10,7 +10,7 @@ import {
 } from "../src/errors.js";
 import { BrightDataAdapter } from "../src/providers/bright-data.js";
 import { ProxidizeAdapter } from "../src/providers/proxidize.js";
-import type { ProviderDescriptor } from "../src/types.js";
+import type { ProviderDescriptor } from "../src/domain/routing.js";
 
 function assertNormalizedContract(descriptor: ProviderDescriptor): void {
   assert.ok(descriptor.capabilities.clientProtocols.size > 0);

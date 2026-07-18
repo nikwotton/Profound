@@ -10,7 +10,8 @@ import { RouteService } from "./route-service.js";
 import type { TargetValidator } from "./target-security.js";
 import { Telemetry } from "./telemetry.js";
 import { establishTunnel } from "./tunnel-operation.js";
-import type { AuthenticatedRoute, ListenAddress } from "./types.js";
+import type { AuthenticatedRoute } from "./domain/routing.js";
+import type { ListenAddress } from "./domain/network.js";
 
 export interface Socks5ProxyOptions {
   host: string;

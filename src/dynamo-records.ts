@@ -3,15 +3,8 @@ import { NotFoundError } from "./errors.js";
 import { credentialUsername } from "./store.js";
 import type {
   ActiveTunnel,
-  CapabilityHealthSnapshot,
-  CapabilityName,
   CapacityCircuitState,
-  CapacityPressureEvidence,
   DeploymentDrainState,
-  HealthAlertDelivery,
-  HealthAlertEvent,
-  HealthAlertState,
-  ProviderHealth,
   ProviderId,
   ProviderInventorySnapshot,
   RouteStatus,
@@ -19,11 +12,16 @@ import type {
   StoredAccessGrantCredential,
   StoredLogicalSession,
   StoredRoute,
-  UsageAlertEvent,
-  UsageReconciliation,
-  UsageRecord,
-  UsageRollup,
-} from "./types.js";
+} from "./domain/routing.js";
+import type {
+  CapabilityHealthSnapshot,
+  CapabilityName,
+  HealthAlertDelivery,
+  HealthAlertEvent,
+  HealthAlertState,
+  ProviderHealth,
+} from "./domain/health.js";
+import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./domain/usage.js";
 
 export const ENTITY_INDEX = "EntityCreatedAt";
 export const ASSIGNMENT_INDEX = "EndpointAssignments";

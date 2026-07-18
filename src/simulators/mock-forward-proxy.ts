@@ -4,19 +4,9 @@ import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import type { Logger } from "../logger.js";
 import { basicAuth, closeServer, listen, parseBasicAuth, parseHostPort } from "../net-utils.js";
-import type { ListenAddress } from "../types.js";
-
-export type SimulatorFailure = "auth" | "unavailable" | "rate_limit" | "timeout" | "capacity" | null;
-
-export interface MockIdentity {
-  id: string;
-  exitIp: string;
-  country: string;
-  region?: string;
-  city?: string;
-  carrier?: string;
-  extraHeaders?: Record<string, string>;
-}
+import type { MockIdentity, SimulatorFailure } from "../provider-simulator-contracts.js";
+import type { ListenAddress } from "../domain/network.js";
+export type { MockIdentity, SimulatorFailure } from "../provider-simulator-contracts.js";
 
 export interface MockForwardProxyOptions {
   host: string;

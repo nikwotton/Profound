@@ -2,24 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { expectBufferChunk, expectRecord, parseJson } from "../decoding.js";
 import type { Logger } from "../logger.js";
 import { closeServer, listen } from "../net-utils.js";
-import type { ListenAddress } from "../types.js";
-import { MockForwardProxy, type MockIdentity, type SimulatorFailure } from "./mock-forward-proxy.js";
-
-export interface SimulatedMobileDevice {
-  id: string;
-  deviceId?: string;
-  username: string;
-  password: string;
-  country: string;
-  region: string;
-  city: string;
-  carrier: string;
-  publicKey: string;
-  healthy: boolean;
-  exitIp: string;
-  rotationIntervalSeconds?: number;
-  lastRotatedAt: number;
-}
+import type { MockIdentity, SimulatedMobileDevice, SimulatorFailure } from "../provider-simulator-contracts.js";
+import type { ListenAddress } from "../domain/network.js";
+import { MockForwardProxy } from "./mock-forward-proxy.js";
+export type { SimulatedMobileDevice } from "../provider-simulator-contracts.js";
 
 export interface ProxidizeSimulatorOptions {
   host: string;

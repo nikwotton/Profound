@@ -1,5 +1,6 @@
-import type { ResolutionState } from "./route-service.js";
-import type { AuthenticatedRoute, DataPlaneProtocol, UpstreamEndpoint, UsageOutcome, UsageProvider, UsageRecord } from "./types.js";
+import type { ResolutionState } from "./routing-resolution.js";
+import type { AuthenticatedRoute, DataPlaneProtocol, UpstreamEndpoint } from "./domain/routing.js";
+import type { UsageOutcome, UsageProvider, UsageRecord } from "./domain/usage.js";
 import { usageDestination } from "./usage-destination.js";
 
 export interface AttemptUsageInput {

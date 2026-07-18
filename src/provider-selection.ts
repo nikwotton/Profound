@@ -1,5 +1,5 @@
 import type { ProviderAdapter } from "./providers/provider.js";
-import type { DataPlaneProtocol, ProviderClass, ProviderId, ProxyTarget, RouteProfile, SessionMode } from "./types.js";
+import type { DataPlaneProtocol, ProviderClass, ProviderId, ProxyTarget, RouteProfile, SessionMode } from "./domain/routing.js";
 
 const TARGETING_KEYS = ["country", "region", "city", "postalCode", "asn", "carrier"] as const;
 

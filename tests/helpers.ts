@@ -14,7 +14,7 @@ import {
 import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
-import type { RouteProfileInput } from "../src/types.js";
+import type { RouteProfileInput } from "../src/domain/routing.js";
 import { InMemoryRouteStore, InMemoryRouteStoreState } from "../src/in-memory-route-store.js";
 import { proxyWithCredentials, readExactly } from "./proxy-client-support.js";
 

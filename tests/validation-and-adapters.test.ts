@@ -8,7 +8,7 @@ import { parseHostPort } from "../src/net-utils.js";
 import { BrightDataAdapter, buildBrightDataUsername } from "../src/providers/bright-data.js";
 import { V0_POLICY } from "../src/service-policies.js";
 import { createTargetValidator, isPublicAddress } from "../src/target-security.js";
-import type { StoredRoute } from "../src/types.js";
+import type { StoredRoute } from "../src/domain/routing.js";
 import { validateGrantIssuance, validateRouteProfile } from "../src/validation.js";
 
 function route(overrides: Partial<StoredRoute> = {}): StoredRoute {

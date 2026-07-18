@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { awsInfrastructureSource } from "./aws-infrastructure-source.js";
 
 const expectedSstSecrets = [
   "AxiomIngestToken",
@@ -53,13 +54,13 @@ test("the fixed local runtime adds no standalone environment configuration contr
   assert.match(localRuntime, /store = new InMemoryRouteStore\(\)/);
   assert.doesNotMatch(localRuntime, /process\.env|PERSISTENCE_BACKEND/);
 
-  const infrastructure = readFileSync("infra/providers/aws.ts", "utf8");
+  const infrastructure = awsInfrastructureSource();
   assert.doesNotMatch(infrastructure, /PERSISTENCE_BACKEND|command: "pnpm dev"/);
   assert.match(infrastructure, /command: "pnpm internal:dev:service"/);
 });
 
 test("SST secrets have an audited exclusive source and development placeholders", () => {
-  const aws = readFileSync("infra/providers/aws.ts", "utf8");
+  const aws = awsInfrastructureSource();
   const awsPolicy = readFileSync("infra/providers/aws-policy.ts", "utf8");
   const root = readFileSync("sst.config.ts", "utf8");
   const stageConfiguration = readFileSync("infra/stage-config.ts", "utf8");

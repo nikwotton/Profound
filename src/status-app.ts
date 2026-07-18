@@ -4,19 +4,16 @@ import { expectIsoTimestamp } from "./decoding.js";
 import type { Logger } from "./logger.js";
 import { ROUTING_POLICY } from "./routing-policy.js";
 import { toPublicAccessGrant, toPublicLogicalSession, type RouteStore } from "./store.js";
+import type { CapabilityHealthSnapshot } from "./domain/health.js";
 import type {
-  CapabilityHealthSnapshot,
   CapacityCircuitState,
-  ListenAddress,
   ProviderInventorySnapshot,
   PublicAccessGrant,
   PublicLogicalSession,
   StoredRoute,
-  UsageGroupBy,
-  UsageInterval,
-  UsageProvider,
-  UsageRollup,
-} from "./types.js";
+} from "./domain/routing.js";
+import type { ListenAddress } from "./domain/network.js";
+import type { UsageGroupBy, UsageInterval, UsageProvider, UsageRollup } from "./domain/usage.js";
 import { summarizeUsage, type UsageQuery } from "./usage-accounting.js";
 
 const PROXIDIZE_MONTHLY_PRICE_PER_SLOT_USD = 59;

@@ -6,7 +6,7 @@ import { connect as tlsConnect } from "node:tls";
 import { signCanaryChallenge } from "./canary-challenge.js";
 import { expectBufferChunk, expectEnum, expectNumber, expectOptionalString, expectRecord, expectString, parseJson } from "./decoding.js";
 import type { SyntheticValidationScope } from "./health-aggregator.js";
-import type { GeoIpDatasetMetadata, GeoIpEvidence, GeographyVerification, SyntheticValidationResult } from "./types.js";
+import type { GeoIpDatasetMetadata, GeoIpEvidence, GeographyVerification, SyntheticValidationResult } from "./domain/health.js";
 
 export interface SignedCanaryProbeOptions {
   canaryUrl: string;

@@ -1,5 +1,5 @@
 import type { UsageRepository } from "./store.js";
-import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./types.js";
+import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./domain/usage.js";
 
 interface InMemoryUsageState {
   readonly usageRecords: Map<string, UsageRecord>;

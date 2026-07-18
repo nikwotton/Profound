@@ -1,22 +1,20 @@
 import { startControlPlaneApplication, startDataPlaneApplication } from "./app.js";
+import { serviceVersion } from "./build-metadata.js";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
+import { startHealthAggregatorService } from "./services/health-aggregator-service.js";
+import { startNotificationService } from "./services/notification-service.js";
+import { startPublicCanaryService } from "./services/public-canary-service.js";
+import { startDynamicService, type RunningService } from "./services/runtime.js";
+import { startStatusApplicationService } from "./services/status-service.js";
+import { startUsageAccountingService } from "./services/usage-accounting-service.js";
 import { Telemetry } from "./telemetry.js";
-import {
-  startHealthAggregatorService,
-  startIntegrationTargetService,
-  startNotificationService,
-  startPublicCanaryService,
-  startStatusApplicationService,
-  startUsageAccountingService,
-  type RunningService,
-} from "./runtime-services.js";
 
 const mode = process.env["SERVICE_MODE"];
 const serviceName = process.env["OTEL_SERVICE_NAME"] ?? `profound-proxy-${mode}`;
 const telemetry = new Telemetry({
   serviceName,
-  serviceVersion: "0.3.0",
+  serviceVersion: serviceVersion(process.env),
   environment: process.env,
 });
 const logger = createLogger({
@@ -53,7 +51,7 @@ try {
       application = await startPublicCanaryService(logger, process.env, securityLogger);
       break;
     case "integration-target":
-      application = await startIntegrationTargetService(logger);
+      application = await startDynamicService("./services/" + "integration-target-service.js", "startIntegrationTargetService", [logger]);
       break;
     case undefined:
     default:

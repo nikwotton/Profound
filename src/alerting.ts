@@ -9,7 +9,7 @@ import type {
   HealthAlertDelivery,
   HealthAlertEvent,
   HealthAlertState,
-} from "./types.js";
+} from "./domain/health.js";
 
 export interface HealthAlertDestination {
   id: string;

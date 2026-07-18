@@ -5,7 +5,7 @@ import { InMemoryRouteStore } from "../src/in-memory-route-store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
 import { CAPACITY_POLICY, recommendCapacity } from "../src/capacity-policy.js";
 import { ROUTING_POLICY } from "../src/routing-policy.js";
-import type { UsageRecord } from "../src/types.js";
+import type { UsageRecord } from "../src/domain/usage.js";
 import { provisionedProxySlotCapacityRecord, summarizeUsage, UsageAccountingWorker } from "../src/usage-accounting.js";
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {

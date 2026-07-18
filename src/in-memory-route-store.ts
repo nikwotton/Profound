@@ -12,16 +12,9 @@ import {
 import type {
   ActiveTunnel,
   AuthenticatedAccessGrant,
-  CapabilityHealthSnapshot,
-  CapabilityName,
   CapacityCircuitReason,
   CapacityCircuitState,
-  CapacityPressureEvidence,
   DeploymentDrainState,
-  HealthAlertDelivery,
-  HealthAlertEvent,
-  HealthAlertState,
-  ProviderHealth,
   ProviderInventorySnapshot,
   ProviderId,
   RouteProfile,
@@ -29,11 +22,16 @@ import type {
   StoredAccessGrantCredential,
   StoredLogicalSession,
   StoredRoute,
-  UsageAlertEvent,
-  UsageReconciliation,
-  UsageRecord,
-  UsageRollup,
-} from "./types.js";
+} from "./domain/routing.js";
+import type {
+  CapabilityHealthSnapshot,
+  CapabilityName,
+  HealthAlertDelivery,
+  HealthAlertEvent,
+  HealthAlertState,
+  ProviderHealth,
+} from "./domain/health.js";
+import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./domain/usage.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 

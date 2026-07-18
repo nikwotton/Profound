@@ -10,7 +10,7 @@ Workload shape and volume, latency and availability SLOs, state-freshness and ou
 | ------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Deployed secret           | `sst secret set`; never a deployment environment variable or committed file | SST copies the value into an AWS Secrets Manager secret and injects only the required runtime variable |
 | Operator deployment input | Six documented environment-specific network values                          | SST validates and applies the value                                                                    |
-| Stage and tuning policy   | Typed code in `infra/stage-config.ts` and `infra/providers/aws.ts`          | SST writes the selected constants into components                                                      |
+| Stage and tuning policy   | Typed code in `infra/stage-config.ts` and `infra/providers/aws*.ts`         | SST writes the selected constants into components                                                      |
 | CI release wiring         | Release workflow only                                                       | SST receives the immutable image and source revision                                                   |
 | Internal component wiring | SST only                                                                    | Generated environment such as service mode, ports, table names, and service URLs                       |
 | Test input                | Test command or CI secret/variable                                          | Test-process environment only                                                                          |
@@ -48,7 +48,7 @@ Stage behavior is fixed in `infra/stage-config.ts`:
 
 The optional multi-identity map, dedicated synthetic route, signed alert destinations, and external usage-accounting source are typed stage features. They are disabled in the initial v0 policy. Enabling one requires a reviewed code change and its corresponding SST secret; there is no environment-variable feature gate.
 
-Only two numeric policy groups are authoritative v0 design decisions: credential lifecycle and the connection-establishment budget. They live together in `src/service-policies.ts` as `V0_POLICY`. Other operational values are current typed implementation defaults in `infra/providers/aws.ts` or component policy modules, including:
+Only two numeric policy groups are authoritative v0 design decisions: credential lifecycle and the connection-establishment budget. They live together in `src/service-policies.ts` as `V0_POLICY`. Other operational values are current typed implementation defaults in the `infra/providers/aws*.ts` orchestration modules or component policy modules, including:
 
 - destination ports, connection/operation/stream limits, per-task connection admission, retries, and provider capability policy;
 - NLB idle and deregistration timing;

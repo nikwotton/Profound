@@ -1,10 +1,12 @@
 import type { AppConfig } from "./config.js";
+import { expectInteger, expectRecord, expectString, isUnknownRecord } from "./decoding.js";
+import { callDynamicExport } from "./dynamic-module.js";
 import type { Logger } from "./logger.js";
 import { BrightDataAdapter, type BrightDataConfig } from "./providers/bright-data.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import { ProxidizeAdapter, type ProxidizeConfig } from "./providers/proxidize.js";
-import { BrightDataSimulator } from "./simulators/bright-data.js";
-import { ProxidizeSimulator } from "./simulators/proxidize.js";
+import type { BrightDataSimulatorControl, ProxidizeSimulatorControl } from "./provider-simulator-contracts.js";
+export type { BrightDataSimulatorControl, ProxidizeSimulatorControl } from "./provider-simulator-contracts.js";
 
 export type ProviderRuntimeConfig = Pick<
   AppConfig,
@@ -21,10 +23,81 @@ export interface ProviderRuntime {
   brightData: ProviderAdapter<"bright_data">;
   proxidize: MobileProviderAdapter;
   simulators?: {
-    brightData: BrightDataSimulator;
-    proxidize: ProxidizeSimulator;
+    brightData: BrightDataSimulatorControl;
+    proxidize: ProxidizeSimulatorControl;
   };
   stop(): Promise<void>;
+}
+
+export type ProviderCatalog = Pick<ProviderRuntime, "brightData" | "proxidize">;
+
+function hasMethod(value: Record<string, unknown>, name: string): boolean {
+  return typeof value[name] === "function";
+}
+
+function isBrightDataSimulator(value: unknown): value is BrightDataSimulatorControl {
+  if (!isUnknownRecord(value)) return false;
+  return hasMethod(value, "start") && hasMethod(value, "stop") && hasMethod(value, "setFailure") && hasMethod(value, "lastIdentity");
+}
+
+function isProxidizeSimulator(value: unknown): value is ProxidizeSimulatorControl {
+  if (!isUnknownRecord(value)) return false;
+  return (
+    hasMethod(value, "start") &&
+    hasMethod(value, "stop") &&
+    hasMethod(value, "setFailure") &&
+    hasMethod(value, "setDeviceHealth") &&
+    hasMethod(value, "devices") &&
+    hasMethod(value, "lastIdentity")
+  );
+}
+
+function decodeProviderSimulatorSetup(value: unknown): {
+  simulators: NonNullable<ProviderRuntime["simulators"]>;
+  brightAddress: { host: string; port: number };
+  proxidizeAddresses: { control: { host: string; port: number } };
+} {
+  const setup = expectRecord(value, "Provider simulator setup");
+  const simulatorValues = expectRecord(setup["simulators"], "Provider simulator controls");
+  const brightData = simulatorValues["brightData"];
+  const proxidize = simulatorValues["proxidize"];
+  if (!isBrightDataSimulator(brightData) || !isProxidizeSimulator(proxidize)) {
+    throw new TypeError("Provider simulator setup returned invalid controls");
+  }
+  const brightAddress = expectRecord(setup["brightAddress"], "Bright Data simulator address");
+  const proxidizeAddresses = expectRecord(setup["proxidizeAddresses"], "Proxidize simulator addresses");
+  const controlAddress = expectRecord(proxidizeAddresses["control"], "Proxidize control address");
+  return {
+    simulators: { brightData, proxidize },
+    brightAddress: {
+      host: expectString(brightAddress["host"], "Bright Data simulator host"),
+      port: expectInteger(brightAddress["port"], "Bright Data simulator port", 0, 65_535),
+    },
+    proxidizeAddresses: {
+      control: {
+        host: expectString(controlAddress["host"], "Proxidize control host"),
+        port: expectInteger(controlAddress["port"], "Proxidize control port", 0, 65_535),
+      },
+    },
+  };
+}
+
+export function createProviderCatalog(config: ProviderRuntimeConfig, dependencies: ProviderRuntimeDependencies = {}): ProviderCatalog {
+  const brightDataConfig: BrightDataConfig = {
+    ...config.brightData,
+    connectTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
+  };
+  const proxidizeConfig: ProxidizeConfig = {
+    ...config.proxidize,
+    requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    exactCity: config.proxidizeExactCity,
+    ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
+  };
+  return {
+    brightData: dependencies.brightDataFactory?.(brightDataConfig) ?? new BrightDataAdapter(brightDataConfig),
+    proxidize: dependencies.mobileProviderFactory?.(proxidizeConfig) ?? new ProxidizeAdapter(proxidizeConfig),
+  };
 }
 
 /**
@@ -42,24 +115,17 @@ export async function createProviderRuntime(
 
   try {
     if (config.providerMode === "mock") {
-      const brightData = new BrightDataSimulator({
-        host: "127.0.0.1",
-        port: 0,
-        customerId: config.brightData.customerId,
-        zone: config.brightData.zone,
-        password: config.brightData.password,
-        logger,
-      });
-      const proxidize = new ProxidizeSimulator({
-        host: "127.0.0.1",
-        controlPort: 0,
-        dataPort: 0,
-        apiToken: config.proxidize.apiToken,
-        logger,
-      });
-      simulators = { brightData, proxidize };
-      const brightAddress = await brightData.start();
-      const proxidizeAddresses = await proxidize.start();
+      const setup = decodeProviderSimulatorSetup(
+        await callDynamicExport("./simulators/" + "runtime.js", "startProviderSimulators", [
+          {
+            logger,
+            brightData: config.brightData,
+            proxidize: config.proxidize,
+          },
+        ]),
+      );
+      simulators = setup.simulators;
+      const { brightAddress, proxidizeAddresses } = setup;
       brightConfig = { ...brightConfig, host: brightAddress.host, port: brightAddress.port };
       proxidizeConfig = {
         ...proxidizeConfig,
@@ -67,19 +133,10 @@ export async function createProviderRuntime(
       };
     }
 
-    const brightDataAdapterConfig: BrightDataConfig = {
-      ...brightConfig,
-      connectTimeoutMs: config.attemptEstablishmentTimeoutMs,
-      ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
-    };
-    const proxidizeAdapterConfig: ProxidizeConfig = {
-      ...proxidizeConfig,
-      requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
-      exactCity: config.proxidizeExactCity,
-      ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
-    };
-    const brightData = dependencies.brightDataFactory?.(brightDataAdapterConfig) ?? new BrightDataAdapter(brightDataAdapterConfig);
-    const proxidize = dependencies.mobileProviderFactory?.(proxidizeAdapterConfig) ?? new ProxidizeAdapter(proxidizeAdapterConfig);
+    const { brightData, proxidize } = createProviderCatalog(
+      { ...config, brightData: brightConfig, proxidize: proxidizeConfig },
+      dependencies,
+    );
     let stopped = false;
     return {
       brightData,

@@ -3,11 +3,11 @@ import type {
   MobileEndpoint,
   ProxyTarget,
   ProviderDescriptor,
-  ProviderHealth,
   ProviderId,
   StoredRoute,
   UpstreamEndpoint,
-} from "../types.js";
+} from "../domain/routing.js";
+import type { ProviderHealth } from "../domain/health.js";
 
 export interface ResolveOptions {
   dataPlaneProtocol: DataPlaneProtocol;

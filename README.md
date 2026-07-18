@@ -49,6 +49,8 @@ pnpm install
 
 This command does not start a server. Run `pnpm sst install` separately only when working with SST; it installs SST's generated infrastructure providers and types without starting a server.
 
+`pnpm build` creates the production application artifact without tests. Production container builds also omit local provider simulators, demos, and controlled integration targets; those are included only in explicit development and test workflows.
+
 ## Run the offline demo
 
 Start the complete single-process local stack and watch it exercise the main usage flows:

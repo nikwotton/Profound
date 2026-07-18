@@ -5,7 +5,7 @@ import type { RouteService } from "./route-service.js";
 import { Socks5ProxyServer } from "./socks5-proxy.js";
 import type { TargetValidator } from "./target-security.js";
 import type { Telemetry } from "./telemetry.js";
-import type { ListenAddress } from "./types.js";
+import type { ListenAddress } from "./domain/network.js";
 
 export interface DataPlaneRuntime {
   start(): Promise<{ forwardAddress: ListenAddress; socks5Address: ListenAddress }>;

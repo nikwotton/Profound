@@ -1,6 +1,7 @@
 import type { Logger } from "../logger.js";
-import type { ListenAddress } from "../types.js";
-import { MockForwardProxy, type MockIdentity, type SimulatorFailure } from "./mock-forward-proxy.js";
+import type { MockIdentity, SimulatorFailure } from "../provider-simulator-contracts.js";
+import type { ListenAddress } from "../domain/network.js";
+import { MockForwardProxy } from "./mock-forward-proxy.js";
 
 export interface BrightDataSimulatorOptions {
   host: string;

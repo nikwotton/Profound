@@ -1,4 +1,4 @@
-import type { UsageRecord } from "./types.js";
+import type { UsageRecord } from "./domain/usage.js";
 
 export interface RoutingPolicy {
   readonly version: string;

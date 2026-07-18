@@ -3,16 +3,9 @@ import { V0_POLICY } from "./service-policies.js";
 import type {
   ActiveTunnel,
   AuthenticatedAccessGrant,
-  CapabilityHealthSnapshot,
-  CapabilityName,
   CapacityCircuitReason,
   CapacityCircuitState,
-  CapacityPressureEvidence,
   DeploymentDrainState,
-  HealthAlertDelivery,
-  HealthAlertEvent,
-  HealthAlertState,
-  ProviderHealth,
   ProviderId,
   ProviderInventorySnapshot,
   PublicAccessGrant,
@@ -23,11 +16,16 @@ import type {
   StoredAccessGrantCredential,
   StoredLogicalSession,
   StoredRoute,
-  UsageAlertEvent,
-  UsageReconciliation,
-  UsageRecord,
-  UsageRollup,
-} from "./types.js";
+} from "./domain/routing.js";
+import type {
+  CapabilityHealthSnapshot,
+  CapabilityName,
+  HealthAlertDelivery,
+  HealthAlertEvent,
+  HealthAlertState,
+  ProviderHealth,
+} from "./domain/health.js";
+import type { CapacityPressureEvidence, UsageAlertEvent, UsageReconciliation, UsageRecord, UsageRollup } from "./domain/usage.js";
 
 export const ACCESS_GRANT_CREDENTIAL_LIFETIME_MS = V0_POLICY.credentialLifecycle.lifetimeMs;
 export const ACCESS_GRANT_CREDENTIAL_RENEWAL_WINDOW_MS = V0_POLICY.credentialLifecycle.renewalWindowMs;

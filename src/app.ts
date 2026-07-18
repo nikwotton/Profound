@@ -7,14 +7,18 @@ import type { Logger } from "./logger.js";
 import type { BrightDataConfig } from "./providers/bright-data.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import type { ProxidizeConfig } from "./providers/proxidize.js";
-import { createProviderRuntime } from "./provider-runtime.js";
+import {
+  createProviderCatalog,
+  createProviderRuntime,
+  type BrightDataSimulatorControl,
+  type ProxidizeSimulatorControl,
+} from "./provider-runtime.js";
+import { RouteAdministrationService } from "./route-administration.js";
 import { RouteService } from "./route-service.js";
-import type { BrightDataSimulator } from "./simulators/bright-data.js";
-import type { ProxidizeSimulator } from "./simulators/proxidize.js";
 import type { RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import { createTargetValidator, type TargetValidator } from "./target-security.js";
-import type { ListenAddress } from "./types.js";
+import type { ListenAddress } from "./domain/network.js";
 
 export interface RunningApplication {
   forwardAddress: ListenAddress;
@@ -22,8 +26,8 @@ export interface RunningApplication {
   controlAddress: ListenAddress;
   routes: RouteService;
   simulators?: {
-    brightData: BrightDataSimulator;
-    proxidize: ProxidizeSimulator;
+    brightData: BrightDataSimulatorControl;
+    proxidize: ProxidizeSimulatorControl;
   };
   stop(): Promise<void>;
 }
@@ -37,7 +41,7 @@ export interface RunningDataPlaneApplication {
 
 export interface RunningControlPlaneApplication {
   controlAddress: ListenAddress;
-  routes: RouteService;
+  routes: RouteAdministrationService;
   stop(): Promise<void>;
 }
 
@@ -286,17 +290,22 @@ export async function startControlPlaneApplication(
 ): Promise<RunningControlPlaneApplication> {
   const telemetryScope = acquireTelemetry(config, dependencies.telemetry);
   const telemetry = telemetryScope.telemetry;
-  const runtime = await createRoutingRuntime(
-    config,
-    logger,
-    telemetry,
-    () => ({
+  const store = dependencies.storeFactory?.(config) ?? new DynamoRouteStore(config.routeTableName);
+  const providers = createProviderCatalog(config, dependencies);
+  const routes = new RouteAdministrationService({
+    store,
+    providers: [providers.brightData, providers.proxidize],
+    proxyAddresses: () => ({
       http: { host: config.advertisedProxyHost, port: config.forwardPort },
       socks5: { host: config.advertisedProxyHost, port: config.socks5Port },
     }),
-    dependencies,
-  );
-  const control = new ControlApiServer(runtime.routes, {
+    advertisedProxyHost: config.advertisedProxyHost,
+    advertisedHttpProxyProtocol: config.advertisedHttpProxyProtocol,
+    logger,
+    retryDefaults: config.retryDefaults,
+    ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+  });
+  const control = new ControlApiServer(routes, {
     host: config.controlHost,
     port: config.controlPort,
     adminToken: config.adminToken,
@@ -308,23 +317,22 @@ export async function startControlPlaneApplication(
   });
   try {
     const controlAddress = await control.start();
-    await runtime.routes.refreshHealth();
     logger.info("Proxy control plane started", { providerMode: config.providerMode, controlAddress });
     let stopped = false;
     return {
       controlAddress,
-      routes: runtime.routes,
+      routes,
       stop: async () => {
         if (stopped) return;
         stopped = true;
         await control.stop();
-        await runtime.stop();
+        await store.close();
         await telemetryScope.stop();
       },
     };
   } catch (error) {
     await control.stop();
-    await runtime.stop();
+    await store.close();
     await telemetryScope.stop();
     throw error;
   }

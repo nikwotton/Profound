@@ -15,7 +15,8 @@ import {
   expectRecord,
 } from "../decoding.js";
 import type { MobileProviderAdapter, ResolveOptions } from "./provider.js";
-import type { MobileEndpoint, ProviderHealth, StoredRoute, Targeting, UpstreamEndpoint } from "../types.js";
+import type { MobileEndpoint, StoredRoute, Targeting, UpstreamEndpoint } from "../domain/routing.js";
+import type { ProviderHealth } from "../domain/health.js";
 
 export interface ProxidizeConfig {
   apiBaseUrl: string;

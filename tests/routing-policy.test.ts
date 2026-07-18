@@ -7,7 +7,7 @@ import {
   selectTopBandCandidate,
   type ScoredRoutingCandidate,
 } from "../src/routing-policy.js";
-import type { UsageRecord } from "../src/types.js";
+import type { UsageRecord } from "../src/domain/usage.js";
 
 const now = Date.parse("2026-07-17T12:00:00.000Z");
 

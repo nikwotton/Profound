@@ -1,5 +1,7 @@
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS build
 
+ARG INCLUDE_DEV_TOOLS=false
+
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
@@ -8,12 +10,12 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm --filter . install --frozen-lockfile
 
-COPY tsconfig.json tsconfig.build.json ./
+COPY tsconfig.json tsconfig.build.json tsconfig.dev-build.json ./
 COPY infra ./infra
 COPY scripts ./scripts
 COPY src ./src
-COPY tests ./tests
-RUN pnpm build && pnpm prune --prod
+RUN if [ "$INCLUDE_DEV_TOOLS" = "true" ]; then pnpm build:dev; else pnpm build; fi \
+    && pnpm prune --prod
 
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
 

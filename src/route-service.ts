@@ -1,39 +1,35 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
-import { AccessGrantService, type IssuedAccessGrant } from "./access-grant-service.js";
 import { ActiveConnectionTracker } from "./active-connection-tracker.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import {
   AppError,
   AuthenticationError,
-  NotFoundError,
   ProviderOverrideUnsatisfiedError,
   ProviderUnavailableError,
-  type RouteServiceError,
   attributeAssignment,
   attributeProvider,
   isRetryableUpstreamFailure,
   safeErrorMessage,
-  toRouteServiceError,
+  type RouteServiceError,
 } from "./errors.js";
 import { abortReason } from "./establishment-budget.js";
 import type { Logger } from "./logger.js";
 import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
-import { preferredProviderClass, providerCompatible, selectCompatibleProvider } from "./provider-selection.js";
+import { preferredProviderClass, providerCompatible } from "./provider-selection.js";
+import { RouteAdministrationService, type IssuedAccessGrant, type RouteServiceEffects } from "./route-administration.js";
 import { MAX_PEERS_PER_PROVIDER, MAX_VERIFICATION_CANDIDATES_PER_PROVIDER, RoutingCandidateRanker } from "./routing-candidate-ranker.js";
+import { createResolutionState, type ResolutionState } from "./routing-resolution.js";
 import { ROUTING_POLICY, type RoutingScoreComponents, type ScoredRoutingCandidate } from "./routing-policy.js";
 import { V0_POLICY } from "./service-policies.js";
-import { toPublicRoute, type RoutingStore } from "./store.js";
+import type { RoutingStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import type {
   AuthenticatedRoute,
   CapacityCircuitReason,
   CapacityCircuitState,
   DataPlaneProtocol,
-  ListenAddress,
   ProviderDescriptor,
-  ProviderClass,
-  ProviderHealth,
   ProviderId,
   ProxyTarget,
   PublicAccessGrant,
@@ -45,62 +41,12 @@ import type {
   StoredLogicalSession,
   StoredRoute,
   UpstreamEndpoint,
-  UsageRecord,
-} from "./types.js";
-import { ACTIVE_CONNECTION_TTL_MS } from "./types.js";
-import { validateRouteProfile } from "./validation.js";
-
-export type { IssuedAccessGrant } from "./access-grant-service.js";
-
-export interface ResolutionState {
-  readonly attemptsByProvider: Map<ProviderId, number>;
-  readonly excludedEndpointIds: Set<string>;
-  previousCandidateId?: string;
-  previousProvider?: ProviderId;
-  primaryProvider?: ProviderId;
-  capacityDrivenFallback?: boolean;
-  capacityPressureProvider?: ProviderId;
-  capacityConstraint?: "slot_exhaustion" | "geography" | "carrier" | "hard_limit" | "capacity_circuit";
-  establishmentWaitMs: number;
-  capacityPolicyVersion?: string;
-  preferredEndpointId?: string;
-  preferredAffinityHandle?: string;
-  sessionAffinityHit?: boolean;
-  sessionRebindCause?: string;
-  desiredProviderClass?: ProviderClass;
-  currentProviderClass?: ProviderClass;
-  degradedFallback?: boolean;
-  failbackOutcome?: "not_attempted" | "success" | "failure";
-  failbackProbe?: boolean;
-  sessionRebindRetries: number;
-}
-
-export function sessionRoutingUsageContext(
-  state: ResolutionState,
-): Pick<
-  UsageRecord,
-  "sessionAffinityHit" | "sessionRebindCause" | "desiredProviderClass" | "currentProviderClass" | "degradedFallback" | "failbackOutcome"
-> {
-  return {
-    ...(state.sessionAffinityHit === undefined ? {} : { sessionAffinityHit: state.sessionAffinityHit }),
-    ...(state.sessionRebindCause === undefined ? {} : { sessionRebindCause: state.sessionRebindCause }),
-    ...(state.desiredProviderClass === undefined ? {} : { desiredProviderClass: state.desiredProviderClass }),
-    ...(state.currentProviderClass === undefined ? {} : { currentProviderClass: state.currentProviderClass }),
-    ...(state.degradedFallback === undefined ? {} : { degradedFallback: state.degradedFallback }),
-    ...(state.failbackOutcome === undefined ? {} : { failbackOutcome: state.failbackOutcome }),
-  };
-}
-
-export function sessionRoutingTelemetryAttributes(state: ResolutionState): Record<string, string | boolean> {
-  return {
-    ...(state.sessionAffinityHit === undefined ? {} : { "proxy.session.affinity_hit": state.sessionAffinityHit }),
-    ...(state.sessionRebindCause === undefined ? {} : { "proxy.session.rebind_cause": state.sessionRebindCause }),
-    ...(state.desiredProviderClass === undefined ? {} : { "proxy.session.desired_provider_class": state.desiredProviderClass }),
-    ...(state.currentProviderClass === undefined ? {} : { "proxy.session.current_provider_class": state.currentProviderClass }),
-    ...(state.degradedFallback === undefined ? {} : { "proxy.session.degraded_fallback": state.degradedFallback }),
-    ...(state.failbackOutcome === undefined ? {} : { "proxy.session.failback_outcome": state.failbackOutcome }),
-  };
-}
+} from "./domain/routing.js";
+import type { ListenAddress } from "./domain/network.js";
+import type { ProviderHealth } from "./domain/health.js";
+import type { UsageRecord } from "./domain/usage.js";
+import { ACTIVE_CONNECTION_TTL_MS } from "./domain/routing.js";
+export type { IssuedAccessGrant, RouteServiceEffects } from "./route-administration.js";
 
 export interface RouteServiceDependencies {
   store: RoutingStore;
@@ -114,36 +60,6 @@ export interface RouteServiceDependencies {
   retryDefaults: RetryPolicy;
   deploymentId: string;
   now?: () => number;
-}
-
-export interface RouteServiceEffects {
-  ready(): Effect.Effect<boolean, RouteServiceError>;
-  create(input: unknown, userId: string): Effect.Effect<PublicRoute, RouteServiceError>;
-  update(id: string, input: unknown, userId: string): Effect.Effect<PublicRoute, RouteServiceError>;
-  list(userId: string): Effect.Effect<PublicRoute[], RouteServiceError>;
-  get(id: string, userId: string): Effect.Effect<PublicRoute, RouteServiceError>;
-  delete(id: string, userId: string): Effect.Effect<void, RouteServiceError>;
-  createAccessGrant(routeId: string, principalId: string, input: unknown): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
-  listAccessGrants(routeId: string, principalId: string): Effect.Effect<PublicAccessGrant[], RouteServiceError>;
-  getAccessGrant(id: string, principalId: string): Effect.Effect<PublicAccessGrant, RouteServiceError>;
-  getAccessGrantCredential(
-    grantId: string,
-    credentialId: string,
-    principalId: string,
-  ): Effect.Effect<PublicAccessGrantCredential, RouteServiceError>;
-  rotateAccessGrantCredential(
-    id: string,
-    previousCredentialId: string,
-    principalId: string,
-    suspectedCompromise?: boolean,
-  ): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
-  revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Effect.Effect<void, RouteServiceError>;
-  revokeAccessGrant(id: string, principalId: string): Effect.Effect<void, RouteServiceError>;
-  createManagedSession(grantId: string, principalId: string): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
-  createStatelessCredential(grantId: string, principalId: string): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
-  listLogicalSessions(grantId: string, principalId: string): Effect.Effect<PublicLogicalSession[], RouteServiceError>;
-  getLogicalSession(grantId: string, sessionId: string, principalId: string): Effect.Effect<PublicLogicalSession, RouteServiceError>;
-  closeLogicalSession(grantId: string, sessionId: string, principalId: string, force?: boolean): Effect.Effect<void, RouteServiceError>;
 }
 
 const MAX_PROVIDERS_PER_OPERATION = V0_POLICY.establishmentBudget.providersPerOperation;
@@ -208,7 +124,7 @@ export class RouteService {
   private readonly retryDefaults: RetryPolicy;
   private readonly deploymentId: string;
   private readonly now: () => number;
-  private readonly accessGrants: AccessGrantService;
+  private readonly administration: RouteAdministrationService;
   private readonly connections: ActiveConnectionTracker;
   private readonly candidateRanker: RoutingCandidateRanker;
 
@@ -225,52 +141,32 @@ export class RouteService {
     ]);
     this.connections = new ActiveConnectionTracker(this.store, this.deploymentId, this.now);
     this.candidateRanker = new RoutingCandidateRanker(this.store, this.proxidize, this.logger, this.now);
-    this.accessGrants = new AccessGrantService(
-      this.store,
-      {
-        proxyAddresses: dependencies.proxyAddresses,
-        advertisedProxyHost: dependencies.advertisedProxyHost,
-        advertisedHttpProxyProtocol: dependencies.advertisedHttpProxyProtocol,
-        terminateActiveGrant: (grantId) => this.connections.terminateGrant(grantId),
-        terminateActiveSession: (sessionId) => this.connections.terminateSession(sessionId),
-        now: this.now,
-      },
-      this.logger,
-    );
-    const attempt = <A>(operation: () => Promise<A>): Effect.Effect<A, RouteServiceError> =>
-      Effect.tryPromise({
-        try: operation,
-        catch: (error) => {
-          const normalized = toRouteServiceError(error);
-          if (normalized.kind === "internal") {
-            this.logger.error("Route service operation failed unexpectedly", { error: normalized });
-          }
-          return normalized;
-        },
-      });
+    this.administration = new RouteAdministrationService({
+      store: this.store,
+      providers: this.#providers.values(),
+      proxyAddresses: dependencies.proxyAddresses,
+      advertisedProxyHost: dependencies.advertisedProxyHost,
+      advertisedHttpProxyProtocol: dependencies.advertisedHttpProxyProtocol,
+      logger: this.logger,
+      retryDefaults: this.retryDefaults,
+      now: this.now,
+      terminateActiveGrant: (grantId) => this.connections.terminateGrant(grantId),
+      terminateActiveSession: (sessionId) => this.connections.terminateSession(sessionId),
+    });
+    const effects = this.administration.effects;
+    const invalidateAfter = <A>(operation: Effect.Effect<A, RouteServiceError>): Effect.Effect<A, RouteServiceError> =>
+      Effect.tap(operation, () => Effect.sync(() => this.#invalidateAuthorizationCache()));
     this.effects = {
-      ready: () => attempt(() => this.ready()),
-      create: (input, userId) => attempt(() => this.create(input, userId)),
-      update: (id, input, userId) => attempt(() => this.update(id, input, userId)),
-      list: (userId) => attempt(() => this.list(userId)),
-      get: (id, userId) => attempt(() => this.get(id, userId)),
-      delete: (id, userId) => attempt(() => this.delete(id, userId)),
-      createAccessGrant: (routeId, principalId, input) => attempt(() => this.createAccessGrant(routeId, principalId, input)),
-      listAccessGrants: (routeId, principalId) => attempt(() => this.listAccessGrants(routeId, principalId)),
-      getAccessGrant: (id, principalId) => attempt(() => this.getAccessGrant(id, principalId)),
-      getAccessGrantCredential: (grantId, credentialId, principalId) =>
-        attempt(() => this.getAccessGrantCredential(grantId, credentialId, principalId)),
+      ...effects,
+      update: (id, input, userId) => invalidateAfter(effects.update(id, input, userId)),
       rotateAccessGrantCredential: (id, previousCredentialId, principalId, suspectedCompromise) =>
-        attempt(() => this.rotateAccessGrantCredential(id, previousCredentialId, principalId, suspectedCompromise)),
-      revokeAccessGrantCredential: (grantId, credentialId, principalId) =>
-        attempt(() => this.revokeAccessGrantCredential(grantId, credentialId, principalId)),
-      revokeAccessGrant: (id, principalId) => attempt(() => this.revokeAccessGrant(id, principalId)),
-      createManagedSession: (grantId, principalId) => attempt(() => this.createManagedSession(grantId, principalId)),
-      createStatelessCredential: (grantId, principalId) => attempt(() => this.createStatelessCredential(grantId, principalId)),
-      listLogicalSessions: (grantId, principalId) => attempt(() => this.listLogicalSessions(grantId, principalId)),
-      getLogicalSession: (grantId, sessionId, principalId) => attempt(() => this.getLogicalSession(grantId, sessionId, principalId)),
+        invalidateAfter(effects.rotateAccessGrantCredential(id, previousCredentialId, principalId, suspectedCompromise)),
       closeLogicalSession: (grantId, sessionId, principalId, force) =>
-        attempt(() => this.closeLogicalSession(grantId, sessionId, principalId, force)),
+        invalidateAfter(effects.closeLogicalSession(grantId, sessionId, principalId, force)),
+      revokeAccessGrantCredential: (grantId, credentialId, principalId) =>
+        invalidateAfter(effects.revokeAccessGrantCredential(grantId, credentialId, principalId)),
+      revokeAccessGrant: (id, principalId) => invalidateAfter(effects.revokeAccessGrant(id, principalId)),
+      delete: (id, userId) => invalidateAfter(effects.delete(id, userId)),
     };
   }
 
@@ -488,59 +384,29 @@ export class RouteService {
   }
 
   async create(input: unknown, userId: string): Promise<PublicRoute> {
-    const profile = validateRouteProfile(input, userId, this.retryDefaults);
-    const id = randomUUID();
-    const providerAdapter = selectCompatibleProvider(this.#providers.values(), profile);
-    if (providerAdapter === undefined) {
-      if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
-      throw new ProviderUnavailableError("No configured provider is compatible with the proxy policy");
-    }
-    const stored = await this.store.create(id, profile);
-    this.logger.info("Route created", {
-      routeId: id,
-      userId,
-      customerId: profile.customerId,
-      eligibleProvider: providerAdapter.descriptor.id,
-      ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
-    });
-    return toPublicRoute(stored);
+    return this.administration.create(input, userId);
   }
 
   async update(id: string, input: unknown, userId: string): Promise<PublicRoute> {
-    const existing = await this.#ownedRoute(id, userId);
-    const profile = validateRouteProfile(input, existing.userId, this.retryDefaults);
-    const provider = selectCompatibleProvider(this.#providers.values(), profile)?.descriptor.id;
-    if (provider === undefined) {
-      if (profile.providerOverride !== undefined) throw new ProviderOverrideUnsatisfiedError();
-      throw new ProviderUnavailableError("No configured provider is compatible with the profile policy");
-    }
-
-    const updated = await this.store.update(id, profile);
+    const updated = await this.administration.update(id, input, userId);
     this.#invalidateAuthorizationCache();
-    this.logger.info("Route profile updated", {
-      routeId: id,
-      customerId: profile.customerId,
-      userId: existing.userId,
-      eligibleProvider: provider,
-      ...(profile.providerOverride === undefined ? {} : { providerOverride: profile.providerOverride }),
-    });
-    return toPublicRoute(updated);
+    return updated;
   }
 
   async createAccessGrant(routeId: string, principalId: string, input: unknown): Promise<IssuedAccessGrant> {
-    return this.accessGrants.create(routeId, principalId, input);
+    return this.administration.createAccessGrant(routeId, principalId, input);
   }
 
   async listAccessGrants(routeId: string, principalId: string): Promise<PublicAccessGrant[]> {
-    return this.accessGrants.list(routeId, principalId);
+    return this.administration.listAccessGrants(routeId, principalId);
   }
 
   async getAccessGrant(id: string, principalId: string): Promise<PublicAccessGrant> {
-    return this.accessGrants.get(id, principalId);
+    return this.administration.getAccessGrant(id, principalId);
   }
 
   async getAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Promise<PublicAccessGrantCredential> {
-    return this.accessGrants.getCredential(grantId, credentialId, principalId);
+    return this.administration.getAccessGrantCredential(grantId, credentialId, principalId);
   }
 
   async rotateAccessGrantCredential(
@@ -549,72 +415,59 @@ export class RouteService {
     principalId: string,
     suspectedCompromise = false,
   ): Promise<IssuedAccessGrant> {
-    const issued = await this.accessGrants.rotateCredential(id, previousCredentialId, principalId, suspectedCompromise);
+    const issued = await this.administration.rotateAccessGrantCredential(id, previousCredentialId, principalId, suspectedCompromise);
     this.#invalidateAuthorizationCache();
     return issued;
   }
 
   async createManagedSession(grantId: string, principalId: string): Promise<IssuedAccessGrant> {
-    return this.accessGrants.createManagedSession(grantId, principalId);
+    return this.administration.createManagedSession(grantId, principalId);
   }
 
   async createStatelessCredential(grantId: string, principalId: string): Promise<IssuedAccessGrant> {
-    return this.accessGrants.createStatelessCredential(grantId, principalId);
+    return this.administration.createStatelessCredential(grantId, principalId);
   }
 
   async listLogicalSessions(grantId: string, principalId: string): Promise<PublicLogicalSession[]> {
-    return this.accessGrants.listLogicalSessions(grantId, principalId);
+    return this.administration.listLogicalSessions(grantId, principalId);
   }
 
   async getLogicalSession(grantId: string, sessionId: string, principalId: string): Promise<PublicLogicalSession> {
-    return this.accessGrants.getLogicalSession(grantId, sessionId, principalId);
+    return this.administration.getLogicalSession(grantId, sessionId, principalId);
   }
 
   async closeLogicalSession(grantId: string, sessionId: string, principalId: string, force = false): Promise<void> {
-    await this.accessGrants.closeLogicalSession(grantId, sessionId, principalId, force);
+    await this.administration.closeLogicalSession(grantId, sessionId, principalId, force);
     this.#invalidateAuthorizationCache();
   }
 
   async revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Promise<void> {
-    await this.accessGrants.revokeCredential(grantId, credentialId, principalId);
+    await this.administration.revokeAccessGrantCredential(grantId, credentialId, principalId);
     this.#invalidateAuthorizationCache();
   }
 
   async revokeAccessGrant(id: string, principalId: string, terminateActive = false): Promise<void> {
-    await this.accessGrants.revoke(id, principalId, terminateActive);
+    await this.administration.revokeAccessGrant(id, principalId, terminateActive);
     this.#invalidateAuthorizationCache();
-  }
-
-  async #ownedRoute(id: string, userId: string, includeRevoked = false): Promise<StoredRoute> {
-    const route = await this.store.get(id, includeRevoked);
-    if (route.userId !== userId) throw new NotFoundError();
-    return route;
   }
 
   async list(userId: string): Promise<PublicRoute[]> {
-    return (await this.store.list(userId)).map(toPublicRoute);
+    return this.administration.list(userId);
   }
 
   async get(id: string, userId: string): Promise<PublicRoute> {
-    return toPublicRoute(await this.#ownedRoute(id, userId));
+    return this.administration.get(id, userId);
   }
 
   async delete(id: string, userId: string): Promise<void> {
-    await this.#ownedRoute(id, userId);
-    for (const grant of await this.store.listAccessGrants(id)) {
-      await this.store.revokeAccessGrant(grant.id, false);
-    }
-    await this.store.revoke(id, false);
+    await this.administration.delete(id, userId);
     this.#invalidateAuthorizationCache();
-    this.logger.info("Route revoked", { routeId: id });
   }
 
   async emergencyRevoke(id: string): Promise<void> {
-    for (const grant of await this.store.listAccessGrants(id)) await this.store.revokeAccessGrant(grant.id, true);
-    await this.store.revoke(id, true);
+    await this.administration.emergencyRevoke(id);
     this.#invalidateAuthorizationCache();
     this.connections.terminateRoute(id);
-    this.logger.warn("Route emergency-revoked; active connections terminated", { routeId: id });
   }
 
   async trackActiveConnection(
@@ -681,7 +534,7 @@ export class RouteService {
   }
 
   createResolutionState(): ResolutionState {
-    return { attemptsByProvider: new Map(), excludedEndpointIds: new Set(), establishmentWaitMs: 0, sessionRebindRetries: 0 };
+    return createResolutionState();
   }
 
   assertProtocolAllowed(route: StoredRoute, protocol: DataPlaneProtocol): void {

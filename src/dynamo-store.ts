@@ -2,7 +2,6 @@ import { timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
-  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -10,52 +9,28 @@ import {
   UpdateCommand,
   type QueryCommandInput,
 } from "@aws-sdk/lib-dynamodb";
-import { claimCapacityCircuitProbe, recordCapacityCircuitFailure } from "./capacity-circuit.js";
+import { DynamoHealthRepository } from "./dynamo-health-repository.js";
+import { DynamoRuntimeStateRepository } from "./dynamo-runtime-state-repository.js";
 import { DynamoUsageRepository } from "./dynamo-usage-repository.js";
 import {
   ACCESS_GRANT_LAST_USED_WRITE_INTERVAL_MS,
   ASSIGNMENT_INDEX,
   ENTITY_INDEX,
   accessGrantKey,
-  capacityCircuitKey,
   conditionalNotFound,
   credentialLookupItem,
   credentialLookupKey,
   credentialUsable,
   decodeCredentialLookup,
-  entityShards,
   grantItem,
   itemField,
   logicalSessionItem,
   logicalSessionKey,
   routeKey,
-  shardedEntity,
-  type ActiveTunnelItem,
-  type CapabilityHealthItem,
-  type CapacityCircuitItem,
-  type DeploymentDrainItem,
-  type HealthAlertDeliveryItem,
-  type HealthAlertEventItem,
-  type HealthAlertStateItem,
-  type HealthItem,
-  type ProviderInventoryItem,
   type RouteItem,
 } from "./dynamo-records.js";
 import { NotFoundError } from "./errors.js";
-import {
-  decodeActiveTunnel,
-  decodeCapacityCircuitState,
-  decodeCapabilityHealthSnapshot,
-  decodeDeploymentDrainState,
-  decodeHealthAlertDelivery,
-  decodeHealthAlertEvent,
-  decodeHealthAlertState,
-  decodeProviderHealth,
-  decodeProviderInventorySnapshot,
-  decodeStoredAccessGrant,
-  decodeStoredLogicalSession,
-  decodeStoredRoute,
-} from "./storage-decoding.js";
+import { decodeStoredAccessGrant, decodeStoredLogicalSession, decodeStoredRoute } from "./storage-decoding.js";
 import {
   ACCESS_GRANT_CREDENTIAL_OVERLAP_MS,
   createStoredCredential,
@@ -66,16 +41,18 @@ import {
 import type {
   CapabilityHealthSnapshot,
   CapabilityName,
-  CapacityPressureEvidence,
+  HealthAlertDelivery,
+  HealthAlertEvent,
+  HealthAlertState,
+  ProviderHealth,
+} from "./domain/health.js";
+import type { CapacityPressureEvidence, UsageRecord, UsageAlertEvent, UsageReconciliation, UsageRollup } from "./domain/usage.js";
+import type {
   CapacityCircuitReason,
   CapacityCircuitState,
   ActiveTunnel,
   AuthenticatedAccessGrant,
   DeploymentDrainState,
-  HealthAlertDelivery,
-  HealthAlertEvent,
-  HealthAlertState,
-  ProviderHealth,
   ProviderId,
   ProviderInventorySnapshot,
   RouteProfile,
@@ -83,14 +60,12 @@ import type {
   StoredAccessGrantCredential,
   StoredLogicalSession,
   StoredRoute,
-  UsageRecord,
-  UsageAlertEvent,
-  UsageReconciliation,
-  UsageRollup,
-} from "./types.js";
+} from "./domain/routing.js";
 
 export class DynamoRouteStore implements RouteStore {
   readonly #client: DynamoDBDocumentClient;
+  readonly #health: DynamoHealthRepository;
+  readonly #runtimeState: DynamoRuntimeStateRepository;
   readonly #usage: DynamoUsageRepository;
 
   constructor(
@@ -102,6 +77,8 @@ export class DynamoRouteStore implements RouteStore {
       DynamoDBDocumentClient.from(new DynamoDBClient({}), {
         marshallOptions: { removeUndefinedValues: true },
       });
+    this.#health = new DynamoHealthRepository(this.tableName, this.#client);
+    this.#runtimeState = new DynamoRuntimeStateRepository(this.tableName, this.#client);
     this.#usage = new DynamoUsageRepository(this.tableName, this.#client);
   }
 
@@ -123,45 +100,6 @@ export class DynamoRouteStore implements RouteStore {
         ExpressionAttributeValues: { ":one": 1 },
       }),
     );
-  }
-
-  async #withCapacityCircuitLock<T>(provider: ProviderId, candidateKey: string, action: () => Promise<T>): Promise<T> {
-    const key = capacityCircuitKey(provider, candidateKey);
-    const lockKey = { pk: key.pk, sk: "LOCK" };
-    const owner = `${Date.now()}-${Math.random()}`;
-    const deadline = Date.now() + 5_000;
-    for (;;) {
-      const nowSeconds = Math.floor(Date.now() / 1_000);
-      try {
-        await this.#client.send(
-          new PutCommand({
-            TableName: this.tableName,
-            Item: { ...lockKey, owner, expiresAtSeconds: nowSeconds + 10 },
-            ConditionExpression: "attribute_not_exists(pk) OR expiresAtSeconds < :now",
-            ExpressionAttributeValues: { ":now": nowSeconds },
-          }),
-        );
-        break;
-      } catch (error) {
-        if (!(error instanceof Error && error.name === "ConditionalCheckFailedException") || Date.now() >= deadline) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    }
-    try {
-      return await action();
-    } finally {
-      await this.#client
-        .send(
-          new DeleteCommand({
-            TableName: this.tableName,
-            Key: lockKey,
-            ConditionExpression: "#owner = :owner",
-            ExpressionAttributeNames: { "#owner": "owner" },
-            ExpressionAttributeValues: { ":owner": owner },
-          }),
-        )
-        .catch(() => undefined);
-    }
   }
 
   async create(id: string, profile: RouteProfile): Promise<StoredRoute> {
@@ -650,508 +588,126 @@ export class DynamoRouteStore implements RouteStore {
     }
   }
 
-  async registerActiveTunnel(tunnel: ActiveTunnel): Promise<void> {
-    const item: ActiveTunnelItem = {
-      pk: `ACTIVE_TUNNEL#${tunnel.id}`,
-      sk: "STATE",
-      entity: shardedEntity("active_tunnel", tunnel.id),
-      createdAt: tunnel.startedAt,
-      gsi1pk: `DEPLOYMENT#${tunnel.deploymentId}`,
-      gsi1sk: `${tunnel.startedAt}#${tunnel.id}`,
-      expiresAtSeconds: Math.ceil(Date.parse(tunnel.expiresAt) / 1_000),
-      tunnel,
-    };
-    const leases = this.#activeLoadLeaseKeys(tunnel).map((key) => ({
-      ...key,
-      entity: "active_load_lease",
-      createdAt: tunnel.startedAt,
-      expiresAtSeconds: item.expiresAtSeconds,
-    }));
-    await this.#client.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          { Put: { TableName: this.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } },
-          ...leases.map((lease) => ({
-            Put: { TableName: this.tableName, Item: lease, ConditionExpression: "attribute_not_exists(pk)" },
-          })),
-        ],
-      }),
-    );
+  registerActiveTunnel(tunnel: ActiveTunnel): Promise<void> {
+    return this.#runtimeState.registerActiveTunnel(tunnel);
   }
 
-  async claimActiveTunnelSlot(
+  claimActiveTunnelSlot(
     candidateEndpointIds: readonly string[],
     selectEndpoint: (loads: ReadonlyMap<string, number>) => string,
     createTunnel: (endpointId: string) => ActiveTunnel,
   ): Promise<{ tunnel: ActiveTunnel; activeConnections: number }> {
-    if (candidateEndpointIds.length === 0) throw new Error("no_slot_candidates");
-    const candidates = new Set(candidateEndpointIds);
-    const loads = (await this.getActiveConnectionCounts([], candidateEndpointIds, [])).endpoints;
-    const endpointId = selectEndpoint(loads);
-    if (!candidates.has(endpointId)) throw new Error("invalid_slot_selection");
-    const tunnel = createTunnel(endpointId);
-    await this.registerActiveTunnel(tunnel);
-    return { tunnel, activeConnections: (loads.get(endpointId) ?? 0) + 1 };
+    return this.#runtimeState.claimActiveTunnelSlot(candidateEndpointIds, selectEndpoint, createTunnel);
   }
 
-  async heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
-    const existing = await this.#client.send(
-      new GetCommand({ TableName: this.tableName, Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" }, ConsistentRead: true }),
-    );
-    if (existing.Item === undefined) return;
-    const tunnel = decodeActiveTunnel(itemField(existing.Item, "tunnel", "DynamoDB active-tunnel item"));
-    const ttl = Math.ceil(Date.parse(expiresAt) / 1_000);
-    try {
-      await this.#client.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
-                UpdateExpression: "SET #tunnel.lastHeartbeatAt = :heartbeat, #tunnel.expiresAt = :expiresAt, expiresAtSeconds = :ttl",
-                ConditionExpression: "attribute_exists(pk)",
-                ExpressionAttributeNames: { "#tunnel": "tunnel" },
-                ExpressionAttributeValues: { ":heartbeat": lastHeartbeatAt, ":expiresAt": expiresAt, ":ttl": ttl },
-              },
-            },
-            ...this.#activeLoadLeaseKeys(tunnel).map((key) => ({
-              Update: {
-                TableName: this.tableName,
-                Key: key,
-                UpdateExpression: "SET expiresAtSeconds = :ttl",
-                ConditionExpression: "attribute_exists(pk)",
-                ExpressionAttributeValues: { ":ttl": ttl },
-              },
-            })),
-          ],
-        }),
-      );
-    } catch (error) {
-      if (!(error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")))
-        throw error;
-    }
+  heartbeatActiveTunnel(id: string, lastHeartbeatAt: string, expiresAt: string): Promise<void> {
+    return this.#runtimeState.heartbeatActiveTunnel(id, lastHeartbeatAt, expiresAt);
   }
 
-  async removeActiveTunnel(id: string): Promise<void> {
-    const existing = await this.#client.send(
-      new GetCommand({ TableName: this.tableName, Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" }, ConsistentRead: true }),
-    );
-    if (existing.Item === undefined) return;
-    const tunnel = decodeActiveTunnel(itemField(existing.Item, "tunnel", "DynamoDB active-tunnel item"));
-    await this.#client.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Update: {
-              TableName: this.tableName,
-              Key: { pk: `ACTIVE_TUNNEL#${id}`, sk: "STATE" },
-              UpdateExpression: "REMOVE gsi1pk, gsi1sk SET expiresAtSeconds = :expired",
-              ExpressionAttributeValues: { ":expired": Math.floor(Date.now() / 1_000) - 1 },
-            },
-          },
-          ...this.#activeLoadLeaseKeys(tunnel).map((key) => ({ Delete: { TableName: this.tableName, Key: key } })),
-        ],
-      }),
-    );
+  removeActiveTunnel(id: string): Promise<void> {
+    return this.#runtimeState.removeActiveTunnel(id);
   }
 
-  #activeLoadLeaseKeys(tunnel: ActiveTunnel): Array<{ pk: string; sk: string }> {
-    return [
-      { pk: `ACTIVE_LOAD#PROVIDER#${tunnel.provider}`, sk: tunnel.id },
-      ...(tunnel.endpointId === undefined ? [] : [{ pk: `ACTIVE_LOAD#ENDPOINT#${tunnel.endpointId}`, sk: tunnel.id }]),
-      ...(tunnel.sessionId === undefined ? [] : [{ pk: `ACTIVE_LOAD#SESSION#${tunnel.sessionId}`, sk: tunnel.id }]),
-    ];
-  }
-
-  async #countActiveLoad(pk: string, now: string): Promise<number> {
-    let count = 0;
-    let exclusiveStartKey: Record<string, unknown> | undefined;
-    do {
-      const result = await this.#client.send(
-        new QueryCommand({
-          TableName: this.tableName,
-          KeyConditionExpression: "pk = :pk",
-          FilterExpression: "expiresAtSeconds > :now",
-          ExpressionAttributeValues: { ":pk": pk, ":now": Math.floor(Date.parse(now) / 1_000) },
-          Select: "COUNT",
-          ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
-        }),
-      );
-      count += result.Count ?? 0;
-      exclusiveStartKey = result.LastEvaluatedKey;
-    } while (exclusiveStartKey !== undefined);
-    return count;
-  }
-
-  async getActiveConnectionCounts(
+  getActiveConnectionCounts(
     providers: readonly ProviderId[],
     endpointIds: readonly string[],
     sessionIds: readonly string[],
-    now = new Date().toISOString(),
+    now?: string,
   ): Promise<{
     providers: ReadonlyMap<ProviderId, number>;
     endpoints: ReadonlyMap<string, number>;
     sessions: ReadonlyMap<string, number>;
   }> {
-    const providerCounts = await Promise.all(
-      providers.map(async (provider) => [provider, await this.#countActiveLoad(`ACTIVE_LOAD#PROVIDER#${provider}`, now)] as const),
-    );
-    const endpointCounts = await Promise.all(
-      endpointIds.map(async (endpointId) => [endpointId, await this.#countActiveLoad(`ACTIVE_LOAD#ENDPOINT#${endpointId}`, now)] as const),
-    );
-    const sessionCounts = await Promise.all(
-      sessionIds.map(async (sessionId) => [sessionId, await this.#countActiveLoad(`ACTIVE_LOAD#SESSION#${sessionId}`, now)] as const),
-    );
-    return { providers: new Map(providerCounts), endpoints: new Map(endpointCounts), sessions: new Map(sessionCounts) };
+    return this.#runtimeState.getActiveConnectionCounts(providers, endpointIds, sessionIds, now);
   }
 
-  async getCapacityCircuit(
-    provider: ProviderId,
-    candidateKey: string,
-    now = new Date().toISOString(),
-  ): Promise<CapacityCircuitState | undefined> {
-    const key = capacityCircuitKey(provider, candidateKey);
-    const result = await this.#client.send(new GetCommand({ TableName: this.tableName, Key: key, ConsistentRead: true }));
-    if (result.Item === undefined) return undefined;
-    const state = decodeCapacityCircuitState(itemField(result.Item, "state", "DynamoDB capacity-circuit item"));
-    if (state.expiresAt > now) return state;
-    await this.#client.send(new DeleteCommand({ TableName: this.tableName, Key: key })).catch(() => undefined);
-    return undefined;
+  getCapacityCircuit(provider: ProviderId, candidateKey: string, now?: string): Promise<CapacityCircuitState | undefined> {
+    return this.#runtimeState.getCapacityCircuit(provider, candidateKey, now);
   }
 
-  async claimCapacityCircuit(
+  claimCapacityCircuit(
     provider: ProviderId,
     candidateKey: string,
     now: string,
   ): Promise<{ allowed: boolean; state?: CapacityCircuitState }> {
-    return this.#withCapacityCircuitLock(provider, candidateKey, async () => {
-      const previous = await this.getCapacityCircuit(provider, candidateKey, now);
-      const claim = claimCapacityCircuitProbe(previous, Date.parse(now));
-      if (claim.allowed && claim.state !== undefined && claim.state !== previous) {
-        await this.#saveCapacityCircuit(claim.state);
-      }
-      return claim;
-    });
+    return this.#runtimeState.claimCapacityCircuit(provider, candidateKey, now);
   }
 
-  async recordCapacityCircuitFailure(
+  recordCapacityCircuitFailure(
     provider: ProviderId,
     candidateKey: string,
     reason: CapacityCircuitReason,
     now: string,
   ): Promise<CapacityCircuitState> {
-    return this.#withCapacityCircuitLock(provider, candidateKey, async () => {
-      const previous = await this.getCapacityCircuit(provider, candidateKey, now);
-      const state = recordCapacityCircuitFailure(previous, provider, candidateKey, reason, Date.parse(now));
-      await this.#saveCapacityCircuit(state);
-      return state;
-    });
+    return this.#runtimeState.recordCapacityCircuitFailure(provider, candidateKey, reason, now);
   }
 
-  async #saveCapacityCircuit(state: CapacityCircuitState): Promise<void> {
-    const item: CapacityCircuitItem = {
-      ...capacityCircuitKey(state.provider, state.candidateKey),
-      entity: "capacity_circuit",
-      createdAt: state.updatedAt,
-      expiresAtSeconds: Math.ceil(Date.parse(state.expiresAt) / 1_000),
-      state,
-    };
-    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  resetCapacityCircuit(provider: ProviderId, candidateKey: string): Promise<void> {
+    return this.#runtimeState.resetCapacityCircuit(provider, candidateKey);
   }
 
-  async resetCapacityCircuit(provider: ProviderId, candidateKey: string): Promise<void> {
-    await this.#client.send(new DeleteCommand({ TableName: this.tableName, Key: capacityCircuitKey(provider, candidateKey) }));
+  listCapacityCircuits(now?: string): Promise<CapacityCircuitState[]> {
+    return this.#runtimeState.listCapacityCircuits(now);
   }
 
-  async listCapacityCircuits(now = new Date().toISOString()): Promise<CapacityCircuitState[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
-      ExpressionAttributeNames: { "#entity": "entity" },
-      ExpressionAttributeValues: { ":entity": "capacity_circuit" },
-    });
-    return items
-      .map((item) => decodeCapacityCircuitState(itemField(item, "state", "DynamoDB capacity-circuit item")))
-      .filter((state) => state.expiresAt > now);
+  listActiveTunnels(deploymentId: string, now?: string): Promise<ActiveTunnel[]> {
+    return this.#runtimeState.listActiveTunnels(deploymentId, now);
   }
 
-  async listActiveTunnels(deploymentId: string, now = new Date().toISOString()): Promise<ActiveTunnel[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ASSIGNMENT_INDEX,
-      KeyConditionExpression: "gsi1pk = :deployment",
-      ExpressionAttributeValues: { ":deployment": `DEPLOYMENT#${deploymentId}` },
-    });
-    return items
-      .map((item) => decodeActiveTunnel(itemField(item, "tunnel", "DynamoDB active-tunnel item")))
-      .filter((tunnel) => tunnel.expiresAt > now);
+  listAllActiveTunnels(now?: string): Promise<ActiveTunnel[]> {
+    return this.#runtimeState.listAllActiveTunnels(now);
   }
 
-  async listAllActiveTunnels(now = new Date().toISOString()): Promise<ActiveTunnel[]> {
-    const items = (
-      await Promise.all(
-        entityShards("active_tunnel").map((entity) =>
-          this.#queryAll({
-            TableName: this.tableName,
-            IndexName: ENTITY_INDEX,
-            KeyConditionExpression: "#entity = :entity",
-            ExpressionAttributeNames: { "#entity": "entity" },
-            ExpressionAttributeValues: { ":entity": entity },
-          }),
-        ),
-      )
-    ).flat();
-    return items
-      .map((item) => decodeActiveTunnel(itemField(item, "tunnel", "DynamoDB active-tunnel item")))
-      .filter((tunnel) => tunnel.expiresAt > now);
+  getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined> {
+    return this.#runtimeState.getDeploymentDrain(deploymentId);
   }
 
-  async getDeploymentDrain(deploymentId: string): Promise<DeploymentDrainState | undefined> {
-    const result = await this.#client.send(
-      new GetCommand({
-        TableName: this.tableName,
-        Key: { pk: `DEPLOYMENT#${deploymentId}`, sk: "DRAIN" },
-        ConsistentRead: true,
-      }),
-    );
-    return result.Item === undefined
-      ? undefined
-      : decodeDeploymentDrainState(itemField(result.Item, "state", "DynamoDB deployment-drain item"));
+  saveDeploymentDrain(state: DeploymentDrainState): Promise<void> {
+    return this.#runtimeState.saveDeploymentDrain(state);
   }
 
-  async saveDeploymentDrain(state: DeploymentDrainState): Promise<void> {
-    const item: DeploymentDrainItem = {
-      pk: `DEPLOYMENT#${state.deploymentId}`,
-      sk: "DRAIN",
-      entity: "deployment_drain",
-      createdAt: state.startedAt,
-      state,
-    };
-    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  shouldTerminateDeployment(deploymentId: string): Promise<boolean> {
+    return this.#runtimeState.shouldTerminateDeployment(deploymentId);
   }
 
-  async shouldTerminateDeployment(deploymentId: string): Promise<boolean> {
-    return (await this.getDeploymentDrain(deploymentId))?.terminateRemaining === true;
+  saveHealth(health: ProviderHealth): Promise<void> {
+    return this.#health.saveHealth(health);
   }
-
-  async saveHealth(health: ProviderHealth): Promise<void> {
-    const item: HealthItem = {
-      pk: `HEALTH#${health.provider}`,
-      sk: "STATE",
-      entity: "health",
-      createdAt: health.provider,
-      health,
-    };
-    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  listHealth(): Promise<ProviderHealth[]> {
+    return this.#health.listHealth();
   }
-
-  async listHealth(): Promise<ProviderHealth[]> {
-    const items = await this.#queryAll({
-      TableName: this.tableName,
-      IndexName: ENTITY_INDEX,
-      KeyConditionExpression: "#entity = :entity",
-      ExpressionAttributeNames: { "#entity": "entity" },
-      ExpressionAttributeValues: { ":entity": "health" },
-    });
-    return items.map((item) => decodeProviderHealth(itemField(item, "health", "DynamoDB provider-health item")));
+  saveProviderInventory(snapshot: ProviderInventorySnapshot): Promise<void> {
+    return this.#health.saveProviderInventory(snapshot);
   }
-
-  async saveProviderInventory(snapshot: ProviderInventorySnapshot): Promise<void> {
-    const item: ProviderInventoryItem = {
-      pk: `PROVIDER_INVENTORY#${snapshot.provider}`,
-      sk: "LATEST",
-      entity: "provider_inventory",
-      createdAt: snapshot.capturedAt,
-      snapshot,
-    };
-    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined> {
+    return this.#health.latestProviderInventory(provider);
   }
-
-  async latestProviderInventory(provider: ProviderInventorySnapshot["provider"]): Promise<ProviderInventorySnapshot | undefined> {
-    const result = await this.#client.send(
-      new GetCommand({
-        TableName: this.tableName,
-        Key: { pk: `PROVIDER_INVENTORY#${provider}`, sk: "LATEST" },
-        ConsistentRead: true,
-      }),
-    );
-    return result.Item === undefined
-      ? undefined
-      : decodeProviderInventorySnapshot(itemField(result.Item, "snapshot", "DynamoDB provider-inventory item"));
+  saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
+    return this.#health.saveCapabilityHealth(snapshot);
   }
-
-  async saveCapabilityHealth(snapshot: CapabilityHealthSnapshot): Promise<void> {
-    const item: CapabilityHealthItem = {
-      pk: "CAPABILITY_HEALTH#GLOBAL",
-      sk: snapshot.generatedAt,
-      entity: "capability_health",
-      createdAt: snapshot.generatedAt,
-      snapshot,
-    };
-    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined> {
+    return this.#health.latestCapabilityHealth();
   }
-
-  async latestCapabilityHealth(): Promise<CapabilityHealthSnapshot | undefined> {
-    const result = await this.#client.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        KeyConditionExpression: "pk = :pk",
-        ExpressionAttributeValues: { ":pk": "CAPABILITY_HEALTH#GLOBAL" },
-        ScanIndexForward: false,
-        Limit: 1,
-      }),
-    );
-    const item = result.Items?.[0];
-    return item === undefined ? undefined : decodeCapabilityHealthSnapshot(itemField(item, "snapshot", "DynamoDB capability-health item"));
+  capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]> {
+    return this.#health.capabilityHealthHistory(limit);
   }
-
-  async capabilityHealthHistory(limit: number): Promise<CapabilityHealthSnapshot[]> {
-    const result = await this.#client.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        KeyConditionExpression: "pk = :pk",
-        ExpressionAttributeValues: { ":pk": "CAPABILITY_HEALTH#GLOBAL" },
-        ScanIndexForward: false,
-        Limit: limit,
-      }),
-    );
-    return (result.Items ?? []).map((item) =>
-      decodeCapabilityHealthSnapshot(itemField(item, "snapshot", "DynamoDB capability-health item")),
-    );
+  getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined> {
+    return this.#health.getHealthAlertState(capability);
   }
-
-  async getHealthAlertState(capability: CapabilityName): Promise<HealthAlertState | undefined> {
-    const result = await this.#client.send(
-      new GetCommand({
-        TableName: this.tableName,
-        Key: { pk: "HEALTH_ALERT_STATE#GLOBAL", sk: capability },
-        ConsistentRead: true,
-      }),
-    );
-    return result.Item === undefined
-      ? undefined
-      : decodeHealthAlertState(itemField(result.Item, "state", "DynamoDB health-alert state item"));
+  saveHealthAlertState(state: HealthAlertState): Promise<void> {
+    return this.#health.saveHealthAlertState(state);
   }
-
-  async saveHealthAlertState(state: HealthAlertState): Promise<void> {
-    const item: HealthAlertStateItem = {
-      pk: "HEALTH_ALERT_STATE#GLOBAL",
-      sk: state.capability,
-      entity: "health_alert_state",
-      createdAt: state.updatedAt,
-      state,
-    };
-    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
+  createHealthAlertEvent(event: HealthAlertEvent, destinationIds: readonly string[]): Promise<boolean> {
+    return this.#health.createHealthAlertEvent(event, destinationIds);
   }
-
-  async createHealthAlertEvent(event: HealthAlertEvent, destinationIds: readonly string[]): Promise<boolean> {
-    const item: HealthAlertEventItem = {
-      pk: `HEALTH_ALERT_EVENT#${event.dedupeKey}`,
-      sk: "EVENT",
-      entity: "health_alert_event",
-      createdAt: event.createdAt,
-      event,
-    };
-    let created = true;
-    let persistedEvent = event;
-    try {
-      await this.#client.send(
-        new PutCommand({
-          TableName: this.tableName,
-          Item: item,
-          ConditionExpression: "attribute_not_exists(pk)",
-        }),
-      );
-    } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") {
-        created = false;
-        const existing = await this.#client.send(
-          new GetCommand({
-            TableName: this.tableName,
-            Key: { pk: item.pk, sk: item.sk },
-            ConsistentRead: true,
-          }),
-        );
-        if (existing.Item === undefined) throw new Error("Health alert deduplication state is missing");
-        persistedEvent = decodeHealthAlertEvent(itemField(existing.Item, "event", "DynamoDB health-alert event item"));
-      } else throw error;
-    }
-    for (const destinationId of destinationIds) {
-      const delivery: HealthAlertDelivery = {
-        alertId: persistedEvent.id,
-        destinationId,
-        status: "pending",
-        attemptCount: 0,
-        nextAttemptAt: persistedEvent.createdAt,
-        event: persistedEvent,
-      };
-      try {
-        await this.#client.send(
-          new PutCommand({
-            TableName: this.tableName,
-            Item: {
-              pk: `HEALTH_ALERT_DELIVERY#${delivery.alertId}`,
-              sk: delivery.destinationId,
-              entity: "health_alert_delivery_pending",
-              createdAt: delivery.nextAttemptAt,
-              delivery,
-            } satisfies HealthAlertDeliveryItem,
-            ConditionExpression: "attribute_not_exists(pk)",
-          }),
-        );
-      } catch (error) {
-        if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
-      }
-    }
-    return created;
+  pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]> {
+    return this.#health.pendingHealthAlertDeliveries(dueBefore, limit);
   }
-
-  async pendingHealthAlertDeliveries(dueBefore: string, limit: number): Promise<HealthAlertDelivery[]> {
-    const result = await this.#client.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        IndexName: ENTITY_INDEX,
-        KeyConditionExpression: "#entity = :entity AND #createdAt <= :dueBefore",
-        ExpressionAttributeNames: { "#entity": "entity", "#createdAt": "createdAt" },
-        ExpressionAttributeValues: {
-          ":entity": "health_alert_delivery_pending",
-          ":dueBefore": dueBefore,
-        },
-        ScanIndexForward: true,
-        Limit: limit,
-      }),
-    );
-    return (result.Items ?? []).map((entry) =>
-      decodeHealthAlertDelivery(itemField(entry, "delivery", "DynamoDB health-alert delivery item")),
-    );
+  saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void> {
+    return this.#health.saveHealthAlertDelivery(delivery);
   }
-
-  async saveHealthAlertDelivery(delivery: HealthAlertDelivery): Promise<void> {
-    const item: HealthAlertDeliveryItem = {
-      pk: `HEALTH_ALERT_DELIVERY#${delivery.alertId}`,
-      sk: delivery.destinationId,
-      entity: `health_alert_delivery_${delivery.status}`,
-      createdAt: delivery.nextAttemptAt,
-      delivery,
-    };
-    await this.#client.send(new PutCommand({ TableName: this.tableName, Item: item }));
-  }
-
-  async healthAlertHistory(limit: number): Promise<HealthAlertEvent[]> {
-    const result = await this.#client.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        IndexName: ENTITY_INDEX,
-        KeyConditionExpression: "#entity = :entity",
-        ExpressionAttributeNames: { "#entity": "entity" },
-        ExpressionAttributeValues: { ":entity": "health_alert_event" },
-        ScanIndexForward: false,
-        Limit: limit,
-      }),
-    );
-    return (result.Items ?? []).map((entry) => decodeHealthAlertEvent(itemField(entry, "event", "DynamoDB health-alert event item")));
+  healthAlertHistory(limit: number): Promise<HealthAlertEvent[]> {
+    return this.#health.healthAlertHistory(limit);
   }
 
   recordUsage(record: UsageRecord): Promise<boolean> {

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { expectBufferChunk } from "./decoding.js";
 import { destinationResponsePlan, waitForDestinationDelay } from "./destination-simulator.js";
 import type { Logger } from "./logger.js";
-import type { ListenAddress } from "./types.js";
+import type { ListenAddress } from "./domain/network.js";
 
 export interface IntegrationTargetOptions {
   host: string;

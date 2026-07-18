@@ -1,4 +1,4 @@
-import type { CapacityCircuitReason, CapacityCircuitState, ProviderId } from "./types.js";
+import type { CapacityCircuitReason, CapacityCircuitState, ProviderId } from "./domain/routing.js";
 import { ROUTING_POLICY, type RoutingPolicy } from "./routing-policy.js";
 
 const CIRCUIT_RETENTION_MS = 24 * 60 * 60_000;

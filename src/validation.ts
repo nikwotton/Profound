@@ -3,7 +3,7 @@ import { isUnknownRecord } from "./decoding.js";
 import { ValidationError } from "./errors.js";
 import { RouteProfilePayload } from "./route-profile-schema.js";
 import type { DecodedRouteProfilePayload } from "./route-profile-schema.js";
-import type { RetryPolicy, RouteProfile, RouteProfileInput, SessionMode, Targeting } from "./types.js";
+import type { RetryPolicy, RouteProfile, RouteProfileInput, SessionMode, Targeting } from "./domain/routing.js";
 
 const COUNTRY_CODE = /^[A-Za-z]{2}$/;
 

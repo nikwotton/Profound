@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { DEPLOYMENT_POLL_INTERVAL_MS } from "./release-policy.js";
 import { TRANSPORT_POLICY } from "./service-policies.js";
 import type { RoutingStore } from "./store.js";
-import { ACTIVE_CONNECTION_TTL_MS } from "./types.js";
-import type { ActiveTunnel, DataPlaneProtocol, UpstreamEndpoint } from "./types.js";
+import { ACTIVE_CONNECTION_TTL_MS } from "./domain/routing.js";
+import type { ActiveTunnel, DataPlaneProtocol, UpstreamEndpoint } from "./domain/routing.js";
 
 interface TrackedConnection {
   routeId: string;

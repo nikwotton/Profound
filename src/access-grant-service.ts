@@ -8,15 +8,15 @@ import {
   type LogicalSessionRepository,
   type RouteRepository,
 } from "./store.js";
+import type { ListenAddress } from "./domain/network.js";
 import type {
-  ListenAddress,
   PublicAccessGrant,
   PublicAccessGrantCredential,
   PublicLogicalSession,
   SessionMode,
   StoredAccessGrant,
   StoredLogicalSession,
-} from "./types.js";
+} from "./domain/routing.js";
 import { validateGrantIssuance } from "./validation.js";
 
 export interface IssuedAccessGrant {

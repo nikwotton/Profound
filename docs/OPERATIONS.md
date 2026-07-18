@@ -20,6 +20,8 @@ AWS is the only deployment provider implemented in v0. The SST module deploys in
 
 `SERVICE_MODE` is internal SST/container wiring. `integration-target` is a controlled recipient used by tests and is not a production component.
 
+The production image contains only deployable application services. Local provider simulators, demo entry points, and controlled integration targets are development/test assets and are excluded from production container builds.
+
 The product VPC holds provider credentials, route state, and customer attribution. The public canary has no provider credentials, customer data, company-private routes, or path into the product VPC. Target traffic always travels through a selected provider and never falls back to a direct connection.
 
 ## Foundational unknowns and v0 defaults
