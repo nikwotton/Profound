@@ -198,7 +198,7 @@ test("idle proxy-slot capacity is attributed to the synthetic Unallocated custom
   assert.equal(rollup?.healthyIdleSlotMs, 60 * 60_000);
 });
 
-test("capacity recommendations use the versioned roadmap policy and suppress location-limited changes", () => {
+test("capacity recommendations use the versioned v0 policy and suppress location-limited changes", () => {
   const recommendation = recommendCapacity(
     {
       provisionedSlots: 2,

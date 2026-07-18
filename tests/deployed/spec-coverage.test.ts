@@ -17,7 +17,7 @@ function testSource(directory: string): string {
 test("the current design-document revision has an explicit test disposition for every decision group", () => {
   assert.equal(DESIGN_DOCUMENT_ID, "1Ud9m_c7YEYxjXS2QOiuCAKYMT5WVGzuN5oshEbm5zfU");
   assert.ok(DESIGN_DOCUMENT_REVISION.length > 40);
-  assert.deepEqual(new Set(SPEC_COVERAGE.map(({ section }) => section)), new Set([1, 2, 3, 4, 5]));
+  assert.deepEqual(new Set(SPEC_COVERAGE.map(({ section }) => section)), new Set([1, 2, 3, 4, 5, 6]));
   assert.equal(new Set(SPEC_COVERAGE.map(({ id }) => id)).size, SPEC_COVERAGE.length);
   const source = testSource("tests");
   for (const coverage of SPEC_COVERAGE) {
