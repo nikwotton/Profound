@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { expectBufferChunk, expectRecord, parseJson } from "../decoding.js";
 import type { Logger } from "../logger.js";
 import { closeServer, listen } from "../net-utils.js";
 import type { ListenAddress } from "../types.js";
@@ -6,6 +7,7 @@ import { MockForwardProxy, type MockIdentity, type SimulatorFailure } from "./mo
 
 export interface SimulatedMobileDevice {
   id: string;
+  deviceId?: string;
   username: string;
   password: string;
   country: string;
@@ -74,15 +76,13 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   const chunks: Buffer[] = [];
   let length = 0;
   for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const buffer = expectBufferChunk(chunk, "Proxidize simulator request chunk");
     length += buffer.length;
     if (length > 64 * 1024) throw new Error("Request body too large");
     chunks.push(buffer);
   }
   if (chunks.length === 0) return {};
-  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Object required");
-  return parsed as Record<string, unknown>;
+  return expectRecord(parseJson(Buffer.concat(chunks).toString("utf8"), "Proxidize simulator request"), "Proxidize simulator request");
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -198,6 +198,7 @@ export class ProxidizeSimulator {
       json(response, 200, {
         data: this.#devices.map((device) => ({
           id: device.id,
+          device_id: device.deviceId ?? `device-${device.id}`,
           session_id: device.id,
           username: device.username,
           password: device.password,
@@ -234,7 +235,8 @@ export class ProxidizeSimulator {
     }
     const rotation = url.pathname.match(/^\/api\/v1\/perproxy\/rotate-url\/([^/]+)\/?$/);
     if (request.method === "GET" && rotation?.[1] !== undefined) {
-      const device = this.#devices.find((candidate) => candidate.publicKey === decodeURIComponent(rotation[1] as string));
+      const publicKey = rotation[1];
+      const device = this.#devices.find((candidate) => candidate.publicKey === decodeURIComponent(publicKey));
       if (device === undefined || !device.healthy) {
         json(response, 404, { error: "proxy_not_found" });
         return;

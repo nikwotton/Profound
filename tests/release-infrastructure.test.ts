@@ -41,7 +41,7 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
   assert.ok((release.match(/RELEASE_IMAGE_URI: \$\{\{ steps\.image\.outputs\.uri \}\}/g) ?? []).length >= 2);
   assert.match(release, /assert-current-main/);
   assert.match(release, /record-release/);
-  assert.match(file("scripts/record-release.mjs"), /GITHUB_STEP_SUMMARY/);
+  assert.match(file("scripts/record-release.ts"), /GITHUB_STEP_SUMMARY/);
   assert.match(ephemeral, /merge_group:/);
   assert.match(ephemeral, /cancel-in-progress: false/);
   assert.match(ephemeral, /Deploy current main as the upgrade baseline/);
@@ -84,7 +84,7 @@ test("provider contracts are pinned and checked for freshness", () => {
     sources.providers.map((provider) => provider.id),
     ["bright_data", "proxidize"],
   );
-  assert.match(file("scripts/provider-freshness.mjs"), /last-modified/);
+  assert.match(file("scripts/provider-freshness.ts"), /last-modified/);
   assert.match(file(".github/workflows/provider-freshness.yml"), /issues: write/);
   assert.match(file("tests/provider-contract.test.ts"), /assertNormalizedContract/);
 });

@@ -5,6 +5,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { extract } from "tar";
+import { expectOptionalString, expectRecord, parseJson } from "../src/decoding.js";
 
 const accountId = process.env.MAXMIND_ACCOUNT_ID?.trim();
 const licenseKey = process.env.MAXMIND_LICENSE_KEY?.trim();
@@ -18,16 +19,19 @@ const metadataPath = `${databasePath}.metadata.json`;
 const downloadUrl = "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz";
 const authorization = `Basic ${Buffer.from(`${accountId}:${licenseKey}`).toString("base64")}`;
 
-async function existingBuildTimestamp() {
+async function existingBuildTimestamp(): Promise<string | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(metadataPath, "utf8"));
-    return typeof parsed.buildTimestamp === "string" ? parsed.buildTimestamp : undefined;
+    const parsed = expectRecord(
+      parseJson(await readFile(metadataPath, "utf8"), `GeoIP metadata ${metadataPath}`),
+      `GeoIP metadata ${metadataPath}`,
+    );
+    return expectOptionalString(parsed.buildTimestamp, "GeoIP metadata buildTimestamp");
   } catch {
     return undefined;
   }
 }
 
-async function findDatabase(directory) {
+async function findDatabase(directory: string): Promise<string | undefined> {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isFile() && entry.name === "GeoLite2-City.mmdb") return path;
@@ -73,7 +77,10 @@ try {
     strict: true,
     preservePaths: false,
     filter: (path, entry) =>
-      !path.startsWith("/") && !path.split("/").includes("..") && basename(path) === "GeoLite2-City.mmdb" && entry.isFile(),
+      !path.startsWith("/") &&
+      !path.split("/").includes("..") &&
+      basename(path) === "GeoLite2-City.mmdb" &&
+      ("type" in entry ? entry.type === "File" : entry.isFile()),
   });
   const source = await findDatabase(temporaryDirectory);
   if (!source) throw new Error("MaxMind archive did not contain GeoLite2-City.mmdb");

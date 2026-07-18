@@ -39,7 +39,8 @@ export function verifyCanaryChallenge(
 export function isCanaryChallenge(value: unknown): value is CanaryChallenge {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
-  return ["testId", "nonce", "expiresAt", "signature"].every(
-    (key) => typeof candidate[key] === "string" && (candidate[key] as string).length > 0,
-  );
+  return ["testId", "nonce", "expiresAt", "signature"].every((key) => {
+    const field = candidate[key];
+    return typeof field === "string" && field.length > 0;
+  });
 }

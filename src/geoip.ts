@@ -98,8 +98,10 @@ export class LocalGeoIpResolver implements GeoIpResolver {
     if (this.#reader === undefined || isIP(ip) === 0) return { geo: { status: "unavailable" } };
     try {
       const record = this.#reader.city(ip);
-      const countryCode = record.country?.isoCode?.toUpperCase();
-      const subdivisionCode = record.subdivisions?.at(-1)?.isoCode?.toUpperCase();
+      const rawCountryCode: unknown = record.country?.isoCode;
+      const rawSubdivisionCode: unknown = record.subdivisions?.at(-1)?.isoCode;
+      const countryCode = typeof rawCountryCode === "string" ? rawCountryCode.toUpperCase() : undefined;
+      const subdivisionCode = typeof rawSubdivisionCode === "string" ? rawSubdivisionCode.toUpperCase() : undefined;
       const city = record.city?.names.en;
       const geonameId = record.city?.geonameId;
       const accuracyRadiusKm = record.location?.accuracyRadius;
@@ -245,7 +247,7 @@ export class MaxMindGeoLiteUpdater {
   start(): void {
     if (this.#timer !== undefined) return;
     this.#timer = setInterval(() => {
-      void this.refresh().catch((error) => {
+      void this.refresh().catch((error: unknown) => {
         this.logger.warn("GeoIP dataset refresh failed", {
           "event.name": "profound.geoip.refresh_failure",
           error: error instanceof Error ? error.message : "unknown",

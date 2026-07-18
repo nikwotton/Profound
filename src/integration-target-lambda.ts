@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { expectNumber, expectRecord } from "./decoding.js";
 import { destinationResponsePlan, waitForDestinationDelay } from "./destination-simulator.js";
 
 const maximumBodyBytes = 1024 * 1024;
@@ -138,9 +139,8 @@ class DynamoRequestCounter implements IntegrationTargetRequestCounter {
         ReturnValues: "UPDATED_NEW",
       }),
     );
-    const count = result.Attributes?.requestCount;
-    if (typeof count !== "number") throw new Error("Integration target replay counter returned no count");
-    return count;
+    const attributes = expectRecord(result.Attributes, "integration target replay counter attributes");
+    return expectNumber(attributes.requestCount, "integration target replay counter requestCount");
   }
 }
 

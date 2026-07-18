@@ -35,7 +35,9 @@ export async function coordinateDeploymentDrain(
   }
   for (const [deploymentId, tunnels] of byDeployment) {
     const existing = await store.getDeploymentDrain(deploymentId);
-    const startedAt = existing?.startedAt ?? tunnels.map((tunnel) => tunnel.startedAt).sort()[0]!;
+    const earliestTunnel = tunnels.map((tunnel) => tunnel.startedAt).sort()[0];
+    if (earliestTunnel === undefined) throw new Error(`Deployment ${deploymentId} has no active tunnels`);
+    const startedAt = existing?.startedAt ?? earliestTunnel;
     const evaluation = evaluateDeploymentDrain({
       startedAt,
       now,

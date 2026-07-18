@@ -5,6 +5,11 @@
     "moduleResolution": "Bundler",
     "noEmit": true,
     "strict": true,
+    "noUncheckedSideEffectImports": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "forceConsistentCasingInFileNames": true,
+    "noEmitOnError": true,
     "skipLibCheck": true,
     "isolatedModules": true
   },

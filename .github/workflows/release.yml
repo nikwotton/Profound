@@ -23,24 +23,24 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10.12.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.13.0
           cache: pnpm
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - run: pnpm install --frozen-lockfile
       - name: Ignore superseded main candidates
         id: candidate
-        run: node scripts/assert-current-main.mjs
+        run: pnpm exec tsx scripts/assert-current-main.ts
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CANDIDATE_SHA: ${{ github.sha }}
@@ -83,7 +83,7 @@ jobs:
       - name: Reconcile to latest eligible main candidate
         id: reconciled
         if: steps.candidate.outputs.current == 'true'
-        run: node scripts/assert-current-main.mjs
+        run: pnpm exec tsx scripts/assert-current-main.ts
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CANDIDATE_SHA: ${{ github.sha }}
@@ -102,7 +102,7 @@ jobs:
           CONTROL_PLANE_ALLOWED_CIDRS: ${{ vars.CONTROL_PLANE_ALLOWED_CIDRS }}
       - name: Record deployed manifest and cumulative release notes
         if: steps.reconciled.outputs.current == 'true'
-        run: node scripts/record-release.mjs
+        run: pnpm exec tsx scripts/record-release.ts
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DEPLOYED_SHA: ${{ github.sha }}

@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { BlockList, isIP } from "node:net";
+import { expectBufferChunk } from "./decoding.js";
 import { isCanaryChallenge, verifyCanaryChallenge } from "./canary-challenge.js";
 import type { GeoIpResolver } from "./geoip.js";
 import type { Logger } from "./logger.js";
@@ -45,7 +46,8 @@ function trustedProxies(cidrs: readonly string[]): BlockList {
     if (extra.length > 0 || familyNumber === 0 || !Number.isInteger(prefix) || prefix < 0 || prefix > maximum) {
       throw new Error(`Invalid trusted proxy CIDR: ${cidr}`);
     }
-    result.addSubnet(address!, prefix, familyNumber === 4 ? "ipv4" : "ipv6");
+    if (address === undefined) throw new Error(`Invalid trusted proxy CIDR: ${cidr}`);
+    result.addSubnet(address, prefix, familyNumber === 4 ? "ipv4" : "ipv6");
   }
   return result;
 }
@@ -70,7 +72,7 @@ async function readBody(request: IncomingMessage, maximumBodyBytes: number): Pro
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const buffer = expectBufferChunk(chunk, "public-canary request chunk");
     size += buffer.length;
     if (size > maximumBodyBytes) throw new Error("request_too_large");
     chunks.push(buffer);
@@ -237,7 +239,7 @@ export class PublicCanaryServer {
     let body: Buffer;
     try {
       body = await readBody(request, this.options.maximumBodyBytes ?? 4_096);
-    } catch (error) {
+    } catch {
       body = Buffer.alloc((this.options.maximumBodyBytes ?? 4_096) + 1);
     }
     const userAgent = Array.isArray(request.headers["user-agent"])

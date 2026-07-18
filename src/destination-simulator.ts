@@ -22,7 +22,7 @@ const FORBIDDEN_RESPONSE_HEADERS = new Set([
 
 export function destinationResponsePlan(url: URL): DestinationResponsePlan {
   const statusText = url.searchParams.get("responseStatus") ?? url.pathname.match(/^\/status\/(\d{3})$/)?.[1];
-  const status = statusText === null || statusText === undefined ? 200 : Number(statusText);
+  const status = statusText === undefined ? 200 : Number(statusText);
   if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error("invalid_response_status");
   const delayMs = Number(url.searchParams.get("delayMs") ?? "0");
   if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 5_000) throw new Error("invalid_delay");

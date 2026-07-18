@@ -23,17 +23,17 @@ jobs:
       STAGE: ci-pr-${{ github.event.pull_request.number || github.run_id }}
       AWS_REGION: ${{ vars.AWS_REGION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10.12.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.13.0
           cache: pnpm
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
@@ -75,7 +75,7 @@ jobs:
           exit 1
       - name: Seed baseline exclusively through public APIs
         if: github.event_name == 'pull_request'
-        run: node scripts/seed-deployed-stage.mjs
+        run: pnpm exec tsx scripts/seed-deployed-stage.ts
         env:
           SST_STAGE: ${{ env.STAGE }}
           CONTROL_API_TOKEN: ${{ secrets.CONTROL_API_TOKEN }}
@@ -87,8 +87,8 @@ jobs:
         run: |
           metadata="$(aws ssm get-parameter --name "/sst/profound-proxy-router/$STAGE/deployed-integration" --query 'Parameter.Value' --output text)"
           ROUTE_TABLE_NAME="$(jq -r '.routeTable' <<< "$metadata")" pnpm migrate
-      - name: Seed through public APIs and exercise old/new compatibility
-        run: pnpm test:deployed
+      - name: Run AWS deployment acceptance suite
+        run: pnpm test:aws
         env:
           SST_STAGE: ${{ env.STAGE }}
           CONTROL_API_TOKEN: ${{ secrets.CONTROL_API_TOKEN }}

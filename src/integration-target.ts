@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { expectBufferChunk } from "./decoding.js";
 import { destinationResponsePlan, waitForDestinationDelay } from "./destination-simulator.js";
 import type { Logger } from "./logger.js";
 import type { ListenAddress } from "./types.js";
@@ -35,7 +36,7 @@ async function readBody(request: IncomingMessage, maximumBodyBytes: number): Pro
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const buffer = expectBufferChunk(chunk, "integration-target request chunk");
     size += buffer.length;
     if (size > maximumBodyBytes) throw new Error("request_too_large");
     chunks.push(buffer);

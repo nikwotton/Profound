@@ -4,6 +4,7 @@ import { request as httpsRequest } from "node:https";
 import type { Duplex } from "node:stream";
 import { connect as tlsConnect } from "node:tls";
 import { signCanaryChallenge } from "./canary-challenge.js";
+import { expectBufferChunk, expectEnum, expectNumber, expectOptionalString, expectRecord, expectString, parseJson } from "./decoding.js";
 import type { SyntheticValidationScope } from "./health-aggregator.js";
 import type { GeoIpDatasetMetadata, GeoIpEvidence, GeographyVerification, SyntheticValidationResult } from "./types.js";
 
@@ -32,26 +33,55 @@ function authorization(options: SignedCanaryProbeOptions): string | undefined {
 
 async function responseBody(response: NodeJS.ReadableStream, statusCode: number | undefined): Promise<CanaryResponse> {
   const chunks: Buffer[] = [];
-  for await (const chunk of response) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  for await (const chunk of response) chunks.push(expectBufferChunk(chunk, "canary response chunk"));
   if (statusCode !== 200) throw new Error(`Canary returned HTTP ${statusCode ?? 0}`);
-  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Partial<CanaryResponse>;
-  if (typeof parsed.observedIp !== "string" || typeof parsed.timestamp !== "string" || typeof parsed.correlationId !== "string") {
-    throw new Error("Canary response was malformed");
-  }
-  if (parsed.geo === undefined || !["available", "unverifiable", "unavailable"].includes(parsed.geo.status)) {
-    throw new Error("Canary GeoIP evidence was malformed");
-  }
+  const parsed = expectRecord(parseJson(Buffer.concat(chunks).toString("utf8"), "canary response"), "canary response");
+  const rawGeo = expectRecord(parsed.geo, "canary response.geo");
+  const status = expectEnum(rawGeo.status, ["available", "unverifiable", "unavailable"] as const, "canary response.geo.status");
+  const geo: GeoIpEvidence = {
+    status,
+    ...(expectOptionalString(rawGeo.countryCode, "canary response.geo.countryCode") === undefined
+      ? {}
+      : { countryCode: expectString(rawGeo.countryCode, "canary response.geo.countryCode") }),
+    ...(expectOptionalString(rawGeo.subdivisionCode, "canary response.geo.subdivisionCode") === undefined
+      ? {}
+      : { subdivisionCode: expectString(rawGeo.subdivisionCode, "canary response.geo.subdivisionCode") }),
+    ...(expectOptionalString(rawGeo.city, "canary response.geo.city") === undefined
+      ? {}
+      : { city: expectString(rawGeo.city, "canary response.geo.city") }),
+    ...(rawGeo.geonameId === undefined ? {} : { geonameId: expectNumber(rawGeo.geonameId, "canary response.geo.geonameId") }),
+    ...(rawGeo.accuracyRadiusKm === undefined
+      ? {}
+      : { accuracyRadiusKm: expectNumber(rawGeo.accuracyRadiusKm, "canary response.geo.accuracyRadiusKm") }),
+  };
+  const rawGeoDataset = parsed.geoDataset;
+  const geoDataset: GeoIpDatasetMetadata | undefined =
+    rawGeoDataset === undefined
+      ? undefined
+      : (() => {
+          const dataset = expectRecord(rawGeoDataset, "canary response.geoDataset");
+          return {
+            vendor: expectString(dataset.vendor, "canary response.geoDataset.vendor"),
+            edition: expectString(dataset.edition, "canary response.geoDataset.edition"),
+            buildTimestamp: expectString(dataset.buildTimestamp, "canary response.geoDataset.buildTimestamp"),
+          };
+        })();
   if (
-    parsed.geo.status === "available" &&
-    (typeof parsed.geoDataset?.vendor !== "string" ||
-      parsed.geoDataset.vendor.length === 0 ||
-      typeof parsed.geoDataset.edition !== "string" ||
-      parsed.geoDataset.edition.length === 0 ||
-      !Number.isFinite(Date.parse(parsed.geoDataset.buildTimestamp)))
+    geo.status === "available" &&
+    (geoDataset === undefined ||
+      geoDataset.vendor.length === 0 ||
+      geoDataset.edition.length === 0 ||
+      !Number.isFinite(Date.parse(geoDataset.buildTimestamp)))
   ) {
     throw new Error("Canary GeoIP dataset metadata was malformed");
   }
-  return parsed as CanaryResponse;
+  return {
+    observedIp: expectString(parsed.observedIp, "canary response.observedIp"),
+    geo,
+    ...(geoDataset === undefined ? {} : { geoDataset }),
+    timestamp: expectString(parsed.timestamp, "canary response.timestamp"),
+    correlationId: expectString(parsed.correlationId, "canary response.correlationId"),
+  };
 }
 
 function normalized(value: string | undefined): string | undefined {

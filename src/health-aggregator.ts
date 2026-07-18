@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { expectBufferChunk } from "./decoding.js";
 import type { HealthAlertEvaluator } from "./alerting.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAdapter } from "./providers/provider.js";
@@ -371,7 +372,7 @@ async function readJson(request: IncomingMessage, maximumBytes: number): Promise
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const buffer = expectBufferChunk(chunk, "health-aggregator request chunk");
     size += buffer.length;
     if (size > maximumBytes) throw new Error("request_too_large");
     chunks.push(buffer);

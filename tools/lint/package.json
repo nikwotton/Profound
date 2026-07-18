@@ -3,11 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "eslint --config eslint.config.mjs ../../src ../../tests ../../infra ../../sst.config.ts"
+    "lint": "eslint --config eslint.config.ts ../../src ../../tests ../../scripts ../../infra ../../sst.config.ts ../../vitest.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "jiti": "^2.6.1",
     "typescript": "^6.0.0",
     "typescript-eslint": "^8.0.0"
   }

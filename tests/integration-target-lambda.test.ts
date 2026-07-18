@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { expectRecord, parseJson } from "../src/decoding.js";
 import { handleIntegrationTargetRequest, type IntegrationTargetRequestCounter } from "../src/integration-target-lambda.js";
 
 class MemoryCounter implements IntegrationTargetRequestCounter {
@@ -38,7 +39,11 @@ test("the serverless integration target preserves request observations and durab
     testHeader: "kept",
     requestCount: 1,
   });
-  assert.equal(JSON.parse((await handleIntegrationTargetRequest(event, counter)).body).requestCount, 2);
+  const repeatedBody = expectRecord(
+    parseJson((await handleIntegrationTargetRequest(event, counter)).body, "integration target response"),
+    "integration target response",
+  );
+  assert.equal(repeatedBody.requestCount, 2);
 });
 
 test("the serverless integration target supports health, status, redirects, cookies, and body limits", async () => {
@@ -62,7 +67,8 @@ test("the serverless integration target supports health, status, redirects, cook
     counter,
   );
   assert.equal(unavailable.statusCode, 503);
-  assert.equal(JSON.parse(unavailable.body).cookie, "first=one; second=two");
+  const unavailableBody = expectRecord(parseJson(unavailable.body, "integration target response"), "integration target response");
+  assert.equal(unavailableBody.cookie, "first=one; second=two");
 
   const redirect = await handleIntegrationTargetRequest(
     {

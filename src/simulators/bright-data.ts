@@ -72,6 +72,8 @@ export class BrightDataSimulator {
     const region = values.get("state");
     const city = values.get("city");
     const carrier = values.get("carrier");
+    const postalCode = values.get("zip");
+    const asn = values.get("asn");
     const identity: MockIdentity = {
       id: "bright-data-superproxy",
       exitIp,
@@ -80,8 +82,8 @@ export class BrightDataSimulator {
       ...(city === undefined ? {} : { city }),
       ...(carrier === undefined ? {} : { carrier }),
       extraHeaders: {
-        ...(values.get("zip") === undefined ? {} : { "x-mock-postal-code": values.get("zip") as string }),
-        ...(values.get("asn") === undefined ? {} : { "x-mock-asn": values.get("asn") as string }),
+        ...(postalCode === undefined ? {} : { "x-mock-postal-code": postalCode }),
+        ...(asn === undefined ? {} : { "x-mock-asn": asn }),
         "x-mock-session": session ?? "per-request",
       },
     };
