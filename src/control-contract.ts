@@ -16,11 +16,42 @@ export const ApiError = Schema.Struct({
 
 export type ApiError = typeof ApiError.Type;
 
-const Unauthorized = ApiError.annotations(HttpApiSchema.annotations({ status: 401 }));
-const BadRequest = ApiError.annotations(HttpApiSchema.annotations({ status: 400 }));
-const RouteNotFound = ApiError.annotations(HttpApiSchema.annotations({ status: 404 }));
-const ServiceUnavailable = ApiError.annotations(HttpApiSchema.annotations({ status: 503 }));
-const InternalError = ApiError.annotations(HttpApiSchema.annotations({ status: 500 }));
+const API_ERROR_FIELDS = {
+  code: Schema.String,
+  message: Schema.String,
+  retryable: Schema.Boolean,
+  requestId: Schema.String,
+};
+
+export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
+  "Unauthorized",
+  API_ERROR_FIELDS,
+  HttpApiSchema.annotations({ status: 401 }),
+) {}
+
+export class BadRequest extends Schema.TaggedError<BadRequest>()(
+  "BadRequest",
+  API_ERROR_FIELDS,
+  HttpApiSchema.annotations({ status: 400 }),
+) {}
+
+export class RouteNotFound extends Schema.TaggedError<RouteNotFound>()(
+  "RouteNotFound",
+  API_ERROR_FIELDS,
+  HttpApiSchema.annotations({ status: 404 }),
+) {}
+
+export class ServiceUnavailable extends Schema.TaggedError<ServiceUnavailable>()(
+  "ServiceUnavailable",
+  API_ERROR_FIELDS,
+  HttpApiSchema.annotations({ status: 503 }),
+) {}
+
+export class InternalError extends Schema.TaggedError<InternalError>()(
+  "InternalError",
+  API_ERROR_FIELDS,
+  HttpApiSchema.annotations({ status: 500 }),
+) {}
 
 const API_ERROR_OPENAPI_SCHEMA = {
   type: "object",
@@ -33,6 +64,15 @@ const API_ERROR_OPENAPI_SCHEMA = {
   },
   additionalProperties: false,
 } as const;
+
+const INTERNAL_API_ERROR_SCHEMAS = new Set([
+  "HttpApiDecodeError",
+  "Unauthorized",
+  "BadRequest",
+  "RouteNotFound",
+  "ServiceUnavailable",
+  "InternalError",
+]);
 
 export class AuthenticatedUser extends Context.Tag("Profound/AuthenticatedUser")<AuthenticatedUser, { readonly userId: string }>() {}
 
@@ -272,7 +312,12 @@ function normalizeOpenApiNode(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeOpenApiNode);
   if (!isUnknownRecord(value)) return value;
   const normalized = Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, normalizeOpenApiNode(entry)]));
-  if (normalized["$ref"] === "#/components/schemas/HttpApiDecodeError") {
+  const reference = normalized["$ref"];
+  if (
+    typeof reference === "string" &&
+    reference.startsWith("#/components/schemas/") &&
+    INTERNAL_API_ERROR_SCHEMAS.has(reference.slice("#/components/schemas/".length))
+  ) {
     return { ...normalized, $ref: "#/components/schemas/ApiError" };
   }
   if (isApiErrorOpenApiSchema(normalized)) return { $ref: "#/components/schemas/ApiError" };
@@ -290,10 +335,12 @@ function isApiErrorOpenApiSchema(value: Record<string, unknown>): boolean {
   const required = value["required"];
   const properties = value["properties"];
   if (!isStringArray(required) || !isUnknownRecord(properties)) return false;
-  const expected = ["code", "message", "requestId", "retryable"];
-  if (required.toSorted().join(",") !== expected.join(",")) return false;
-  if (Object.keys(properties).sort().join(",") !== expected.join(",")) return false;
-  return expected.every((name) => {
+  const publicFields = ["code", "message", "requestId", "retryable"];
+  const actualFields = Object.keys(properties).sort();
+  const taggedFields = [...publicFields, "_tag"].sort();
+  if (actualFields.join(",") !== publicFields.join(",") && actualFields.join(",") !== taggedFields.join(",")) return false;
+  if (required.toSorted().join(",") !== actualFields.join(",")) return false;
+  return publicFields.every((name) => {
     const property = properties[name];
     return isUnknownRecord(property) && property["type"] === (name === "retryable" ? "boolean" : "string");
   });

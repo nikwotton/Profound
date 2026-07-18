@@ -2,8 +2,17 @@ import { HttpApiBuilder, HttpApiSwagger, HttpServer } from "@effect/platform";
 import { Redacted, Effect, Layer } from "effect";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { expectBufferChunk, expectOptionalString, expectRecord, parseJson } from "./decoding.js";
-import { AdminAuthorization, type ApiError, AuthenticatedUser, ControlApi } from "./control-contract.js";
+import { expectBoolean, expectBufferChunk, expectOptionalString, expectRecord, expectString, parseJson } from "./decoding.js";
+import {
+  AdminAuthorization,
+  AuthenticatedUser,
+  BadRequest,
+  ControlApi,
+  InternalError,
+  RouteNotFound,
+  ServiceUnavailable,
+  Unauthorized,
+} from "./control-contract.js";
 import { AppError, type RouteServiceError, safeErrorMessage } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { closeServer, listen } from "./net-utils.js";
@@ -22,10 +31,10 @@ export interface ControlApiOptions {
   telemetry: Telemetry;
 }
 
-type RouteReadError = ApiError;
-type RouteCreateError = ApiError;
-type RouteUpdateError = ApiError;
-type AccessGrantCreateError = ApiError;
+type RouteReadError = RouteNotFound | InternalError;
+type RouteCreateError = BadRequest | ServiceUnavailable | InternalError;
+type RouteUpdateError = RouteCreateError | RouteNotFound;
+type AccessGrantCreateError = RouteReadError | BadRequest | ServiceUnavailable;
 
 function unreachableRouteServiceError(error: never): never {
   void error;
@@ -48,7 +57,7 @@ function authenticatedUser(token: string, identities: ReadonlyMap<string, string
 function createError(error: RouteServiceError): RouteCreateError {
   switch (error.kind) {
     case "validation":
-      return { code: error.code, message: error.message, retryable: false, requestId: randomUUID() };
+      return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
     case "provider_unavailable":
     case "provider_authentication":
     case "provider_rate_limit":
@@ -56,7 +65,7 @@ function createError(error: RouteServiceError): RouteCreateError {
     case "provider_capacity_limit":
     case "provider_override_unsatisfied":
     case "upstream":
-      return { code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() };
+      return new ServiceUnavailable({ code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() });
     case "authentication":
     case "not_found":
     case "internal":
@@ -69,7 +78,7 @@ function createError(error: RouteServiceError): RouteCreateError {
 function readError(error: RouteServiceError): RouteReadError {
   switch (error.kind) {
     case "not_found":
-      return { code: error.code, message: error.message, retryable: false, requestId: randomUUID() };
+      return new RouteNotFound({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
     case "validation":
     case "authentication":
     case "provider_unavailable":
@@ -101,9 +110,9 @@ function accessGrantCreateError(error: RouteServiceError): AccessGrantCreateErro
     case "provider_capacity_limit":
     case "provider_override_unsatisfied":
     case "upstream":
-      return { code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() };
+      return new ServiceUnavailable({ code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() });
     case "validation":
-      return { code: error.code, message: error.message, retryable: false, requestId: randomUUID() };
+      return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
     case "authentication":
     case "internal":
       return internalError();
@@ -112,8 +121,8 @@ function accessGrantCreateError(error: RouteServiceError): AccessGrantCreateErro
   }
 }
 
-function internalError(): ApiError {
-  return { code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() };
+function internalError(): InternalError {
+  return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
 }
 
 function makeHandler(routes: RouteService, options: ControlApiOptions) {
@@ -121,12 +130,14 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
     bearer: (token) => {
       const userId = authenticatedUser(Redacted.value(token), options.controlIdentities);
       return userId === undefined
-        ? Effect.fail({
-            code: "unauthorized",
-            message: "Control-plane bearer token required",
-            retryable: false,
-            requestId: randomUUID(),
-          })
+        ? Effect.fail(
+            new Unauthorized({
+              code: "unauthorized",
+              message: "Control-plane bearer token required",
+              retryable: false,
+              requestId: randomUUID(),
+            }),
+          )
         : Effect.succeed({ userId });
     },
   });
@@ -136,21 +147,26 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
       .handle("live", () => Effect.succeed({ status: "live" as const }).pipe(Effect.withSpan("control.health.live")))
       .handle("ready", () =>
         routes.effects.ready().pipe(
-          Effect.mapError(() => ({
-            code: "not_ready",
-            message: "Service readiness check failed",
-            retryable: true,
-            requestId: randomUUID(),
-          })),
+          Effect.mapError(
+            () =>
+              new ServiceUnavailable({
+                code: "not_ready",
+                message: "Service readiness check failed",
+                retryable: true,
+                requestId: randomUUID(),
+              }),
+          ),
           Effect.flatMap((ready) =>
             ready
               ? Effect.succeed({ status: "ready" as const })
-              : Effect.fail({
-                  code: "not_ready",
-                  message: "The proxy service is not ready",
-                  retryable: true,
-                  requestId: randomUUID(),
-                }),
+              : Effect.fail(
+                  new ServiceUnavailable({
+                    code: "not_ready",
+                    message: "The proxy service is not ready",
+                    retryable: true,
+                    requestId: randomUUID(),
+                  }),
+                ),
           ),
           Effect.withSpan("control.health.ready"),
         ),
@@ -233,7 +249,7 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
       )
       .handle("createStatelessCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          routes.effects.createStatelessCredential(path.grantId, identity.userId).pipe(Effect.mapError(accessGrantCreateError)),
+          routes.effects.createStatelessCredential(path.grantId, identity.userId).pipe(Effect.mapError(readError)),
         ),
       )
       .handle("createLogicalSession", ({ path }) =>
@@ -344,16 +360,21 @@ function rewriteIssuedCredentialHost(body: Buffer, hostname: string): Buffer {
   return Buffer.from(JSON.stringify(payload));
 }
 
-function normalizeDecodeError(body: Buffer): Buffer {
+const TAGGED_API_ERRORS = new Set(["Unauthorized", "BadRequest", "RouteNotFound", "ServiceUnavailable", "InternalError"]);
+
+function normalizeApiError(body: Buffer): Buffer {
   try {
     const payload = expectRecord(parseJson(body.toString("utf8"), "control API error response"), "control API error response");
-    if (payload["_tag"] !== "HttpApiDecodeError") return body;
+    if (payload["_tag"] !== "HttpApiDecodeError" && !TAGGED_API_ERRORS.has(String(payload["_tag"]))) return body;
+    const decodeError = payload["_tag"] === "HttpApiDecodeError";
     return Buffer.from(
       JSON.stringify({
-        code: "validation_error",
-        message: "Request payload does not match the control API contract",
-        retryable: false,
-        requestId: randomUUID(),
+        code: decodeError ? "validation_error" : expectString(payload["code"], "control API error response.code"),
+        message: decodeError
+          ? "Request payload does not match the control API contract"
+          : expectString(payload["message"], "control API error response.message"),
+        retryable: decodeError ? false : expectBoolean(payload["retryable"], "control API error response.retryable"),
+        requestId: decodeError ? randomUUID() : expectString(payload["requestId"], "control API error response.requestId"),
       }),
     );
   } catch {
@@ -420,8 +441,8 @@ export class ControlApiServer {
       const webResponse = await this.#handler(webRequest);
       let responseBody: Buffer = Buffer.from(await webResponse.arrayBuffer());
       const responseHeaders = Object.fromEntries(webResponse.headers.entries());
-      if (webResponse.status === 400) {
-        responseBody = normalizeDecodeError(responseBody);
+      if (webResponse.status >= 400) {
+        responseBody = normalizeApiError(responseBody);
         delete responseHeaders["content-length"];
       }
       if (
@@ -459,7 +480,14 @@ export class ControlApiServer {
       });
       const status = error instanceof AppError ? error.statusCode : 500;
       response.writeHead(status, { "content-type": "application/json" });
-      response.end(JSON.stringify({ code: error instanceof AppError ? error.code : "internal_error", message: "Request failed" }));
+      response.end(
+        JSON.stringify({
+          code: error instanceof AppError ? error.code : "internal_error",
+          message: "Request failed",
+          retryable: status >= 500,
+          requestId: randomUUID(),
+        }),
+      );
       this.options.telemetry.finishSpan(
         span,
         startedAt,
