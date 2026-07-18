@@ -99,7 +99,7 @@ Normal tests must stay offline. A new vendor call belongs only in an environment
 
 ### Black-box behavioral E2E suite
 
-`pnpm test:e2e` exercises only the caller-visible contract. It creates proxies through the control API, sends traffic through the issued HTTP and SOCKS5 endpoints, rotates credentials and exits, deletes proxies, and verifies that invalidated credentials stop working. Cleanup uses the same public APIs.
+`pnpm test:e2e` exercises only the caller-visible contract. It creates route profiles and access grants through the control API, sends traffic through the issued HTTP and SOCKS5 endpoints, replaces profile requirements, rotates and revokes credentials, removes profiles, and verifies that invalidated credentials stop working. Cleanup uses the same public APIs.
 
 The suite has no AWS, SSM, SST-stage, datastore, or telemetry dependency. Point it at any compatible mock-mode environment:
 

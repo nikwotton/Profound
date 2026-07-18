@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
-  bestEffortDestroyRoute,
+  bestEffortDeleteProfile,
   controlRequest,
   createRoute,
-  destroyRoute,
+  deleteProfile,
   e2eEnvironment,
   e2eTest,
+  issuedProxyEndpoint,
+  type IssuedAccessGrantResponse,
   proxyWithCredentials,
   requestViaHttpProxy,
   requestViaSocks5,
-  waitForRouteStatus,
 } from "./helpers.js";
-import { authenticatedProxyEndpoint, type CreatedProxyApiResponse } from "../helpers.js";
 
 function optionalHeader(response: { headers: import("node:http").IncomingHttpHeaders }, name: string): string | undefined {
   const value = response.headers[name];
@@ -28,117 +28,121 @@ e2eTest("a caller can discover service health and must authenticate management r
   assert.equal(ready.status, 200);
   assert.deepEqual(await ready.json(), { status: "ready" });
 
-  assert.equal((await controlRequest("/v1/proxies", {}, null)).status, 401);
-
-  const providers = await controlRequest("/v1/providers");
-  assert.equal(providers.status, 200);
-  const payload = (await providers.json()) as { data?: Array<{ id?: string }> };
-  assert.deepEqual((payload.data ?? []).map(({ id }) => id).sort(), ["bright_data", "proxidize"]);
+  assert.equal((await controlRequest("/v1/profiles", {}, null)).status, 401);
 });
 
-e2eTest("a caller can create, use, rotate, inspect, and destroy a residential proxy", async (t) => {
+e2eTest("a caller can create, use, inspect, and delete a provider-neutral profile", async (t) => {
   const environment = e2eEnvironment();
   const route = await createRoute({
-    name: `e2e-residential-${randomUUID()}`,
-    location: { country: "US", postalCode: "10001" },
-    egress: { continuity: "none", rotation: "manual" },
+    customerId: `e2e-residential-${randomUUID()}`,
+    geography: { countryCode: "US" },
+    isTargetAuthenticated: false,
+    allowConnectionRetry: false,
   });
-  let destroyed = false;
+  let deleted = false;
   t.after(async () => {
-    if (!destroyed) await bestEffortDestroyRoute(route.route.id);
+    if (!deleted) await bestEffortDeleteProfile(route.profile.profileId);
   });
 
-  assert.deepEqual(route.route.allowedProtocols, ["http", "https", "socks5"]);
-  assert.equal(decodeURIComponent(new URL(route.proxyUrls.http).username), route.accessGrant.id);
+  assert.equal(new URL(route.proxyUrls.http).protocol, "http:");
+  assert.equal(new URL(route.proxyUrls.socks5).protocol, "socks5h:");
+  assert.equal(decodeURIComponent(new URL(route.proxyUrls.http).username), route.credential.username);
+  assert.notEqual(route.proxyUsername, route.accessGrant.grantId);
 
-  const first = await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl, {
+  const http = await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl, {
     headers: { "x-profound-e2e-id": randomUUID() },
   });
-  assert.equal(first.status, environment.expectedTargetStatus);
-  const firstIp = optionalHeader(first, "x-mock-exit-ip");
+  assert.equal(http.status, environment.expectedTargetStatus);
 
   const socks = await requestViaSocks5(route.proxyUrls.socks5, environment.targetUrl);
   assert.equal(socks.status, environment.expectedTargetStatus);
 
   const wrongCredential = await requestViaHttpProxy(
-    proxyWithCredentials(route.proxyUrls.http, route.accessGrant.id, "wrong-e2e-credential"),
+    proxyWithCredentials(route.proxyUrls.http, route.credential.username, "wrong-e2e-credential"),
     environment.targetUrl,
   );
   assert.equal(wrongCredential.status, 407);
 
-  const detail = await controlRequest(`/v1/proxies/${route.route.id}`);
+  const detail = await controlRequest(`/v1/profiles/${route.profile.profileId}`);
   assert.equal(detail.status, 200);
   const detailText = await detail.text();
-  const routeToken = decodeURIComponent(new URL(route.proxyUrls.http).password);
-  assert.ok(routeToken.length >= 32);
-  assert.ok(!detailText.includes(routeToken));
+  const credentialPassword = decodeURIComponent(new URL(route.proxyUrls.http).password);
+  assert.ok(credentialPassword.length >= 32);
+  assert.ok(!detailText.includes(credentialPassword));
 
-  const rotate = await controlRequest(`/v1/proxies/${route.route.id}/rotate`, { method: "POST" });
-  assert.equal(rotate.status, 202);
-  await waitForRouteStatus(route.route.id, "ready");
-  const rotated = await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl);
-  assert.equal(rotated.status, environment.expectedTargetStatus);
-  const rotatedIp = optionalHeader(rotated, "x-mock-exit-ip");
-  if (firstIp !== undefined) {
-    assert.notEqual(rotatedIp, firstIp);
-  }
-
-  const deletion = await destroyRoute(route.route.id);
+  const deletion = await deleteProfile(route.profile.profileId);
   assert.equal(deletion.status, 204);
-  destroyed = true;
+  deleted = true;
   assert.equal((await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl)).status, 407);
-  assert.equal((await controlRequest(`/v1/proxies/${route.route.id}`)).status, 404);
+  assert.equal((await controlRequest(`/v1/profiles/${route.profile.profileId}`)).status, 404);
 });
 
-e2eTest("a proxy credential can be rotated and is invalidated with its proxy", async (t) => {
+e2eTest("a grant credential can be rotated and independently revoked", async (t) => {
   const environment = e2eEnvironment();
   const route = await createRoute({
-    name: `e2e-credential-${randomUUID()}`,
-    location: { country: "US" },
-    egress: { continuity: "none", rotation: "per_request" },
+    customerId: `e2e-credential-${randomUUID()}`,
+    geography: { countryCode: "US" },
+    isTargetAuthenticated: false,
+    allowConnectionRetry: true,
   });
-  let destroyed = false;
-  t.after(async () => {
-    if (!destroyed) await bestEffortDestroyRoute(route.route.id);
-  });
+  t.after(() => bestEffortDeleteProfile(route.profile.profileId));
 
-  const rotationResponse = await controlRequest(`/v1/proxies/${route.route.id}/credentials/rotate`, { method: "POST" });
+  const rotationResponse = await controlRequest(`/v1/grants/${route.accessGrant.grantId}/credentials/rotate`, { method: "POST" });
   assert.equal(rotationResponse.status, 200);
-  const rotated = (await rotationResponse.json()) as CreatedProxyApiResponse;
-  const rotatedUrl = authenticatedProxyEndpoint(rotated, "http");
-  assert.equal(rotated.proxy.credentials[0]?.status, "overlap");
+  const rotated = (await rotationResponse.json()) as IssuedAccessGrantResponse;
+  const rotatedUrl = issuedProxyEndpoint(rotated, "http");
+  assert.equal(
+    rotated.grant.credentials.find((credential) => credential.credentialId === route.credential.credentialId)?.status,
+    "overlap",
+  );
+  assert.equal(rotated.credential.status, "active");
   assert.equal((await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl)).status, environment.expectedTargetStatus);
   assert.equal((await requestViaHttpProxy(rotatedUrl, environment.targetUrl)).status, environment.expectedTargetStatus);
 
-  assert.equal((await destroyRoute(route.route.id)).status, 204);
-  destroyed = true;
+  const revokeOld = await controlRequest(`/v1/grants/${route.accessGrant.grantId}/credentials/${route.credential.credentialId}`, {
+    method: "DELETE",
+  });
+  assert.equal(revokeOld.status, 204);
+  assert.equal((await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl)).status, 407);
+  assert.equal((await requestViaHttpProxy(rotatedUrl, environment.targetUrl)).status, environment.expectedTargetStatus);
+
+  const revokeGrant = await controlRequest(`/v1/grants/${route.accessGrant.grantId}`, { method: "DELETE" });
+  assert.equal(revokeGrant.status, 204);
   assert.equal((await requestViaHttpProxy(rotatedUrl, environment.targetUrl)).status, 407);
 });
 
-e2eTest("a geographic proxy preserves device affinity and rotates its exit within the requested city", async (t) => {
+e2eTest("authenticated profile updates apply exact-city requirements to new connections", async (t) => {
   const environment = e2eEnvironment();
+  const customerId = `e2e-authenticated-${randomUUID()}`;
   const route = await createRoute({
-    name: `e2e-mobile-${randomUUID()}`,
-    location: { country: "US", region: "NY", city: "New York" },
-    egress: { continuity: "geographic", rotation: "manual", sessionKey: `e2e-${randomUUID()}` },
+    customerId,
+    geography: { countryCode: "US", regionCode: "NY", city: "New York" },
+    isTargetAuthenticated: true,
+    allowConnectionRetry: false,
   });
-  t.after(() => bestEffortDestroyRoute(route.route.id));
+  t.after(() => bestEffortDeleteProfile(route.profile.profileId));
 
   const first = await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl);
-  const stable = await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl);
   assert.equal(first.status, environment.expectedTargetStatus);
-  assert.equal(stable.status, environment.expectedTargetStatus);
-  const endpointId = optionalHeader(first, "x-mock-endpoint-id");
-  const firstIp = optionalHeader(first, "x-mock-exit-ip");
-  if (endpointId !== undefined) assert.equal(optionalHeader(stable, "x-mock-endpoint-id"), endpointId);
-  if (firstIp !== undefined) assert.equal(optionalHeader(stable, "x-mock-exit-ip"), firstIp);
+  const firstCity = optionalHeader(first, "x-mock-city");
+  if (firstCity !== undefined) assert.equal(firstCity.toLowerCase().replaceAll(" ", ""), "newyork");
 
-  assert.equal((await controlRequest(`/v1/proxies/${route.route.id}/rotate`, { method: "POST" })).status, 202);
-  await waitForRouteStatus(route.route.id, "ready");
-  const rotated = await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl);
-  assert.equal(rotated.status, environment.expectedTargetStatus);
-  if (endpointId !== undefined) assert.equal(optionalHeader(rotated, "x-mock-endpoint-id"), endpointId);
-  const city = optionalHeader(rotated, "x-mock-city");
-  if (city !== undefined) assert.equal(city.toLowerCase().replaceAll(" ", ""), "newyork");
-  if (firstIp !== undefined) assert.notEqual(optionalHeader(rotated, "x-mock-exit-ip"), firstIp);
+  const update = await controlRequest(`/v1/profiles/${route.profile.profileId}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      customerId,
+      geography: { countryCode: "US", regionCode: "CA", city: "Los Angeles" },
+      isTargetAuthenticated: true,
+      allowConnectionRetry: false,
+    }),
+  });
+  assert.equal(update.status, 200);
+  const updateText = await update.text();
+  assert.doesNotMatch(updateText, /"provider"|proxySlot|endpointId|deviceId/i);
+
+  const updated = await requestViaHttpProxy(route.proxyUrls.http, environment.targetUrl);
+  assert.equal(updated.status, environment.expectedTargetStatus);
+  const updatedCity = optionalHeader(updated, "x-mock-city");
+  if (updatedCity !== undefined) assert.equal(updatedCity.toLowerCase().replaceAll(" ", ""), "losangeles");
 });

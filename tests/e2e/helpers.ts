@@ -6,51 +6,22 @@ import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { test, type TestContext } from "node:test";
 import { expectBufferChunk } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
-import { authenticatedProxyEndpoint, proxyPayload, type CreatedProxyApiResponse, type TestProxyInput } from "../helpers.js";
+import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../../src/types.js";
 
 export const e2eTestsEnabled = process.env.RUN_PROXY_E2E_TESTS === "1";
 
-export interface PublicAccessGrantCredential {
-  id: string;
-  status: "active" | "overlap" | "revoked" | "expired";
-  createdAt: string;
-  renewalDueAt: string;
-  renewalDue: boolean;
-  expiresAt: string;
-  revokeAt?: string;
-  lastUsedAt?: string;
-}
-
-export interface PublicAccessGrant {
-  id: string;
-  routeId: string;
-  principalId: string;
-  status: "ready" | "revoked";
-  credentials: PublicAccessGrantCredential[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface PublicRoute {
-  id: string;
-  name: string;
-  provider: "bright_data" | "proxidize";
-  status: "ready" | "rotating" | "failed" | "revoked";
-  customerId: string;
-  allowedProtocols: Array<"http" | "https" | "socks5">;
-  targeting: CreatedProxyApiResponse["proxy"]["location"];
-  rotation: { mode: string; intervalSeconds?: number };
-}
-
 export interface IssuedAccessGrantResponse {
+  grant: PublicAccessGrant;
+  credential: PublicAccessGrantCredential & { password: string };
+  endpoints: { http: string; socks5: string };
+}
+
+export interface CreatedRouteResponse {
+  profile: PublicRoute;
   accessGrant: PublicAccessGrant;
-  credential: PublicAccessGrantCredential;
+  credential: PublicAccessGrantCredential & { password: string };
   proxyUsername: string;
   proxyUrls: { http: string; socks5: string };
-}
-
-export interface CreatedRouteResponse extends IssuedAccessGrantResponse {
-  route: PublicRoute;
 }
 
 export interface ProxyResponse {
@@ -110,54 +81,41 @@ export async function controlRequest(path: string, init: RequestInit = {}, token
   return await fetch(new URL(path, environment.controlApiUrl), { ...init, headers });
 }
 
-export async function createRoute(profile: TestProxyInput): Promise<CreatedRouteResponse> {
-  const response = await controlRequest("/v1/proxies", {
+export async function createRoute(profile: RouteProfileInput): Promise<CreatedRouteResponse> {
+  const response = await controlRequest("/v1/profiles", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(proxyPayload(profile)),
+    body: JSON.stringify(profile),
   });
-  if (response.status !== 201) throw new Error(`Proxy creation failed: ${response.status} ${await response.text()}`);
-  const created = (await response.json()) as CreatedProxyApiResponse;
-  const credential = created.proxy.credentials.find((candidate) => candidate.status === "active");
-  if (credential === undefined) throw new Error("Expected active proxy credential metadata");
+  if (response.status !== 201) throw new Error(`Profile creation failed: ${response.status} ${await response.text()}`);
+  const { profileId } = (await response.json()) as { profileId: string };
+  const [profileResponse, grantResponse] = await Promise.all([
+    controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}`),
+    controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}/grants`, { method: "POST" }),
+  ]);
+  if (!profileResponse.ok || grantResponse.status !== 201) {
+    throw new Error(`Profile setup failed: profile=${profileResponse.status} grant=${grantResponse.status}`);
+  }
+  const publicProfile = ((await profileResponse.json()) as { profile: PublicRoute }).profile;
+  const issued = (await grantResponse.json()) as IssuedAccessGrantResponse;
   return {
-    route: {
-      id: created.proxy.id,
-      name: created.proxy.name,
-      provider: created.proxy.egress.continuity === "geographic" ? "proxidize" : "bright_data",
-      status: created.proxy.status,
-      customerId: "derived-from-control-principal",
-      allowedProtocols: created.proxy.protocols,
-      targeting: created.proxy.location,
-      rotation:
-        typeof created.proxy.egress.rotation === "object"
-          ? { mode: "interval", intervalSeconds: created.proxy.egress.rotation.intervalSeconds }
-          : { mode: created.proxy.egress.rotation },
-    },
-    accessGrant: {
-      id: created.connection.credentials.username,
-      routeId: created.proxy.id,
-      principalId: "control-principal",
-      status: "ready",
-      credentials: created.proxy.credentials,
-      createdAt: credential.createdAt,
-      updatedAt: credential.createdAt,
-    },
-    credential,
-    proxyUsername: created.connection.credentials.username,
+    profile: publicProfile,
+    accessGrant: issued.grant,
+    credential: issued.credential,
+    proxyUsername: issued.credential.username,
     proxyUrls: {
-      http: authenticatedProxyEndpoint(created, "http"),
-      socks5: authenticatedProxyEndpoint(created, "socks5"),
+      http: issuedProxyEndpoint(issued, "http"),
+      socks5: issuedProxyEndpoint(issued, "socks5"),
     },
   };
 }
 
-export async function destroyRoute(id: string): Promise<Response> {
-  return await controlRequest(`/v1/proxies/${encodeURIComponent(id)}`, { method: "DELETE" });
+export async function deleteProfile(id: string): Promise<Response> {
+  return await controlRequest(`/v1/profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export async function bestEffortDestroyRoute(id: string): Promise<void> {
-  await destroyRoute(id).catch(() => undefined);
+export async function bestEffortDeleteProfile(id: string): Promise<void> {
+  await deleteProfile(id).catch(() => undefined);
 }
 
 export function proxyWithCredentials(proxyUrl: string, username: string, password: string): string {
@@ -165,6 +123,10 @@ export function proxyWithCredentials(proxyUrl: string, username: string, passwor
   url.username = username;
   url.password = password;
   return url.toString();
+}
+
+export function issuedProxyEndpoint(issued: IssuedAccessGrantResponse, protocol: "http" | "socks5"): string {
+  return proxyWithCredentials(issued.endpoints[protocol], issued.credential.username, issued.credential.password);
 }
 
 function parsedHeaders(headerBlock: string): IncomingHttpHeaders {
@@ -381,19 +343,4 @@ export async function requestViaSocks5(
       : connected.socket;
   if (target.protocol === "https:") await once(socket, "secureConnect");
   return await requestThroughSocket(socket, target, options);
-}
-
-export async function waitForRouteStatus(id: string, expected: PublicRoute["status"]): Promise<{ status: PublicRoute["status"] }> {
-  const deadline = Date.now() + 30_000;
-  let lastStatus = "unknown";
-  while (Date.now() < deadline) {
-    const response = await controlRequest(`/v1/proxies/${encodeURIComponent(id)}`);
-    if (response.ok) {
-      const payload = (await response.json()) as { proxy: { status: PublicRoute["status"] } };
-      lastStatus = payload.proxy.status;
-      if (payload.proxy.status === expected) return payload.proxy;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(`Timed out waiting for route ${id} to become ${expected}; last status was ${lastStatus}`);
 }
