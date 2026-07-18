@@ -34,6 +34,8 @@ AI review may remain advisory. Manual approval is authoritative for v0.
 
 Dependabot configuration is committed in [`.github/dependabot.yml`](../.github/dependabot.yml). Review dependency changes through the same required checks; do not auto-merge infrastructure or runtime dependencies without ownership review.
 
+For private repositories, enable GitHub Advanced Security before requiring the CodeQL or dependency-review jobs. The workflows skip those jobs when the repository does not support them and activate them automatically once Advanced Security is enabled.
+
 ## Environments
 
 Create protected GitHub environments for at least `staging` and `production`.
@@ -57,6 +59,8 @@ At minimum configure:
 - `AWS_REGION`
 - `AWS_DEPLOY_ROLE_ARN`
 - `ECR_REPOSITORY`
+
+The pull-request AWS acceptance job is skipped until `AWS_REGION` and `AWS_DEPLOY_ROLE_ARN` are configured. Do not require `production-shaped` in branch protection until its variables, protected environment, and secrets are present and a test deployment has passed.
 
 The deploy role should have only the permissions required by SST, ECR promotion, migrations, deployed verification, and cleanup for its environment. Production and non-production should use distinct trust conditions and, where practical, distinct roles/accounts.
 
@@ -82,8 +86,8 @@ Runtime/vendor values belong in SST secrets, not GitHub variables or repository 
 Create these migration labels:
 
 - `migration:none`
-- `migration:backward-compatible`
-- `migration:forward-only`
+- `migration:compatible`
+- `migration:backfill`
 - `migration:destructive`
 - `migration:none-reviewed`
 
