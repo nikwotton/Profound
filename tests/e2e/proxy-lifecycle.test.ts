@@ -36,7 +36,6 @@ e2eTest("a caller can create, use, inspect, and delete a provider-neutral profil
   const route = await createRoute({
     customerId: `e2e-residential-${randomUUID()}`,
     geography: { countryCode: "US" },
-    isTargetAuthenticated: false,
     allowConnectionRetry: false,
   });
   let deleted = false;
@@ -82,12 +81,14 @@ e2eTest("a grant credential can be rotated and independently revoked", async (t)
   const route = await createRoute({
     customerId: `e2e-credential-${randomUUID()}`,
     geography: { countryCode: "US" },
-    isTargetAuthenticated: false,
     allowConnectionRetry: true,
   });
   t.after(() => bestEffortDeleteProfile(route.profile.profileId));
 
-  const rotationResponse = await controlRequest(`/v1/grants/${route.accessGrant.grantId}/credentials/rotate`, { method: "POST" });
+  const rotationResponse = await controlRequest(
+    `/v1/grants/${route.accessGrant.grantId}/credentials/${route.credential.credentialId}/rotate`,
+    { method: "POST" },
+  );
   assert.equal(rotationResponse.status, 200);
   const rotated = (await rotationResponse.json()) as IssuedAccessGrantResponse;
   const rotatedUrl = issuedProxyEndpoint(rotated, "http");
@@ -111,13 +112,12 @@ e2eTest("a grant credential can be rotated and independently revoked", async (t)
   assert.equal((await requestViaHttpProxy(rotatedUrl, environment.targetUrl)).status, 407);
 });
 
-e2eTest("authenticated profile updates apply exact-city requirements to new connections", async (t) => {
+e2eTest("exact-city profile updates apply hard geography requirements to new connections", async (t) => {
   const environment = e2eEnvironment();
   const customerId = `e2e-authenticated-${randomUUID()}`;
   const route = await createRoute({
     customerId,
     geography: { countryCode: "US", regionCode: "NY", city: "New York" },
-    isTargetAuthenticated: true,
     allowConnectionRetry: false,
   });
   t.after(() => bestEffortDeleteProfile(route.profile.profileId));
@@ -133,7 +133,6 @@ e2eTest("authenticated profile updates apply exact-city requirements to new conn
     body: JSON.stringify({
       customerId,
       geography: { countryCode: "US", regionCode: "CA", city: "Los Angeles" },
-      isTargetAuthenticated: true,
       allowConnectionRetry: false,
     }),
   });

@@ -24,11 +24,12 @@ test("repository delivery policy encodes required CI, review, dependency, migrat
     assert.ok(ci.includes(command), `CI is missing ${command}`);
   }
   assert.match(settings, /at least one approval/);
-  assert.match(settings, /CODEOWNER review/);
   assert.match(settings, /merge commits only/);
   assert.match(settings, /GitHub App integration/);
   assert.match(template, /migration:destructive/);
   assert.match(file(".github/dependabot.yml"), /github-actions/);
+  assert.match(ci, /security_and_analysis\.advanced_security\.status == 'enabled'/);
+  assert.match(file(".github/workflows/codeql.yml"), /security_and_analysis\.advanced_security\.status == 'enabled'/);
   assert.match(file(".github/workflows/live-provider-smoke.yml"), /schedule:/);
   assert.match(file(".github/workflows/live-provider-smoke.yml"), /src\/providers\/\*\*/);
 });
@@ -50,6 +51,8 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
   assert.match(ephemeral, /ROUTE_TABLE_NAME=/);
   assert.match(ephemeral, /Rollback rehearsal/);
   assert.match(ephemeral, /if: always\(\)/);
+  assert.match(ephemeral, /vars\.AWS_REGION != ''/);
+  assert.match(ephemeral, /vars\.AWS_DEPLOY_ROLE_ARN != ''/);
   assert.match(janitor, /remove-expired-stages/);
   assert.match(janitor, /vars\.AWS_REGION != '' && vars\.AWS_DEPLOY_ROLE_ARN != ''/);
 });

@@ -5,6 +5,7 @@ import test from "node:test";
 test("SST isolates AWS resources behind a provider-selected deployment module", () => {
   const root = readFileSync("sst.config.ts", "utf8");
   const aws = readFileSync("infra/providers/aws.ts", "utf8");
+  const awsPolicy = readFileSync("infra/providers/aws-policy.ts", "utf8");
 
   assert.doesNotMatch(root, /DEPLOYMENT_PROVIDER|process\.env/);
   assert.match(root, /infra\/providers\/aws\.js/);
@@ -63,7 +64,7 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /connectionTermination: false/);
   assert.match(aws, /iam::aws:policy\/AmazonECSInfrastructureRolePolicyForLoadBalancers/);
   assert.doesNotMatch(aws, /iam::aws:policy\/service-role\/AmazonECSInfrastructureRolePolicyForLoadBalancers/);
-  assert.match(aws, /geoIpDatabaseSource: "\.sst\/geoip\/GeoLite2-City\.mmdb"/);
+  assert.match(awsPolicy, /geoIpDatabaseSource: "\.sst\/geoip\/GeoLite2-City\.mmdb"/);
   assert.match(aws, /copyFiles: geoIpBundleConfigured/);
   assert.match(aws, /otlp_http\/axiom_logs/);
   assert.match(aws, /otlp_http\/axiom_traces/);

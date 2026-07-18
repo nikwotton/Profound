@@ -1,8 +1,9 @@
 import { ParseResult, Schema } from "effect";
+import { isUnknownRecord } from "./decoding.js";
 import { ValidationError } from "./errors.js";
 import { RouteProfilePayload } from "./route-profile-schema.js";
 import type { DecodedRouteProfilePayload } from "./route-profile-schema.js";
-import type { RetryPolicy, RouteProfile, RouteProfileInput, Targeting } from "./types.js";
+import type { RetryPolicy, RouteProfile, RouteProfileInput, SessionMode, Targeting } from "./types.js";
 
 const COUNTRY_CODE = /^[A-Za-z]{2}$/;
 
@@ -30,6 +31,16 @@ function optionalString(value: string | undefined, field: string): string | unde
   return value === undefined ? undefined : string(value, field);
 }
 
+function object(value: unknown, field: string): Record<string, unknown> {
+  if (!isUnknownRecord(value)) throw new ValidationError(`${field} must be an object`);
+  return value;
+}
+
+function rejectUnknown(input: Record<string, unknown>, fields: ReadonlySet<string>, context: string): void {
+  const unknown = Object.keys(input).find((key) => !fields.has(key));
+  if (unknown !== undefined) throw new ValidationError(`${context}.${unknown} is not part of the contract`);
+}
+
 function parseGeography(value: DecodedRouteProfilePayload["geography"]): {
   profile?: RouteProfileInput["geography"];
   targeting: Targeting;
@@ -42,6 +53,9 @@ function parseGeography(value: DecodedRouteProfilePayload["geography"]): {
   }
   const regionCode = optionalString(value.regionCode, "geography.regionCode");
   const city = optionalString(value.city, "geography.city");
+  if (countryCode === undefined && (regionCode !== undefined || city !== undefined)) {
+    throw new ValidationError("geography.regionCode and geography.city require geography.countryCode");
+  }
   const profile = {
     ...(countryCode === undefined ? {} : { countryCode }),
     ...(regionCode === undefined ? {} : { regionCode }),
@@ -65,12 +79,8 @@ export function validateRouteProfile(value: unknown, userId: string, retryDefaul
   const { profile: geography, targeting } = parseGeography(input.geography);
   const carrier = optionalString(input.carrier, "carrier");
   const providerOverride = input.providerOverride ?? undefined;
-  if (input.isTargetAuthenticated && (geography?.countryCode === undefined || geography.city === undefined)) {
-    throw new ValidationError("geography.countryCode and geography.city are required when isTargetAuthenticated is true");
-  }
   if (carrier !== undefined) targeting.carrier = carrier;
 
-  const isTargetAuthenticated = input.isTargetAuthenticated;
   const allowConnectionRetry = input.allowConnectionRetry;
   return {
     name: string(input.customerId, "customerId"),
@@ -78,17 +88,31 @@ export function validateRouteProfile(value: unknown, userId: string, retryDefaul
     ...(geography === undefined ? {} : { geography }),
     ...(carrier === undefined ? {} : { carrier }),
     ...(providerOverride === undefined ? {} : { providerOverride }),
-    isTargetAuthenticated,
     allowConnectionRetry,
     userId: string(userId, "userId"),
     allowedProtocols: ["http", "https", "socks5"],
     targeting,
-    rotation: isTargetAuthenticated ? { mode: "manual" } : { mode: "per_request" },
-    session: isTargetAuthenticated
-      ? { mode: "sticky", requireGeographicContinuity: true }
-      : { mode: "none", requireGeographicContinuity: false },
-    isAuthenticated: isTargetAuthenticated,
+    rotation: { mode: "per_request" },
     shouldRetry: allowConnectionRetry,
     retryPolicy: retryDefaults,
   };
+}
+
+export function validateSessionMode(value: unknown): SessionMode {
+  const input = object(value, "credential issuance");
+  rejectUnknown(input, new Set(["sessionMode"]), "credential issuance");
+  if (input["sessionMode"] !== "managed" && input["sessionMode"] !== "none") {
+    throw new ValidationError("sessionMode must be managed or none");
+  }
+  return input["sessionMode"];
+}
+
+export function validateGrantIssuance(value: unknown): { sessionMode: SessionMode; jobId?: string } {
+  const input = object(value, "grant issuance");
+  rejectUnknown(input, new Set(["sessionMode", "jobId"]), "grant issuance");
+  if (input["sessionMode"] !== "managed" && input["sessionMode"] !== "none") {
+    throw new ValidationError("sessionMode must be managed or none");
+  }
+  const jobId = input["jobId"] === undefined ? undefined : string(input["jobId"], "jobId");
+  return { sessionMode: input["sessionMode"], ...(jobId === undefined ? {} : { jobId }) };
 }

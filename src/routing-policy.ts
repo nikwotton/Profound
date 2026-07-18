@@ -22,10 +22,17 @@ export interface RoutingPolicy {
   readonly capacityCircuitBaseCooldownMs: number;
   readonly capacityCircuitMaxCooldownMs: number;
   readonly capacityCircuitHalfOpenLeaseMs: number;
+  readonly preferredClassStabilizationMs: number;
+  readonly sessionQuiescenceMs: number;
+  readonly maxCandidatesPerProvider: number;
+  readonly maxExactCityCandidatesPerProvider: number;
+  readonly maxProvidersPerOperation: number;
+  readonly attemptEstablishmentTimeoutMs: number;
+  readonly operationEstablishmentTimeoutMs: number;
 }
 
 export const ROUTING_POLICY: RoutingPolicy = Object.freeze({
-  version: "proxy-routing-v0-2026-07-18",
+  version: "proxy-routing-policy-hypotheses-2026-07-18",
   lastValidatedAt: "2026-07-18",
   weights: Object.freeze({
     reliability: 0.3,
@@ -46,6 +53,13 @@ export const ROUTING_POLICY: RoutingPolicy = Object.freeze({
   capacityCircuitBaseCooldownMs: 60_000,
   capacityCircuitMaxCooldownMs: 15 * 60_000,
   capacityCircuitHalfOpenLeaseMs: 30_000,
+  preferredClassStabilizationMs: 5 * 60_000,
+  sessionQuiescenceMs: 30_000,
+  maxCandidatesPerProvider: 2,
+  maxExactCityCandidatesPerProvider: 3,
+  maxProvidersPerOperation: 3,
+  attemptEstablishmentTimeoutMs: 10_000,
+  operationEstablishmentTimeoutMs: 30_000,
 });
 
 export interface RoutingScoreComponents {

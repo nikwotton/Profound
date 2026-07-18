@@ -3,9 +3,17 @@ import { test } from "node:test";
 import { OpenApi } from "@effect/platform";
 import { loadConfig } from "../src/config.js";
 import { ControlApi } from "../src/control-contract.js";
-import { assertSafeProviderResolution } from "../src/destination-resolution.js";
+import { assertSafeProviderResolution, destinationSafetyClassification } from "../src/destination-resolution.js";
 import { parseHostPort } from "../src/net-utils.js";
 import { BrightDataAdapter, buildBrightDataUsername } from "../src/providers/bright-data.js";
+import { ROUTING_POLICY } from "../src/routing-policy.js";
+import {
+  ACCOUNTING_POLICY,
+  CREDENTIAL_LIFECYCLE_POLICY,
+  HEALTH_POLICY,
+  OBSERVABILITY_POLICY,
+  TRANSPORT_POLICY,
+} from "../src/service-policies.js";
 import { createTargetValidator, isPublicAddress } from "../src/target-security.js";
 import type { StoredRoute } from "../src/types.js";
 import { validateRouteProfile } from "../src/validation.js";
@@ -17,14 +25,11 @@ function route(overrides: Partial<StoredRoute> = {}): StoredRoute {
     allowedProtocols: ["http", "https", "socks5"],
     targeting: { country: "US", region: "NY", city: "New York", postalCode: "10001", asn: 12_345, carrier: "T-Mobile" },
     rotation: { mode: "per_request" },
-    session: { mode: "none", requireGeographicContinuity: false },
     customerId: "customer",
     geography: { countryCode: "US", regionCode: "NY", city: "New York" },
     carrier: "T-Mobile",
-    isTargetAuthenticated: false,
     allowConnectionRetry: false,
     userId: "user",
-    isAuthenticated: false,
     shouldRetry: false,
     retryPolicy: { maxAttempts: 2 },
     provider: "bright_data",
@@ -42,7 +47,6 @@ function validate(value: Record<string, unknown>) {
   return validateRouteProfile(
     {
       customerId: "customer",
-      isTargetAuthenticated: false,
       allowConnectionRetry: false,
       ...value,
     },
@@ -61,17 +65,17 @@ test("control API token defaults only for local mock mode", () => {
   });
   assert.equal(local.adminToken, "change-me");
   assert.equal(local.proxidizeExactCity, "provider_guaranteed");
-  assert.equal(local.maxHttpRequestBodyBytes, 10 * 1024 * 1024);
-  assert.equal(local.maxHttpResponseBodyBytes, 50 * 1024 * 1024);
+  assert.equal(local.streamBufferBytes, 64 * 1024);
+  assert.deepEqual([...local.blockedTargetHostnames], []);
 
-  const bodyLimits = loadConfig({
+  const transportPolicy = loadConfig({
     ...sstRuntime,
     PROVIDER_MODE: "mock",
-    MAX_HTTP_REQUEST_BODY_BYTES: "17",
-    MAX_HTTP_RESPONSE_BODY_BYTES: "23",
+    STREAM_BUFFER_BYTES: "16384",
+    BLOCKED_TARGET_HOSTNAMES: "Internal.Example.,metadata.internal",
   });
-  assert.equal(bodyLimits.maxHttpRequestBodyBytes, 17);
-  assert.equal(bodyLimits.maxHttpResponseBodyBytes, 23);
+  assert.equal(transportPolicy.streamBufferBytes, 16_384);
+  assert.deepEqual([...transportPolicy.blockedTargetHostnames], ["internal.example", "metadata.internal"]);
 
   assert.throws(
     () =>
@@ -155,6 +159,55 @@ test("control API token defaults only for local mock mode", () => {
   assert.equal(identities.controlIdentities.get("tokenTwo"), "user-two");
 });
 
+test("provisional operational values are typed, versioned policies", () => {
+  for (const policy of [
+    ROUTING_POLICY,
+    ACCOUNTING_POLICY,
+    CREDENTIAL_LIFECYCLE_POLICY,
+    HEALTH_POLICY,
+    OBSERVABILITY_POLICY,
+    TRANSPORT_POLICY,
+  ]) {
+    assert.match(policy.version, /v0|hypotheses/);
+    assert.equal(policy.lastValidatedAt, "2026-07-18");
+  }
+  assert.deepEqual(
+    {
+      candidates: ROUTING_POLICY.maxCandidatesPerProvider,
+      exactCityCandidates: ROUTING_POLICY.maxExactCityCandidatesPerProvider,
+      providers: ROUTING_POLICY.maxProvidersPerOperation,
+      attemptMs: ROUTING_POLICY.attemptEstablishmentTimeoutMs,
+      operationMs: ROUTING_POLICY.operationEstablishmentTimeoutMs,
+      circuitMs: ROUTING_POLICY.capacityCircuitBaseCooldownMs,
+      stabilizationMs: ROUTING_POLICY.preferredClassStabilizationMs,
+      quiescenceMs: ROUTING_POLICY.sessionQuiescenceMs,
+    },
+    {
+      candidates: 2,
+      exactCityCandidates: 3,
+      providers: 3,
+      attemptMs: 10_000,
+      operationMs: 30_000,
+      circuitMs: 60_000,
+      stabilizationMs: 300_000,
+      quiescenceMs: 30_000,
+    },
+  );
+  assert.equal(CREDENTIAL_LIFECYCLE_POLICY.lifetimeMs, 30 * 24 * 60 * 60_000);
+  assert.equal(CREDENTIAL_LIFECYCLE_POLICY.renewalWindowMs, 7 * 24 * 60 * 60_000);
+  assert.equal(CREDENTIAL_LIFECYCLE_POLICY.overlapMs, 72 * 60 * 60_000);
+  assert.equal(ACCOUNTING_POLICY.reconciliationCadence, "daily");
+  assert.equal(ACCOUNTING_POLICY.varianceWarningRelative, 0.05);
+  assert.equal(ACCOUNTING_POLICY.varianceErrorRelative, 0.15);
+  assert.equal(OBSERVABILITY_POLICY.traceSampling, "all");
+  assert.equal(OBSERVABILITY_POLICY.logRetentionDays, 30);
+  assert.equal(HEALTH_POLICY.syntheticCooldownMs, 300_000);
+  assert.equal(HEALTH_POLICY.geoIpRefreshIntervalMs, 302_400_000);
+  assert.equal(HEALTH_POLICY.degradedPersistenceMs, 300_000);
+  assert.equal(TRANSPORT_POLICY.streamBufferBytes, 64 * 1024);
+  assert.equal(TRANSPORT_POLICY.maxHeaderBytes, 32 * 1024);
+});
+
 test("SST runtime configuration requires its DynamoDB table", () => {
   assert.throws(
     () =>
@@ -185,18 +238,13 @@ test("profile validation accepts only stable requirements and derives routing be
   });
   assert.deepEqual(residential.rotation, { mode: "per_request" });
   assert.deepEqual(residential.allowedProtocols, ["http", "https", "socks5"]);
-  assert.deepEqual(residential.session, { mode: "none", requireGeographicContinuity: false });
   assert.equal(residential.targeting.country, "US");
 
-  const mobile = validate({
-    isTargetAuthenticated: true,
+  const cityTargeted = validate({
     geography: { countryCode: "US", regionCode: "NY", city: "New York" },
   });
-  assert.deepEqual(mobile.rotation, { mode: "manual" });
-  assert.deepEqual(mobile.session, { mode: "sticky", requireGeographicContinuity: true });
-
-  assert.equal(mobile.isTargetAuthenticated, true);
-  assert.equal(mobile.allowConnectionRetry, false);
+  assert.deepEqual(cityTargeted.rotation, { mode: "per_request" });
+  assert.equal(cityTargeted.allowConnectionRetry, false);
 
   const overridden = validate({ providerOverride: "bright_data" });
   assert.equal(overridden.providerOverride, "bright_data");
@@ -204,19 +252,12 @@ test("profile validation accepts only stable requirements and derives routing be
   assert.throws(() => validate({ providerOverride: "unknown" }), /providerOverride must be bright_data, proxidize, or null/);
 });
 
-test("profile validation rejects missing authenticated geography and every non-canonical field", () => {
+test("profile validation enforces geography hierarchy and rejects every non-canonical field", () => {
   assert.throws(
     () => validate({ kind: "mobile", geography: { countryCode: "US", city: "New York" } }),
     /profile.kind is not part of the profile contract/,
   );
-  assert.throws(
-    () =>
-      validate({
-        geography: { countryCode: "US", regionCode: "NY" },
-        isTargetAuthenticated: true,
-      }),
-    /geography.countryCode and geography.city are required/,
-  );
+  assert.throws(() => validate({ geography: { regionCode: "NY" } }), /require geography.countryCode/);
   for (const field of ["name", "allowedProtocols", "targeting", "rotation", "session", "retryPolicy", "forceProvider"]) {
     assert.throws(() => validate({ [field]: {} }), new RegExp(`profile\\.${field} is not part of the profile contract`));
   }
@@ -240,14 +281,22 @@ test("Bright Data credentials encode targeting and pin each per-request candidat
   assert.notEqual(username, next);
 });
 
-test("Bright Data interval sessions are stable within a bucket and change across buckets or manual rotation", () => {
-  const timed = route({ rotation: { mode: "interval", intervalSeconds: 60 } });
-  const first = buildBrightDataUsername({ customerId: "c", zone: "z" }, timed, 120_001);
-  const second = buildBrightDataUsername({ customerId: "c", zone: "z" }, timed, 179_999);
-  const third = buildBrightDataUsername({ customerId: "c", zone: "z" }, timed, 180_000);
+test("Bright Data managed sessions preserve one provider affinity handle until explicit rebinding", () => {
+  const managed = route();
+  const first = buildBrightDataUsername({ customerId: "c", zone: "z" }, managed, 120_001, {
+    sessionMode: "managed",
+    affinityHandle: "logical-session",
+  });
+  const second = buildBrightDataUsername({ customerId: "c", zone: "z" }, managed, 180_000, {
+    sessionMode: "managed",
+    affinityHandle: "logical-session",
+  });
+  const third = buildBrightDataUsername({ customerId: "c", zone: "z" }, managed, 180_000, {
+    sessionMode: "managed",
+    affinityHandle: "replacement-session",
+  });
   assert.equal(first, second);
   assert.notEqual(first, third);
-  assert.notEqual(first, buildBrightDataUsername({ customerId: "c", zone: "z" }, { ...timed, rotationEpoch: 1 }, 120_001));
 });
 
 test("Bright Data health uses the authenticated residential network-status API when configured", async () => {
@@ -314,11 +363,13 @@ test("literal target validation blocks explicit private, metadata, and reserved 
   assert.deepEqual(await unavailable?.localResolution, { status: "unavailable", addresses: [] });
 });
 
-test("verified provider-side private resolution is rejected while unavailable evidence remains best effort", () => {
+test("destination safety is verified with provider evidence and provider-trusted when DNS is opaque", () => {
   assert.doesNotThrow(() => assertSafeProviderResolution(undefined));
   assert.doesNotThrow(() => assertSafeProviderResolution({}));
   assert.doesNotThrow(() => assertSafeProviderResolution({ resolvedDestinationAddresses: ["8.8.8.8"] }));
   assert.throws(() => assertSafeProviderResolution({ resolvedDestinationAddresses: ["8.8.8.8", "169.254.169.254"] }), /non-public address/);
+  assert.equal(destinationSafetyClassification({ resolvedDestinationAddresses: ["8.8.8.8"] }), "verified");
+  assert.equal(destinationSafetyClassification(undefined), "provider_trusted");
 });
 
 test("CONNECT authority parsing rejects embedded credentials, paths, and queries", () => {
@@ -345,13 +396,20 @@ test("Effect generates a complete secured OpenAPI contract from the control API"
   assert.ok(paths["/v1/profiles/{id}/grants"]?.get);
   assert.ok(paths["/v1/grants/{grantId}"]?.get);
   assert.ok(paths["/v1/grants/{grantId}"]?.delete);
-  assert.ok(paths["/v1/grants/{grantId}/credentials/rotate"]?.post);
+  assert.ok(paths["/v1/grants/{grantId}/credentials"]?.post);
+  assert.ok(paths["/v1/grants/{grantId}/credentials/{credentialId}/rotate"]?.post);
+  assert.ok(paths["/v1/grants/{grantId}/credentials/{credentialId}/emergency-rotate"]?.post);
   assert.ok(paths["/v1/grants/{grantId}/credentials/{credentialId}"]?.get);
   assert.ok(paths["/v1/grants/{grantId}/credentials/{credentialId}"]?.delete);
+  assert.ok(paths["/v1/grants/{grantId}/sessions"]?.post);
+  assert.ok(paths["/v1/grants/{grantId}/sessions"]?.get);
+  assert.ok(paths["/v1/grants/{grantId}/sessions/{sessionId}"]?.get);
+  assert.ok(paths["/v1/grants/{grantId}/sessions/{sessionId}"]?.delete);
+  assert.ok(paths["/v1/grants/{grantId}/sessions/{sessionId}/force-close"]?.post);
   assert.equal(paths["/v1/providers"], undefined);
   assert.equal(paths["/v1/providers/health"], undefined);
   assert.equal(specification.info.title, "Profound Proxy Router Control API");
-  assert.equal(specification.info.version, "0.6.0");
+  assert.equal(specification.info.version, "0.7.0");
   assert.match(JSON.stringify(specification.components.securitySchemes), /bearer/i);
   assert.equal(paths["/health/live"]?.get?.security?.length, 0);
   assert.ok((paths["/v1/profiles"]?.post?.security?.length ?? 0) > 0);

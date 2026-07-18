@@ -117,6 +117,7 @@ export function isPublicAddress(address: string): boolean {
 export function createTargetValidator(
   allowedPorts: ReadonlySet<number>,
   lookup: Lookup = async (hostname) => dnsLookup(hostname, { all: true, verbatim: true }),
+  blockedHostnames: ReadonlySet<string> = new Set(),
 ): TargetValidator {
   return (rawHost, port) => {
     if (!allowedPorts.has(port)) throw new AppError("Target port is not allowed", "target_port_forbidden", 403);
@@ -126,6 +127,9 @@ export function createTargetValidator(
       .toLowerCase();
     if (host === "localhost" || host.endsWith(".localhost")) {
       throw new AppError("Target must be a public Internet hostname", "target_forbidden", 403);
+    }
+    if (blockedHostnames.has(host) || [...blockedHostnames].some((blocked) => host.endsWith(`.${blocked}`))) {
+      throw new AppError("Target hostname is restricted to a local network", "target_forbidden", 403);
     }
     if (isIP(host) !== 0) {
       if (!isPublicAddress(host)) {

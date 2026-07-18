@@ -90,7 +90,6 @@ deployedTest(
       name: `credential-lifecycle-${Date.now()}`,
       targeting: { country: "US" },
       customerId: "integration-customer",
-      isAuthenticated: false,
       shouldRetry: false,
     });
     t.after(async () => {
@@ -108,7 +107,6 @@ deployedTest(
     assert.ok(token.length >= 32);
     assert.equal(route.profile.customerId, "integration-customer");
     assert.deepEqual(route.profile.geography, { countryCode: "US" });
-    assert.equal(route.profile.isTargetAuthenticated, false);
 
     const detail = await controlRequest(`/v1/profiles/${route.profile.id}`);
     assert.equal(detail.status, 200);
@@ -126,7 +124,6 @@ deployedTest(
       body: JSON.stringify({
         customerId: "integration-customer",
         geography: { countryCode: "CA" },
-        isTargetAuthenticated: false,
         allowConnectionRetry: true,
       }),
     });
@@ -165,14 +162,20 @@ deployedTest(
     assert.match(storedGrantText, /tokenHash|tokenSalt/);
     assert.doesNotMatch(storedGrantText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-    const secondResponse = await controlRequest(`/v1/profiles/${route.profile.id}/grants`, { method: "POST" });
+    const secondResponse = await controlRequest(`/v1/profiles/${route.profile.id}/grants`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionMode: "none" }),
+    });
     assert.equal(secondResponse.status, 201);
     const second = (await secondResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
     assert.notEqual(second.grant.grantId, route.accessGrant.id);
 
     const before = await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString());
     assert.equal(before.status, 200);
-    const rotationResponse = await controlRequest(`/v1/grants/${route.accessGrant.id}/credentials/rotate`, { method: "POST" });
+    const rotationResponse = await controlRequest(`/v1/grants/${route.accessGrant.id}/credentials/${route.credential.id}/rotate`, {
+      method: "POST",
+    });
     assert.equal(rotationResponse.status, 200);
     const rotated = (await rotationResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
     assert.equal(rotated.grant.credentials[0]?.status, "overlap");
@@ -180,9 +183,10 @@ deployedTest(
     const rotatedProxy = proxyWithCredentials(rotated.endpoints.http, rotated.credential.username, rotated.credential.password);
     assert.equal((await requestViaHttpProxy(rotatedProxy, new URL("/lifecycle", target.url).toString())).status, 200);
 
-    const emergencyRotationResponse = await controlRequest(`/v1/grants/${route.accessGrant.id}/credentials/emergency-rotate`, {
-      method: "POST",
-    });
+    const emergencyRotationResponse = await controlRequest(
+      `/v1/grants/${route.accessGrant.id}/credentials/${rotated.credential.credentialId}/emergency-rotate`,
+      { method: "POST" },
+    );
     assert.equal(emergencyRotationResponse.status, 200);
     const emergency = (await emergencyRotationResponse.json()) as import("./helpers.js").IssuedAccessGrantResponse;
     const emergencyProxy = proxyWithCredentials(emergency.endpoints.http, emergency.credential.username, emergency.credential.password);

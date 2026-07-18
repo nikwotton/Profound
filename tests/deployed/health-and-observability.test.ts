@@ -48,7 +48,7 @@ deployedTest("deployed health aggregator and status application expose durable c
   assert.ok(aggregatorBody.snapshot);
   assert.deepEqual(
     aggregatorBody.snapshot.capabilities.map(({ capability }) => capability),
-    ["all_traffic", "authenticated_traffic", "unauthenticated_traffic", "health_verification"],
+    ["all_traffic", "managed_sessions", "stateless_traffic", "health_verification"],
   );
   assert.ok(
     aggregatorBody.snapshot.capabilities.every(
@@ -85,7 +85,7 @@ deployedTest("deployed health aggregator and status application expose durable c
   const page = await fetchInternal(environment.metadata.statusApplication, "/");
   assert.equal(page.status, 200);
   const html = await page.text();
-  for (const label of ["All Traffic", "Authenticated Traffic", "Unauthenticated Traffic", "Health Verification"]) {
+  for (const label of ["All Traffic", "Managed Sessions", "Stateless Traffic", "Health Verification"]) {
     assert.match(html, new RegExp(label));
   }
   assert.match(html, /stale|current/);
@@ -98,7 +98,6 @@ deployedTest("deployed signed public canary works directly and through the norma
   const route = await createRoute({
     name: `canary-path-${Date.now()}`,
     targeting: { country: "US" },
-    isAuthenticated: false,
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
@@ -185,14 +184,13 @@ deployedTest("deployed passive traffic reaches the health aggregator through the
     name: `passive-health-${Date.now()}`,
     targeting: { country: "US", city: "New York" },
     customerId: `passive-customer-${randomUUID()}`,
-    isAuthenticated: false,
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
 
   const beforeResponse = await fetchInternal(environment.metadata.healthAggregator, "/v1/status", token);
   const before = ((await beforeResponse.json()) as { snapshot: HealthSnapshot }).snapshot;
-  const beforeValidation = before.capabilities.find(({ capability }) => capability === "unauthenticated_traffic")?.endToEndValidatedAt;
+  const beforeValidation = before.capabilities.find(({ capability }) => capability === "stateless_traffic")?.endToEndValidatedAt;
 
   const response = await requestViaHttpProxy(
     route.proxyUrls.http,
@@ -206,7 +204,7 @@ deployedTest("deployed passive traffic reaches the health aggregator through the
       const result = await fetchInternal(environment.metadata.healthAggregator, "/v1/status", token);
       if (!result.ok) return undefined;
       const snapshot = ((await result.json()) as { snapshot: HealthSnapshot }).snapshot;
-      const validation = snapshot.capabilities.find(({ capability }) => capability === "unauthenticated_traffic")?.endToEndValidatedAt;
+      const validation = snapshot.capabilities.find(({ capability }) => capability === "stateless_traffic")?.endToEndValidatedAt;
       return validation !== undefined && validation !== beforeValidation ? snapshot : undefined;
     },
     { timeoutMs: 120_000, intervalMs: 2_000 },
@@ -227,7 +225,6 @@ deployedTest("deployed OTLP logs, metrics, traces, and canary security logs arri
     name: `otel-${Date.now()}`,
     targeting: { country: "US" },
     customerId: customer,
-    isAuthenticated: false,
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));

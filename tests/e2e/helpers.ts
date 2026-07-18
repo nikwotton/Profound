@@ -91,7 +91,11 @@ export async function createRoute(profile: RouteProfileInput): Promise<CreatedRo
   const { profileId } = (await response.json()) as { profileId: string };
   const [profileResponse, grantResponse] = await Promise.all([
     controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}`),
-    controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}/grants`, { method: "POST" }),
+    controlRequest(`/v1/profiles/${encodeURIComponent(profileId)}/grants`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionMode: "none" }),
+    }),
   ]);
   if (!profileResponse.ok || grantResponse.status !== 201) {
     throw new Error(`Profile setup failed: profile=${profileResponse.status} grant=${grantResponse.status}`);

@@ -99,12 +99,9 @@ test("DynamoDB persistence survives store replacement and excludes caller-facing
     allowedProtocols: ["http", "https", "socks5"],
     targeting: { country: "US", region: "NY", city: "New York", carrier: "T-Mobile" },
     rotation: { mode: "manual" },
-    session: { mode: "sticky", id: "session-1", requireGeographicContinuity: true },
     customerId: "customer-a",
     userId: "user-a",
-    isTargetAuthenticated: true,
     allowConnectionRetry: false,
-    isAuthenticated: true,
     shouldRetry: false,
     retryPolicy: { maxAttempts: 1 },
   };
@@ -113,12 +110,12 @@ test("DynamoDB persistence survives store replacement and excludes caller-facing
   await store.create("route-1", profile, "proxidize");
   assert.doesNotMatch(JSON.stringify(routeItem), new RegExp(token));
   assert.doesNotMatch(JSON.stringify(routeItem), /tokenHash|tokenSalt/);
-  const grant = await store.createAccessGrant("grant-1", "route-1", "user-a", "credential-1", token);
+  const grant = await store.createAccessGrant("grant-1", "route-1", "user-a", "credential-1", token, "none");
   assert.notEqual(grant.credentials[0]?.tokenHash, token);
   assert.doesNotMatch(JSON.stringify(accessGrantItem), new RegExp(token));
   assert.doesNotMatch(JSON.stringify([...credentialLookupItems.values()]), /tokenHash|tokenSalt/);
   const authenticationStartedAt = commands.length;
-  assert.equal((await store.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
+  assert.equal((await store.authenticateAccessGrant("pxy_credential-1", token))?.grant.id, "grant-1");
   const authenticationCommands = commands.slice(authenticationStartedAt);
   assert.equal(
     authenticationCommands.some((command) => command.constructor.name === "QueryCommand"),
@@ -139,15 +136,15 @@ test("DynamoDB persistence survives store replacement and excludes caller-facing
   const replacement = new DynamoRouteStore("route-state", client);
   assert.equal((await replacement.get("route-1")).customerId, "customer-a");
   const replacementAuthenticationStartedAt = commands.length;
-  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
+  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-1", token))?.grant.id, "grant-1");
   assert.equal(
     commands.slice(replacementAuthenticationStartedAt).some((command) => command.constructor.name === "UpdateCommand"),
     false,
     "recent last-used metadata avoids a DynamoDB write per request",
   );
-  await replacement.rotateAccessGrantCredential("grant-1", "credential-2", "rotated-token");
-  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
-  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-2", "rotated-token"))?.id, "grant-1");
+  await replacement.rotateAccessGrantCredential("grant-1", "credential-1", "credential-2", "rotated-token");
+  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-1", token))?.grant.id, "grant-1");
+  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-2", "rotated-token"))?.grant.id, "grant-1");
   assert.equal(credentialLookupItems.size, 2);
 
   const health: ProviderHealth = {

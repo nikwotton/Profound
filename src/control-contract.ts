@@ -4,7 +4,7 @@ import { GeographyPayload as Geography, RouteProfilePayload } from "./route-prof
 
 export { RouteProfilePayload } from "./route-profile-schema.js";
 
-export const CONTROL_API_VERSION = "0.6.0";
+export const CONTROL_API_VERSION = "0.7.0";
 
 export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
   "Unauthorized",
@@ -54,7 +54,6 @@ const PublicRoute = Schema.Struct({
   geography: Schema.optional(Geography),
   carrier: Schema.optional(Schema.String),
   providerOverride: Schema.NullOr(Schema.Literal("bright_data", "proxidize")),
-  isTargetAuthenticated: Schema.Boolean,
   allowConnectionRetry: Schema.Boolean,
   status: Schema.Literal("ready", "rotating", "failed", "revoked"),
   createdAt: Schema.String,
@@ -64,6 +63,8 @@ const PublicRoute = Schema.Struct({
 const PublicAccessGrantCredential = Schema.Struct({
   credentialId: Schema.String,
   username: Schema.String,
+  sessionMode: Schema.Literal("managed", "none"),
+  sessionId: Schema.optional(Schema.String),
   status: Schema.Literal("active", "overlap", "revoked", "expired"),
   createdAt: Schema.String,
   renewalDueAt: Schema.String,
@@ -76,15 +77,39 @@ const PublicAccessGrantCredential = Schema.Struct({
 const PublicAccessGrant = Schema.Struct({
   grantId: Schema.String,
   profileId: Schema.String,
+  jobId: Schema.NullOr(Schema.String),
   status: Schema.Literal("ready", "revoked"),
   credentials: Schema.Array(PublicAccessGrantCredential),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 }).annotations({ identifier: "AccessGrant" });
 
+const PublicLogicalSession = Schema.Struct({
+  sessionId: Schema.String,
+  grantId: Schema.String,
+  profileId: Schema.String,
+  sessionMode: Schema.Literal("managed"),
+  status: Schema.Literal("open", "closed"),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  lastUsedAt: Schema.optional(Schema.String),
+  closedAt: Schema.optional(Schema.String),
+}).annotations({ identifier: "LogicalSession" });
+
+const SessionModePayload = Schema.Struct({ sessionMode: Schema.Literal("managed", "none") }).annotations({
+  identifier: "SessionModeInput",
+  parseOptions: { onExcessProperty: "error" },
+});
+
+const GrantIssuancePayload = Schema.Struct({
+  sessionMode: Schema.Literal("managed", "none"),
+  jobId: Schema.optional(Schema.String),
+}).annotations({ identifier: "GrantIssuanceInput", parseOptions: { onExcessProperty: "error" } });
+
 const IssuedAccessGrant = Schema.Struct({
   grant: PublicAccessGrant,
   credential: Schema.extend(PublicAccessGrantCredential, Schema.Struct({ password: Schema.String })),
+  session: Schema.optional(PublicLogicalSession),
   endpoints: Schema.Struct({ http: Schema.String, socks5: Schema.String }),
 }).annotations({ identifier: "IssuedAccessGrant" });
 
@@ -95,11 +120,13 @@ const CreatedProfile = Schema.Struct({
 const ProfileResponse = Schema.Struct({ profile: PublicRoute });
 const ProfilesResponse = Schema.Struct({ data: Schema.Array(PublicRoute) });
 const AccessGrantsResponse = Schema.Struct({ data: Schema.Array(PublicAccessGrant) });
+const LogicalSessionsResponse = Schema.Struct({ data: Schema.Array(PublicLogicalSession) });
 const LiveResponse = Schema.Struct({ status: Schema.Literal("live") });
 const ReadyResponse = Schema.Struct({ status: Schema.Literal("ready") });
 const profileId = HttpApiSchema.param("id", Schema.String);
 const accessGrantId = HttpApiSchema.param("grantId", Schema.String);
 const credentialId = HttpApiSchema.param("credentialId", Schema.String);
+const sessionId = HttpApiSchema.param("sessionId", Schema.String);
 
 const health = HttpApiGroup.make("health", { topLevel: true })
   .add(HttpApiEndpoint.get("live", "/health/live").addSuccess(LiveResponse).annotate(OpenApi.Description, "Process liveness"))
@@ -139,11 +166,13 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
   .add(HttpApiEndpoint.del("deleteProfile")`/v1/profiles/${profileId}`.addError(RouteNotFound).addError(InternalError))
   .add(
     HttpApiEndpoint.post("createAccessGrant")`/v1/profiles/${profileId}/grants`
+      .setPayload(GrantIssuancePayload)
       .addSuccess(IssuedAccessGrant, { status: 201 })
+      .addError(BadRequest)
       .addError(RouteNotFound)
       .addError(ServiceUnavailable)
       .addError(InternalError)
-      .annotate(OpenApi.Description, "Issue a proxy credential whose secret is returned only in this response"),
+      .annotate(OpenApi.Description, "Create an explicit managed-session or stateless grant and return its secret once"),
   )
   .add(
     HttpApiEndpoint.get("listAccessGrants")`/v1/profiles/${profileId}/grants`
@@ -159,17 +188,26 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
       .addError(InternalError),
   )
   .add(
-    HttpApiEndpoint.post("rotateAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/rotate`
+    HttpApiEndpoint.post("createStatelessCredential")`/v1/grants/${accessGrantId}/credentials`
+      .setPayload(SessionModePayload)
+      .addSuccess(IssuedAccessGrant, { status: 201 })
+      .addError(BadRequest)
+      .addError(RouteNotFound)
+      .addError(ServiceUnavailable)
+      .addError(InternalError),
+  )
+  .add(
+    HttpApiEndpoint.post("rotateAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/${credentialId}/rotate`
       .addSuccess(IssuedAccessGrant)
       .addError(RouteNotFound)
       .addError(InternalError)
       .annotate(
         OpenApi.Description,
-        "Rotate this grant's bearer credential without creating or changing provider affinity; return the replacement secret only in this response",
+        "Rotate one credential without changing its stateless or logical-session scope; return the replacement secret only once",
       ),
   )
   .add(
-    HttpApiEndpoint.post("emergencyRotateAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/emergency-rotate`
+    HttpApiEndpoint.post("emergencyRotateAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/${credentialId}/emergency-rotate`
       .addSuccess(IssuedAccessGrant)
       .addError(RouteNotFound)
       .addError(InternalError)
@@ -177,6 +215,34 @@ const profiles = HttpApiGroup.make("profiles", { topLevel: true })
         OpenApi.Description,
         "Replace a suspected-compromised credential immediately without overlap; return the replacement secret only in this response",
       ),
+  )
+  .add(
+    HttpApiEndpoint.post("createLogicalSession")`/v1/grants/${accessGrantId}/sessions`
+      .addSuccess(IssuedAccessGrant, { status: 201 })
+      .addError(RouteNotFound)
+      .addError(InternalError),
+  )
+  .add(
+    HttpApiEndpoint.get("listLogicalSessions")`/v1/grants/${accessGrantId}/sessions`
+      .addSuccess(LogicalSessionsResponse)
+      .addError(RouteNotFound)
+      .addError(InternalError),
+  )
+  .add(
+    HttpApiEndpoint.get("getLogicalSession")`/v1/grants/${accessGrantId}/sessions/${sessionId}`
+      .addSuccess(Schema.Struct({ session: PublicLogicalSession }))
+      .addError(RouteNotFound)
+      .addError(InternalError),
+  )
+  .add(
+    HttpApiEndpoint.del("closeLogicalSession")`/v1/grants/${accessGrantId}/sessions/${sessionId}`
+      .addError(RouteNotFound)
+      .addError(InternalError),
+  )
+  .add(
+    HttpApiEndpoint.post("forceCloseLogicalSession")`/v1/grants/${accessGrantId}/sessions/${sessionId}/force-close`
+      .addError(RouteNotFound)
+      .addError(InternalError),
   )
   .add(
     HttpApiEndpoint.get("getAccessGrantCredential")`/v1/grants/${accessGrantId}/credentials/${credentialId}`
@@ -199,5 +265,5 @@ export const ControlApi = HttpApi.make("ProfoundControlApi")
   .annotate(OpenApi.Version, CONTROL_API_VERSION)
   .annotate(
     OpenApi.Description,
-    "Manage reusable provider-neutral route profiles, independently revocable access grants, and one-time proxy credentials.",
+    "Manage provider-neutral route profiles, access grants, managed logical sessions, and explicitly stateless credentials.",
   );

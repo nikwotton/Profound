@@ -59,10 +59,11 @@ test("the fixed local runtime adds no standalone environment configuration contr
 
 test("SST secrets have an audited exclusive source and development placeholders", () => {
   const aws = readFileSync("infra/providers/aws.ts", "utf8");
+  const awsPolicy = readFileSync("infra/providers/aws-policy.ts", "utf8");
   const root = readFileSync("sst.config.ts", "utf8");
   const stageConfiguration = readFileSync("infra/stage-config.ts", "utf8");
   const documentation = readFileSync("docs/CONFIGURATION.md", "utf8");
-  const infrastructure = `${root}\n${stageConfiguration}\n${aws}`;
+  const infrastructure = `${root}\n${stageConfiguration}\n${awsPolicy}\n${aws}`;
   const secrets = [...aws.matchAll(/new sst\.Secret\(\s*"([^"]+)"/g)].map((match) => match[1]).sort();
   assert.deepEqual(secrets, expectedSstSecrets);
 
@@ -97,7 +98,8 @@ test("SST secrets have an audited exclusive source and development placeholders"
   }
   assert.doesNotMatch(stageConfiguration, /environment|process\.env/);
   assert.match(stageConfiguration, /providerMode = production \|\| stage === "staging" \? "live" : "mock"/);
-  assert.match(aws, /const v0Policy =/);
+  assert.match(aws, /import \{ v0Policy \} from "\.\/aws-policy\.js"/);
+  assert.match(awsPolicy, /export const v0Policy =/);
 
   assert.match(aws, /new sst\.Secret\("ControlApiToken", \$dev \? devControlApiToken : undefined\)/);
   assert.match(aws, /new sst\.Secret\("HealthAggregatorToken", \$dev \? devHealthAggregatorToken : undefined\)/);

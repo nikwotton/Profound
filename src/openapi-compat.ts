@@ -7,6 +7,12 @@ export interface OpenApiDocument {
   components?: { schemas?: Record<string, unknown> };
 }
 
+interface ApiVersion {
+  major: number;
+  minor: number;
+  patch: number;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
@@ -49,6 +55,20 @@ function unknownArray(value: unknown): unknown[] {
 
 function records(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.map(record).filter((item): item is JsonRecord => item !== undefined) : [];
+}
+
+function apiVersion(value: string | undefined): ApiVersion | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value ?? "");
+  if (match === null) return undefined;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+}
+
+export function permitsVersionedBreakingChanges(previousVersion: string | undefined, currentVersion: string | undefined): boolean {
+  const previous = apiVersion(previousVersion);
+  const current = apiVersion(currentVersion);
+  if (previous === undefined || current === undefined) return false;
+  if (current.major > previous.major) return true;
+  return previous.major === 0 && current.major === 0 && current.minor > previous.minor;
 }
 
 function strings(value: unknown): string[] {

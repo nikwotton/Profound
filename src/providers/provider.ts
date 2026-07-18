@@ -13,6 +13,8 @@ export interface ResolveOptions {
   dataPlaneProtocol: DataPlaneProtocol;
   target: ProxyTarget;
   logicalOperationId: string;
+  sessionMode: "managed" | "none";
+  affinityHandle?: string;
   candidateIndex: number;
   signal: AbortSignal;
   excludedEndpointIds?: ReadonlySet<string>;

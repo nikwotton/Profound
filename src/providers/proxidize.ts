@@ -59,8 +59,6 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
       capabilities: {
         clientProtocols: new Set(["http", "https", "socks5"] as const),
         upstreamProtocols: new Set(["http"] as const),
-        authenticatedTraffic: true,
-        unauthenticatedTraffic: true,
         geography: new Set<keyof Targeting>(["country", "region", "city", "carrier"]),
         countries: new Set(["US"]),
         sessions: true,
@@ -74,6 +72,19 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
         dnsResolution: {
           http: "unverified" as const,
           socks5: "unverified" as const,
+        },
+        destinationSafety: {
+          http: "provider_trusted" as const,
+          socks5: "provider_trusted" as const,
+          providerNetworkScope: "external_public_only" as const,
+        },
+        health: {
+          source: "provider_inventory" as const,
+        },
+        capacity: {
+          observation: "provider_inventory" as const,
+          hardLimit: "provider_signal_or_proxy_failure" as const,
+          provisioning: "operator_only" as const,
         },
       },
       pricing: {
@@ -227,6 +238,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
       assignment: {
         candidateId: endpoint.id,
         proxySlotId: endpoint.id,
+        providerSessionId: endpoint.id,
         ...(endpoint.deviceId === undefined ? {} : { deviceId: endpoint.deviceId }),
         assignmentMode:
           this.config.exactCity === "provider_guaranteed"

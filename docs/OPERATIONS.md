@@ -59,7 +59,7 @@ The dashboard is at `http://127.0.0.1:8083/`. Without a dedicated health route, 
 pnpm aws:remove --stage yourname-dev
 ```
 
-The dashboard lists non-null profile provider overrides and every current hard-capacity circuit with its provider/candidate, normalized failure class, state, and cooldown. `/api/capacity` additionally exposes the typed routing policy, recent candidate component scores, soft pressure, and circuit state for operator diagnosis.
+The dashboard lists non-null profile provider overrides and every current hard-capacity circuit with its provider/candidate, normalized failure class, state, and cooldown. `/api/capacity` additionally exposes the typed routing policy, current least-load evidence, shadow roadmap score components, soft pressure, and circuit state for operator diagnosis.
 
 ## Configuration contract
 
@@ -251,7 +251,7 @@ The health aggregator combines:
 - passive outcomes forwarded from normal proxy traffic by the collector;
 - optional signed end-to-end requests through a dedicated proxy grant to the isolated canary.
 
-It persists global capabilities `all_traffic`, `authenticated_traffic`, `unauthenticated_traffic`, and `health_verification` with `operational`, `degraded`, or `unavailable` status. Evidence freshness is reported separately: quiet traffic or a missing synthetic route may make validation stale without declaring an outage.
+It persists global capabilities `all_traffic`, `managed_sessions`, `stateless_traffic`, and `health_verification` with `operational`, `degraded`, or `unavailable` status. Evidence freshness is reported separately: quiet traffic or a missing synthetic route may make validation stale without declaring an outage.
 
 Aggregator endpoints:
 
@@ -265,7 +265,7 @@ Aggregator endpoints:
 
 ### Configure the synthetic route
 
-The dedicated synthetic route is disabled in the initial v0 stage policy. After the initial deploy, create a dedicated unauthenticated route and retain its access-grant URL. Make a reviewed change to `stage.features.syntheticHealthRoute`, store the separated username/token, and redeploy:
+The dedicated synthetic profile is disabled in the initial v0 stage policy. After the initial deploy, create a dedicated stateless access grant and retain its proxy URL. Make a reviewed change to `stage.features.syntheticHealthRoute`, store the separated username/token, and redeploy:
 
 ```sh
 pnpm sst secret set HealthProxyUsername 'ACCESS_GRANT_ID' --stage production
@@ -302,9 +302,9 @@ The dashboard and its programmatic endpoints are available to authorized users a
 - `from` and `to` ISO timestamps;
 - `preset=day|week|month`;
 - `interval=hour|day|week|month`;
-- `groupBy=provider|customer|user|route|country|city|outcome`;
+- `groupBy=provider|customer|user|route|job|session_mode|destination_domain|destination_host|destination_path_template|country|city|outcome`;
 - `provider=bright_data|proxidize|unresolved`;
-- `customerId`, `userId`, `routeId`, `country`, `city`, and `outcome` filters.
+- `customerId`, `userId`, `routeId`, `jobId`, `logicalOperationId`, `sessionMode`, `destinationDomain`, `destinationHost`, `destinationPathTemplate`, `country`, `city`, and `outcome` filters.
 
 Example:
 
@@ -315,9 +315,11 @@ curl -sS \
 
 `/api/capacity` accepts optional `country`, `city`, and `carrier` filters. It returns the latest service-private provider-account/slot inventory with current per-slot connection load, compatible healthy and unhealthy capacity, the typed capacity policy, current provider/candidate circuits, and an operator-action recommendation. Slot provisioning remains a manual Proxidize operation in v0. Recommendations are suppressed when geography or carrier inventory is the limiting constraint.
 
-It also returns the typed routing policy and the latest 100 safe candidate-score diagnostics. These diagnostics contain provider, optional provider override and service-private proxy-slot identity, policy version, total score, component scores, soft pressure, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and component scores are emitted on restricted selection logs, traces, and the durable attempt ledger.
+It also returns the typed routing policy and the latest 100 safe routing diagnostics. These diagnostics contain provider, optional provider override and service-private proxy-slot identity, policy version, active-load and soft-pressure evidence, shadow roadmap score components, circuit state/failure class/cooldown, and completion time; they omit caller, route, credential, and destination data. The same policy version and diagnostic components are emitted on restricted selection logs, traces, and the durable attempt ledger.
 
-The initial `proxy-routing-v0-2026-07-18` policy scores every eligible provider and peer, slot, or device candidate from 0–100:
+The initial `proxy-routing-policy-hypotheses-2026-07-18` object holds both the v0 establishment budget and a shadow roadmap scoring hypothesis. V0 selection uses the least active connections within the applicable provider-preference tier and a stable candidate identifier as the tie-breaker. It does not use probabilistic or weighted score selection.
+
+For evidence collection only, the roadmap hypothesis computes a 0–100 score:
 
 `100 × (0.30 reliability + 0.30 headroom + 0.20 performance + 0.15 costEfficiency + 0.05 stability)`
 
@@ -326,9 +328,9 @@ The initial `proxy-routing-v0-2026-07-18` policy scores every eligible provider 
 - Performance uses proxy-controlled p95 establishment wait against a 10-second reference.
 - Cost efficiency is `1 / (1 + expectedCost/referenceCost)` with a `$0.01` reference and the provider's expected bytes or connection-seconds.
 - Stability discounts stale evidence, logical identity churn, and repeated failover.
-- Signals without fresh evidence start neutral at `0.5`. Candidates within five points of the best candidate in the preference tier are selected randomly with `score²` weighting.
+- Signals without fresh evidence start neutral at `0.5`. The five-point band and `score²` weighting remain roadmap hypotheses and do not control v0 traffic.
 
-Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options. Authenticated traffic exhausts the eligible device-backed class despite soft saturation. For unauthenticated traffic, residential soft saturation promotes compatible unsaturated device-backed capacity ahead of saturated residential overflow. Revalidate and version the policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent when production evidence changes.
+Slot claims are durable and liveness-backed. Selection and active-load increment are one atomic operation; connection teardown removes the claim. Candidates at or above the soft limit remain overflow options. Managed sessions exhaust the eligible device-backed class despite soft saturation. For stateless traffic, residential soft saturation promotes compatible unsaturated device-backed capacity ahead of saturated residential overflow. Revalidate and version the roadmap policy's weights, windows, freshness thresholds, normalization references, five-point band, and exponent before allowing it to control production traffic.
 
 The initial `proxidize-capacity-v0-2026-07-17` policy is centralized in code and carried on durable records and rollups:
 

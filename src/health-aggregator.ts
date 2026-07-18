@@ -5,7 +5,7 @@ import { expectBufferChunk, isUnknownRecord, parseJson } from "./decoding.js";
 import type { HealthAlertEvaluator } from "./alerting.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAdapter } from "./providers/provider.js";
-import type { RouteStore } from "./store.js";
+import type { CapabilityHealthRepository, ProviderHealthRepository, UsageRepository } from "./store.js";
 import type {
   CapabilityHealth,
   CapabilityHealthSnapshot,
@@ -26,7 +26,7 @@ export interface SyntheticValidationScope {
 }
 
 const SyntheticValidationScopeSchema: Schema.Schema<SyntheticValidationScope> = Schema.Struct({
-  capability: Schema.optionalWith(Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic"), { exact: true }),
+  capability: Schema.optionalWith(Schema.Literal("all_traffic", "managed_sessions", "stateless_traffic"), { exact: true }),
   country: Schema.optionalWith(Schema.String, { exact: true }),
   city: Schema.optionalWith(Schema.String, { exact: true }),
 }).annotations({ identifier: "SyntheticValidationScope", parseOptions: { onExcessProperty: "error" } });
@@ -72,6 +72,8 @@ export interface CapabilityHealthAggregatorOptions {
   now?: () => number;
 }
 
+type HealthAggregationStore = ProviderHealthRepository & CapabilityHealthRepository & Pick<UsageRepository, "listCapacityPressureEvidence">;
+
 function latestTimestamp(values: Array<string | undefined>): string | undefined {
   const timestamps = values.filter((value): value is string => value !== undefined).sort();
   return timestamps.at(-1);
@@ -90,12 +92,9 @@ function preferredClassStatus(
   return providers.some((provider) => state(provider) !== "unhealthy") ? "degraded" : "unavailable";
 }
 
-function combinedTrafficStatus(
-  authenticated: CapabilityHealth["status"],
-  unauthenticated: CapabilityHealth["status"],
-): CapabilityHealth["status"] {
-  if (authenticated === "operational" && unauthenticated === "operational") return "operational";
-  if (authenticated === "unavailable" && unauthenticated === "unavailable") return "unavailable";
+function combinedTrafficStatus(managed: CapabilityHealth["status"], stateless: CapabilityHealth["status"]): CapabilityHealth["status"] {
+  if (managed === "operational" && stateless === "operational") return "operational";
+  if (managed === "unavailable" && stateless === "unavailable") return "unavailable";
   return "degraded";
 }
 
@@ -103,9 +102,7 @@ function isPassiveSignal(value: unknown): value is PassiveHealthSignal {
   if (!isUnknownRecord(value)) return false;
   return (
     (value["provider"] === "bright_data" || value["provider"] === "proxidize") &&
-    (value["capability"] === "all_traffic" ||
-      value["capability"] === "authenticated_traffic" ||
-      value["capability"] === "unauthenticated_traffic") &&
+    (value["capability"] === "all_traffic" || value["capability"] === "managed_sessions" || value["capability"] === "stateless_traffic") &&
     (value["outcome"] === "success" || value["outcome"] === "failure") &&
     typeof value["observedAt"] === "string" &&
     Number.isFinite(Date.parse(value["observedAt"]))
@@ -182,7 +179,7 @@ export class CapabilityHealthAggregator {
   #lastSynthetic?: SyntheticValidationResult;
 
   constructor(
-    private readonly store: RouteStore,
+    private readonly store: HealthAggregationStore,
     private readonly providers: readonly ProviderAdapter[],
     private readonly options: CapabilityHealthAggregatorOptions,
     private readonly logger: Logger,
@@ -259,19 +256,18 @@ export class CapabilityHealthAggregator {
     now: number,
   ): CapabilityHealthSnapshot {
     const healthByProvider = new Map(providerHealth.map((health) => [health.provider, health]));
-    const providersFor = (capability: "authenticatedTraffic" | "unauthenticatedTraffic") =>
+    const providersFor = () =>
       this.providers
-        .filter((provider) => provider.descriptor.capabilities[capability])
         .map((provider) => ({
           providerClass: provider.descriptor.providerClass,
           health: healthByProvider.get(provider.descriptor.id),
         }))
         .filter((provider): provider is { providerClass: ProviderClass; health: ProviderHealth } => provider.health !== undefined);
-    const authenticatedProviders = providersFor("authenticatedTraffic");
-    const unauthenticatedProviders = providersFor("unauthenticatedTraffic");
+    const managedProviders = providersFor();
+    const statelessProviders = providersFor();
     const capacityPressureProviders = new Set(capacityPressure.map((evidence) => evidence.provider));
-    const authenticatedStatus = preferredClassStatus(authenticatedProviders, "device_backed", capacityPressureProviders);
-    const unauthenticatedStatus = preferredClassStatus(unauthenticatedProviders, "residential", capacityPressureProviders);
+    const managedStatus = preferredClassStatus(managedProviders, "device_backed", capacityPressureProviders);
+    const statelessStatus = preferredClassStatus(statelessProviders, "residential", capacityPressureProviders);
     const validationAt = (capability: Exclude<CapabilityName, "health_verification">): string | undefined =>
       latestTimestamp([
         ...passive
@@ -322,19 +318,19 @@ export class CapabilityHealthAggregator {
                   ...(synthetic.message === undefined ? {} : { message: synthetic.message }),
                 }),
           };
-    const authenticatedCapability = capability(
-      "authenticated_traffic",
-      authenticatedStatus,
-      authenticatedProviders.map(({ health }) => health),
+    const managedCapability = capability(
+      "managed_sessions",
+      managedStatus,
+      managedProviders.map(({ health }) => health),
     );
-    const unauthenticatedCapability = capability(
-      "unauthenticated_traffic",
-      unauthenticatedStatus,
-      unauthenticatedProviders.map(({ health }) => health),
+    const statelessCapability = capability(
+      "stateless_traffic",
+      statelessStatus,
+      statelessProviders.map(({ health }) => health),
     );
     const allTrafficCapability = capability(
       "all_traffic",
-      combinedTrafficStatus(authenticatedCapability.status, unauthenticatedCapability.status),
+      combinedTrafficStatus(managedCapability.status, statelessCapability.status),
       providerHealth,
     );
     const geographies = new Map<string, GeographyHealth>(
@@ -364,7 +360,7 @@ export class CapabilityHealthAggregator {
     return {
       id: `${new Date(now).toISOString()}-${randomBytes(4).toString("hex")}`,
       generatedAt: new Date(now).toISOString(),
-      capabilities: [allTrafficCapability, authenticatedCapability, unauthenticatedCapability, canaryStatus],
+      capabilities: [allTrafficCapability, managedCapability, statelessCapability, canaryStatus],
       providers: providerHealth,
       geographies: [...geographies.values()],
     };
@@ -407,7 +403,7 @@ export class HealthAggregatorServer {
 
   constructor(
     private readonly aggregator: CapabilityHealthAggregator,
-    private readonly store: RouteStore,
+    private readonly store: Pick<CapabilityHealthRepository, "latestCapabilityHealth">,
     private readonly options: HealthAggregatorServerOptions,
     private readonly logger: Logger,
   ) {}

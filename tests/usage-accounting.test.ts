@@ -396,7 +396,7 @@ test("variance thresholds enforce the absolute floor, 5% warning, 15% error, and
   }
 });
 
-test("company-facing dashboard supports usage filters and surfaces provider overrides and capacity circuits", async (t) => {
+test("company-facing dashboard supports usage filters and provider-neutral credential and session lifecycle views", async (t) => {
   const store = new InMemoryRouteStore();
   await store.create(
     "overridden-profile",
@@ -404,23 +404,48 @@ test("company-facing dashboard supports usage filters and surfaces provider over
       name: "overridden-profile",
       customerId: "customer-override",
       providerOverride: "bright_data",
-      isTargetAuthenticated: false,
       allowConnectionRetry: false,
       userId: "user-override",
       allowedProtocols: ["http", "https", "socks5"],
       targeting: { country: "US" },
       rotation: { mode: "per_request" },
-      session: { mode: "none", requireGeographicContinuity: false },
-      isAuthenticated: false,
       shouldRetry: false,
       retryPolicy: { maxAttempts: 1 },
     },
     "bright_data",
   );
+  await store.createAccessGrant(
+    "dashboard-grant",
+    "overridden-profile",
+    "dashboard-principal",
+    "dashboard-managed-credential",
+    "dashboard-token",
+    "managed",
+    "dashboard-session",
+    "dashboard-job",
+  );
+  await store.addAccessGrantCredential("dashboard-grant", "dashboard-stateless-credential", "dashboard-stateless-token", "none");
+  const sessionTimestamp = "2026-07-15T11:00:00.000Z";
+  await store.createLogicalSession({
+    id: "dashboard-session",
+    grantId: "dashboard-grant",
+    routeId: "overridden-profile",
+    status: "open",
+    terminateActive: false,
+    bindingVersion: 0,
+    createdAt: sessionTimestamp,
+    updatedAt: sessionTimestamp,
+  });
   await store.recordCapacityCircuitFailure("bright_data", "bright_data", "provider_hard_limit", "2026-07-15T11:59:30.000Z");
   await store.recordUsage(
     record({
       provider: "proxidize",
+      jobId: "dashboard-job",
+      sessionMode: "none",
+      destinationDomain: "example.com",
+      destinationHost: "api.example.com",
+      destinationPort: 443,
+      destinationPathTemplate: "/items/:id",
       proxySlotId: "slot-a",
       routingPolicyVersion: ROUTING_POLICY.version,
       routingScore: 72.5,
@@ -443,6 +468,23 @@ test("company-facing dashboard supports usage filters and surfaces provider over
   const body = (await response.json()) as { data: Array<{ group: { provider: string }; requestCount: number }> };
   assert.equal(body.data[0]?.group.provider, "proxidize");
   assert.equal(body.data[0]?.requestCount, 1);
+  const sessions = (await (
+    await fetch(`http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=session_mode&sessionMode=none`)
+  ).json()) as { data: Array<{ group: { session_mode: string }; requestCount: number }> };
+  assert.equal(sessions.data[0]?.group.session_mode, "none");
+  assert.equal(sessions.data[0]?.requestCount, 1);
+  const jobs = (await (
+    await fetch(`http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=job&jobId=dashboard-job`)
+  ).json()) as { data: Array<{ group: { job: string }; requestCount: number }> };
+  assert.equal(jobs.data[0]?.group.job, "dashboard-job");
+  assert.equal(jobs.data[0]?.requestCount, 1);
+  const destinations = (await (
+    await fetch(
+      `http://127.0.0.1:${address.port}/api/usage?preset=day&interval=hour&groupBy=destination_host&destinationDomain=example.com&destinationHost=api.example.com&destinationPathTemplate=%2Fitems%2F%3Aid`,
+    )
+  ).json()) as { data: Array<{ group: { destination_host: string }; requestCount: number }> };
+  assert.equal(destinations.data[0]?.group.destination_host, "api.example.com");
+  assert.equal(destinations.data[0]?.requestCount, 1);
   const capacity = (await (await fetch(`http://127.0.0.1:${address.port}/api/capacity`)).json()) as {
     routingPolicy: { version: string };
     recentCandidateScores: Array<{ routingScore: number; routingScoreComponents: { headroom: number } }>;
@@ -468,4 +510,9 @@ test("company-facing dashboard supports usage filters and surfaces provider over
   assert.match(html, /overridden-profile/);
   assert.match(html, /bright_data/);
   assert.match(html, /provider_hard_limit/);
+  assert.match(html, /Credential and session lifecycle/);
+  assert.match(html, /dashboard-managed-credential/);
+  assert.match(html, /dashboard-stateless-credential/);
+  assert.match(html, /dashboard-session/);
+  assert.doesNotMatch(html, /dashboard-token|dashboard-stateless-token/);
 });

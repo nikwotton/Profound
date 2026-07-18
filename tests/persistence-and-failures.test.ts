@@ -1,23 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createLogger } from "../src/logger.js";
+import { sessionRoutingTelemetryAttributes, sessionRoutingUsageContext, type ResolutionState } from "../src/route-service.js";
 import { createRoute, requestViaProxy, socks5AuthenticationStatus, startHttpTarget, startTestApp } from "./helpers.js";
 
-test("access-grant credentials and route requirements are reloaded when the application restarts", async (t) => {
+test("managed access-grant credentials, logical sessions, affinity, and route requirements survive a service restart", async (t) => {
   const target = await startHttpTarget();
   let testApp = await startTestApp([target.port]);
   t.after(async () => {
     await target.stop();
     await testApp.stop();
   });
-  const route = await createRoute(testApp.application, {
-    name: "persistent",
-    customerId: "customer-persistent",
-    isAuthenticated: true,
-    targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
-  });
+  const route = await createRoute(
+    testApp.application,
+    {
+      name: "persistent",
+      customerId: "customer-persistent",
+      targeting: { country: "US", region: "CA", city: "Los Angeles", carrier: "AT&T" },
+    },
+    "managed",
+  );
   const before = await requestViaProxy(route.proxyUrls.http, target.url);
   const city = before.headers["x-mock-city"];
+  const candidate = before.headers["x-mock-endpoint-id"];
+  assert.ok(route.credential.sessionId);
   const saved = { storeState: testApp.storeState };
   await testApp.stop();
   testApp = await startTestApp([target.port], saved);
@@ -27,13 +33,52 @@ test("access-grant credentials and route requirements are reloaded when the appl
   const response = await requestViaProxy(restartedHttpProxy.toString(), target.url);
   assert.equal(response.status, 200);
   assert.equal(response.headers["x-mock-city"], city);
+  assert.equal(response.headers["x-mock-endpoint-id"], candidate);
   const persisted = await testApp.application.routes.get(route.profile.id, "local-dev");
   assert.equal(persisted.customerId, "customer-persistent");
-  assert.equal(persisted.isTargetAuthenticated, true);
+  assert.equal(route.credential.sessionMode, "managed");
   assert.deepEqual(persisted.geography, { countryCode: "US", regionCode: "CA", city: "Los Angeles" });
+  const persistedSession = await testApp.application.routes.getLogicalSession(
+    route.accessGrant.id,
+    route.credential.sessionId,
+    "local-dev",
+  );
+  assert.equal(persistedSession.sessionId, route.credential.sessionId);
+  assert.ok(persistedSession.lastUsedAt);
   const restartedSocks5Proxy = new URL(route.proxyUrls.socks5);
   restartedSocks5Proxy.port = String(testApp.application.socks5Address.port);
   assert.equal(await socks5AuthenticationStatus(restartedSocks5Proxy.toString()), 0x00);
+});
+
+test("managed session routing emits provider-neutral affinity, rebind, degradation, and failback telemetry", () => {
+  const state: ResolutionState = {
+    attemptsByProvider: new Map(),
+    excludedEndpointIds: new Set(),
+    establishmentWaitMs: 0,
+    sessionRebindRetries: 0,
+    sessionAffinityHit: true,
+    sessionRebindCause: "binding_ineligible",
+    desiredProviderClass: "device_backed",
+    currentProviderClass: "residential",
+    degradedFallback: true,
+    failbackOutcome: "not_attempted",
+  };
+  assert.deepEqual(sessionRoutingUsageContext(state), {
+    sessionAffinityHit: true,
+    sessionRebindCause: "binding_ineligible",
+    desiredProviderClass: "device_backed",
+    currentProviderClass: "residential",
+    degradedFallback: true,
+    failbackOutcome: "not_attempted",
+  });
+  assert.deepEqual(sessionRoutingTelemetryAttributes(state), {
+    "proxy.session.affinity_hit": true,
+    "proxy.session.rebind_cause": "binding_ineligible",
+    "proxy.session.desired_provider_class": "device_backed",
+    "proxy.session.current_provider_class": "residential",
+    "proxy.session.degraded_fallback": true,
+    "proxy.session.failback_outcome": "not_attempted",
+  });
 });
 
 test("provider authentication, rate limiting, and unavailable peers are normalized", async (t) => {
@@ -119,7 +164,7 @@ test("data-plane attempt logs include attribution and byte counts without reques
   const route = await createRoute(testApp.application, {
     name: "telemetry",
     targeting: { country: "US" },
-    isAuthenticated: false,
+    sessionMode: "none",
     shouldRetry: false,
   });
   const response = await requestViaProxy(route.proxyUrls.http, target.url, {

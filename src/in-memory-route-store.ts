@@ -4,6 +4,7 @@ import { NotFoundError } from "./errors.js";
 import { ACCESS_GRANT_CREDENTIAL_OVERLAP_MS, createStoredCredential, credentialUsername, type RouteStore } from "./store.js";
 import type {
   ActiveTunnel,
+  AuthenticatedAccessGrant,
   CapabilityHealthSnapshot,
   CapabilityName,
   CapacityCircuitReason,
@@ -19,6 +20,7 @@ import type {
   RouteStatus,
   StoredAccessGrant,
   StoredAccessGrantCredential,
+  StoredLogicalSession,
   StoredRoute,
   UsageAlertEvent,
   UsageReconciliation,
@@ -43,6 +45,7 @@ function circuitKey(provider: StoredRoute["provider"], candidateKey: string): st
 export class InMemoryRouteStoreState {
   readonly routes = new Map<string, StoredRoute>();
   readonly grants = new Map<string, StoredAccessGrant>();
+  readonly sessions = new Map<string, StoredLogicalSession>();
   readonly tunnels = new Map<string, ActiveTunnel>();
   readonly circuits = new Map<string, CapacityCircuitState>();
   readonly drains = new Map<string, DeploymentDrainState>();
@@ -117,6 +120,9 @@ export class InMemoryRouteStore implements RouteStore {
     principalId: string,
     credentialId: string,
     token: string,
+    sessionMode: StoredAccessGrantCredential["sessionMode"],
+    sessionId?: string,
+    jobId?: string,
   ): Promise<StoredAccessGrant> {
     await this.get(routeId);
     if (this.state.grants.has(id)) throw new Error("duplicate_access_grant");
@@ -125,13 +131,29 @@ export class InMemoryRouteStore implements RouteStore {
       id,
       routeId,
       principalId,
-      credentials: [createStoredCredential(credentialId, token, now)],
+      ...(jobId === undefined ? {} : { jobId }),
+      credentials: [createStoredCredential(credentialId, token, sessionMode, now, sessionId)],
       status: "ready",
       terminateActive: false,
       createdAt: now,
       updatedAt: now,
     };
     this.state.grants.set(id, grant);
+    return copy(grant);
+  }
+
+  async addAccessGrantCredential(
+    id: string,
+    credentialId: string,
+    token: string,
+    sessionMode: StoredAccessGrantCredential["sessionMode"],
+    sessionId?: string,
+  ): Promise<StoredAccessGrant> {
+    const grant = await this.getAccessGrant(id);
+    const now = new Date().toISOString();
+    grant.credentials.push(createStoredCredential(credentialId, token, sessionMode, now, sessionId));
+    grant.updatedAt = now;
+    this.state.grants.set(id, copy(grant));
     return copy(grant);
   }
 
@@ -149,7 +171,7 @@ export class InMemoryRouteStore implements RouteStore {
       .map(copy);
   }
 
-  async authenticateAccessGrant(username: string, token: string): Promise<StoredAccessGrant | undefined> {
+  async authenticateAccessGrant(username: string, token: string): Promise<AuthenticatedAccessGrant | undefined> {
     const grant = [...this.state.grants.values()].find(
       (candidate) =>
         candidate.status !== "revoked" && candidate.credentials.some((credential) => credentialUsername(credential.id) === username),
@@ -168,11 +190,12 @@ export class InMemoryRouteStore implements RouteStore {
     if (credential === undefined) return undefined;
     credential.lastUsedAt = now;
     grant.updatedAt = now;
-    return copy(grant);
+    return copy({ grant, credential });
   }
 
   async rotateAccessGrantCredential(
     id: string,
+    previousCredentialId: string,
     credentialId: string,
     token: string,
     suspectedCompromise = false,
@@ -182,8 +205,10 @@ export class InMemoryRouteStore implements RouteStore {
     const now = new Date().toISOString();
     const nowMs = Date.parse(now);
     const overlapLimit = nowMs + ACCESS_GRANT_CREDENTIAL_OVERLAP_MS;
+    const previous = grant.credentials.find((credential) => credential.id === previousCredentialId);
+    if (previous === undefined || !credentialUsable(previous, nowMs)) throw new NotFoundError();
     grant.credentials = grant.credentials.map((credential) => {
-      if (!credentialUsable(credential, nowMs)) return credential;
+      if (credential.id !== previousCredentialId || !credentialUsable(credential, nowMs)) return credential;
       if (suspectedCompromise) return { ...credential, status: "revoked", revokeAt: now };
       return {
         ...credential,
@@ -191,7 +216,7 @@ export class InMemoryRouteStore implements RouteStore {
         revokeAt: new Date(Math.min(Date.parse(credential.expiresAt), overlapLimit)).toISOString(),
       };
     });
-    grant.credentials.push(createStoredCredential(credentialId, token, now));
+    grant.credentials.push(createStoredCredential(credentialId, token, previous.sessionMode, now, previous.sessionId));
     grant.updatedAt = now;
     return copy(grant);
   }
@@ -214,6 +239,48 @@ export class InMemoryRouteStore implements RouteStore {
     grant.status = "revoked";
     if (terminateActive) grant.terminateActive = true;
     grant.updatedAt = new Date().toISOString();
+    await this.closeLogicalSessions(id, terminateActive);
+  }
+
+  async createLogicalSession(session: StoredLogicalSession): Promise<void> {
+    if (this.state.sessions.has(session.id)) throw new Error("duplicate_logical_session");
+    this.state.sessions.set(session.id, copy(session));
+  }
+
+  async getLogicalSession(id: string, includeClosed = false): Promise<StoredLogicalSession> {
+    const session = this.state.sessions.get(id);
+    if (session === undefined || (!includeClosed && session.status === "closed")) throw new NotFoundError();
+    return copy(session);
+  }
+
+  async listLogicalSessions(grantId: string): Promise<StoredLogicalSession[]> {
+    return [...this.state.sessions.values()]
+      .filter((session) => session.grantId === grantId)
+      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map(copy);
+  }
+
+  async saveLogicalSession(session: StoredLogicalSession, expectedBindingVersion: number): Promise<boolean> {
+    const current = this.state.sessions.get(session.id);
+    if (current === undefined || current.bindingVersion !== expectedBindingVersion || current.status === "closed") return false;
+    this.state.sessions.set(session.id, copy(session));
+    return true;
+  }
+
+  async closeLogicalSession(id: string, terminateActive = false): Promise<void> {
+    const session = await this.getLogicalSession(id, true);
+    if (session.status === "closed") return;
+    const now = new Date().toISOString();
+    session.status = "closed";
+    session.terminateActive = terminateActive;
+    session.closedAt = now;
+    session.updatedAt = now;
+    session.bindingVersion += 1;
+    this.state.sessions.set(id, copy(session));
+  }
+
+  async closeLogicalSessions(grantId: string, terminateActive = false): Promise<void> {
+    for (const session of await this.listLogicalSessions(grantId)) await this.closeLogicalSession(session.id, terminateActive);
   }
 
   async revoke(id: string, terminateActive = false): Promise<void> {
@@ -224,9 +291,10 @@ export class InMemoryRouteStore implements RouteStore {
     route.updatedAt = new Date().toISOString();
   }
 
-  async shouldTerminateActive(id: string, accessGrantId?: string): Promise<boolean> {
+  async shouldTerminateActive(id: string, accessGrantId?: string, sessionId?: string): Promise<boolean> {
     if (this.state.routes.get(id)?.terminateActive === true) return true;
-    return accessGrantId !== undefined && this.state.grants.get(accessGrantId)?.terminateActive === true;
+    if (accessGrantId !== undefined && this.state.grants.get(accessGrantId)?.terminateActive === true) return true;
+    return sessionId !== undefined && this.state.sessions.get(sessionId)?.terminateActive === true;
   }
 
   async registerActiveTunnel(tunnel: ActiveTunnel): Promise<void> {

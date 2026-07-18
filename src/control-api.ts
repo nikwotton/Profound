@@ -34,7 +34,7 @@ export interface ControlApiOptions {
 type RouteReadError = RouteNotFound | InternalError;
 type RouteCreateError = BadRequest | ServiceUnavailable | InternalError;
 type RouteUpdateError = RouteCreateError | RouteNotFound;
-type AccessGrantCreateError = RouteReadError | ServiceUnavailable;
+type AccessGrantCreateError = RouteReadError | BadRequest | ServiceUnavailable;
 
 function unreachableRouteServiceError(error: never): never {
   void error;
@@ -112,6 +112,7 @@ function accessGrantCreateError(error: RouteServiceError): AccessGrantCreateErro
     case "upstream":
       return new ServiceUnavailable({ code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() });
     case "validation":
+      return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
     case "authentication":
     case "internal":
       return internalError();
@@ -211,9 +212,9 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
           routes.effects.delete(path.id, identity.userId).pipe(Effect.mapError(readError)),
         ).pipe(Effect.withSpan("control.profiles.delete", { attributes: { "proxy.route.id": path.id } })),
       )
-      .handle("createAccessGrant", ({ path }) =>
+      .handle("createAccessGrant", ({ path, payload }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          routes.effects.createAccessGrant(path.id, identity.userId).pipe(Effect.mapError(accessGrantCreateError)),
+          routes.effects.createAccessGrant(path.id, identity.userId, payload).pipe(Effect.mapError(accessGrantCreateError)),
         ).pipe(Effect.withSpan("control.access_grants.create", { attributes: { "proxy.route.id": path.id } })),
       )
       .handle("listAccessGrants", ({ path }) =>
@@ -234,14 +235,52 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
       )
       .handle("rotateAccessGrantCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          routes.effects.rotateAccessGrantCredential(path.grantId, identity.userId).pipe(Effect.mapError(readError)),
+          routes.effects.rotateAccessGrantCredential(path.grantId, path.credentialId, identity.userId).pipe(Effect.mapError(readError)),
         ).pipe(Effect.withSpan("control.access_grants.rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } })),
       )
       .handle("emergencyRotateAccessGrantCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          routes.effects.rotateAccessGrantCredential(path.grantId, identity.userId, true).pipe(Effect.mapError(readError)),
+          routes.effects
+            .rotateAccessGrantCredential(path.grantId, path.credentialId, identity.userId, true)
+            .pipe(Effect.mapError(readError)),
         ).pipe(
           Effect.withSpan("control.access_grants.emergency_rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } }),
+        ),
+      )
+      .handle("createStatelessCredential", ({ path, payload }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          routes.effects.createStatelessCredential(path.grantId, identity.userId, payload).pipe(Effect.mapError(accessGrantCreateError)),
+        ),
+      )
+      .handle("createLogicalSession", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          routes.effects.createManagedSession(path.grantId, identity.userId).pipe(Effect.mapError(readError)),
+        ),
+      )
+      .handle("listLogicalSessions", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          routes.effects.listLogicalSessions(path.grantId, identity.userId).pipe(
+            Effect.map((data) => ({ data })),
+            Effect.mapError(readError),
+          ),
+        ),
+      )
+      .handle("getLogicalSession", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          routes.effects.getLogicalSession(path.grantId, path.sessionId, identity.userId).pipe(
+            Effect.map((session) => ({ session })),
+            Effect.mapError(readError),
+          ),
+        ),
+      )
+      .handle("closeLogicalSession", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          routes.effects.closeLogicalSession(path.grantId, path.sessionId, identity.userId).pipe(Effect.mapError(readError)),
+        ),
+      )
+      .handle("forceCloseLogicalSession", ({ path }) =>
+        Effect.flatMap(AuthenticatedUser, (identity) =>
+          routes.effects.closeLogicalSession(path.grantId, path.sessionId, identity.userId, true).pipe(Effect.mapError(readError)),
         ),
       )
       .handle("getAccessGrantCredential", ({ path }) =>
