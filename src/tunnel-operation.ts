@@ -1,18 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { Span } from "@opentelemetry/api";
-import { Transform, type Duplex } from "node:stream";
+import type { Duplex } from "node:stream";
 import { assignmentAttributes, assignmentLogContext } from "./assignment-evidence.js";
 import { assertSafeProviderResolution, recordDestinationResolution } from "./destination-resolution.js";
 import { beginAttemptBudget, type AttemptBudget } from "./establishment-budget.js";
 import { AppError, ProviderUnavailableError, assignmentFromError, isRetryableUpstreamFailure, providerIdFromError } from "./errors.js";
 import type { Logger } from "./logger.js";
+import { attemptUsageRecord } from "./proxy-attempt-accounting.js";
 import { routingScoreLogContext, routingScoreTelemetryAttributes } from "./routing-policy.js";
-import { sessionRoutingTelemetryAttributes, sessionRoutingUsageContext, type ResolutionState, type RouteService } from "./route-service.js";
+import { sessionRoutingTelemetryAttributes, type RouteService } from "./route-service.js";
 import type { TargetValidation } from "./target-security.js";
 import type { Telemetry } from "./telemetry.js";
 import type { AuthenticatedRoute, ProxyTarget, UpstreamEndpoint } from "./types.js";
 import { openUpstreamTunnel, type OpenedUpstreamTunnel } from "./upstream-tunnel.js";
-import { usageDestination } from "./usage-destination.js";
+import { byteCounter } from "./stream-utils.js";
 
 export type TunnelProtocol = "https" | "socks5";
 
@@ -38,159 +39,11 @@ export interface TunnelOperationOptions {
   prepareClient(opened: OpenedUpstreamTunnel): { bytesSent: number; bytesReceived: number };
 }
 
-function counter(onBytes: (bytes: number) => void, highWaterMark: number): Transform {
-  return new Transform({
-    highWaterMark,
-    transform(chunk: Buffer, _encoding, callback) {
-      onBytes(chunk.length);
-      callback(null, chunk);
-    },
-  });
-}
-
 function passiveContext(route: AuthenticatedRoute) {
   return {
     sessionMode: route.sessionMode,
     ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
     ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-  };
-}
-
-function establishedUsage(
-  route: AuthenticatedRoute,
-  upstream: UpstreamEndpoint,
-  state: ResolutionState,
-  options: {
-    attemptId: string;
-    operationId: string;
-    protocol: TunnelProtocol;
-    outcome: "success" | "failure";
-    attemptIndex: number;
-    attemptStartedAt: number;
-    bytesSent: number;
-    bytesReceived: number;
-    completedAt: string;
-    target: ProxyTarget;
-  },
-) {
-  return {
-    id: options.attemptId,
-    logicalOperationId: options.operationId,
-    ...(route.jobId === undefined ? {} : { jobId: route.jobId }),
-    accessGrantId: route.accessGrantId,
-    sessionMode: route.sessionMode,
-    ...(route.sessionId === undefined ? {} : { sessionId: route.sessionId }),
-    routeId: route.id,
-    userId: route.userId,
-    customerId: route.customerId,
-    provider: upstream.provider,
-    protocol: options.protocol,
-    outcome: options.outcome,
-    retryIndex: options.attemptIndex,
-    failover: upstream.provider !== route.provider,
-    bytesSent: options.bytesSent,
-    bytesReceived: options.bytesReceived,
-    ...usageDestination(options.target.host, options.target.port),
-    ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
-    ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-    ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
-    endpointId: upstream.endpointId,
-    ...(upstream.proxySlotId === undefined
-      ? {}
-      : {
-          proxySlotId: upstream.proxySlotId,
-          ...(upstream.upstreamConnectionId === undefined ? {} : { upstreamConnectionId: upstream.upstreamConnectionId }),
-          connectionStartedAt: upstream.upstreamConnectionStartedAt ?? new Date(options.attemptStartedAt).toISOString(),
-          connectionEndedAt: options.completedAt,
-          selectedSlotLoad: upstream.selectedSlotLoad,
-        }),
-    ...(upstream.capacityPressure === true
-      ? {
-          capacityPressure: true as const,
-          capacityPressureProvider: upstream.capacityPressureProvider ?? upstream.provider,
-          ...(upstream.capacityPolicyVersion === undefined ? {} : { capacityPolicyVersion: upstream.capacityPolicyVersion }),
-        }
-      : {}),
-    ...(state.capacityConstraint === undefined ? {} : { capacityConstraint: state.capacityConstraint }),
-    ...(upstream.capacityCircuitState === undefined
-      ? {}
-      : {
-          capacityCircuitState: upstream.capacityCircuitState,
-          capacityCircuitReason: upstream.capacityCircuitReason,
-          capacityCircuitCooldownUntil: upstream.capacityCircuitCooldownUntil,
-        }),
-    ...(upstream.routingPolicyVersion === undefined
-      ? {}
-      : {
-          routingPolicyVersion: upstream.routingPolicyVersion,
-          routingScore: upstream.routingScore,
-          routingScoreComponents: upstream.routingScoreComponents,
-        }),
-    establishmentWaitMs: state.establishmentWaitMs,
-    ...sessionRoutingUsageContext(state),
-    startedAt: new Date(options.attemptStartedAt).toISOString(),
-    completedAt: options.completedAt,
-  };
-}
-
-function failedUsage(
-  route: AuthenticatedRoute,
-  upstream: UpstreamEndpoint | undefined,
-  state: ResolutionState,
-  options: {
-    attemptId: string;
-    operationId: string;
-    protocol: TunnelProtocol;
-    outcome: "retry" | "failure";
-    attemptIndex: number;
-    attemptStartedAt: number;
-    attemptedProvider: ReturnType<typeof providerIdFromError>;
-    completedAt: string;
-    target: ProxyTarget;
-  },
-) {
-  return {
-    id: options.attemptId,
-    logicalOperationId: options.operationId,
-    ...(route.jobId === undefined ? {} : { jobId: route.jobId }),
-    accessGrantId: route.accessGrantId,
-    sessionMode: route.sessionMode,
-    ...(route.sessionId === undefined ? {} : { sessionId: route.sessionId }),
-    routeId: route.id,
-    userId: route.userId,
-    customerId: route.customerId,
-    provider: options.attemptedProvider ?? ("unresolved" as const),
-    protocol: options.protocol,
-    outcome: options.outcome,
-    retryIndex: options.attemptIndex,
-    failover: options.attemptedProvider !== undefined && options.attemptedProvider !== route.provider,
-    bytesSent: 0,
-    bytesReceived: 0,
-    ...usageDestination(options.target.host, options.target.port),
-    ...(route.targeting.country === undefined ? {} : { country: route.targeting.country }),
-    ...(route.targeting.city === undefined ? {} : { city: route.targeting.city }),
-    ...(route.providerOverride === undefined ? {} : { providerOverride: route.providerOverride }),
-    ...(upstream?.endpointId === undefined ? {} : { endpointId: upstream.endpointId }),
-    ...(state.capacityConstraint === undefined ? {} : { capacityConstraint: state.capacityConstraint }),
-    ...(upstream?.capacityCircuitState === undefined
-      ? {}
-      : {
-          capacityCircuitState: upstream.capacityCircuitState,
-          capacityCircuitReason: upstream.capacityCircuitReason,
-          capacityCircuitCooldownUntil: upstream.capacityCircuitCooldownUntil,
-        }),
-    ...(state.capacityPolicyVersion === undefined ? {} : { capacityPolicyVersion: state.capacityPolicyVersion }),
-    ...(upstream?.routingPolicyVersion === undefined
-      ? {}
-      : {
-          routingPolicyVersion: upstream.routingPolicyVersion,
-          routingScore: upstream.routingScore,
-          routingScoreComponents: upstream.routingScoreComponents,
-        }),
-    establishmentWaitMs: state.establishmentWaitMs,
-    ...sessionRoutingUsageContext(state),
-    startedAt: new Date(options.attemptStartedAt).toISOString(),
-    completedAt: options.completedAt,
   };
 }
 
@@ -328,14 +181,14 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
       });
       options.clientSocket
         .pipe(
-          counter((bytes) => {
+          byteCounter((bytes) => {
             bytesSent += bytes;
           }, options.streamBufferBytes),
         )
         .pipe(opened.socket);
       opened.socket
         .pipe(
-          counter((bytes) => {
+          byteCounter((bytes) => {
             bytesReceived += bytes;
           }, options.streamBufferBytes),
         )
@@ -387,7 +240,7 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
         const completedAt = new Date().toISOString();
         void options.routes
           .recordUsage(
-            establishedUsage(route, activeUpstream, resolutionState, {
+            attemptUsageRecord(route, resolutionState, {
               attemptId,
               operationId: options.operationId,
               protocol,
@@ -397,7 +250,9 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
               bytesSent,
               bytesReceived,
               completedAt,
+              provider: activeUpstream.provider,
               target,
+              upstream: activeUpstream,
             }),
           )
           .catch((usageError: unknown) => options.logger.error("Usage record persistence failed", { error: usageError }));
@@ -482,16 +337,19 @@ export async function establishTunnel(options: TunnelOperationOptions): Promise<
       const completedAt = new Date().toISOString();
       void options.routes
         .recordUsage(
-          failedUsage(route, upstream, resolutionState, {
+          attemptUsageRecord(route, resolutionState, {
             attemptId,
             operationId: options.operationId,
             protocol,
             outcome,
             attemptIndex,
             attemptStartedAt,
-            attemptedProvider,
             completedAt,
+            provider: attemptedProvider ?? "unresolved",
+            bytesSent: 0,
+            bytesReceived: 0,
             target,
+            ...(upstream === undefined ? {} : { upstream }),
           }),
         )
         .catch((usageError: unknown) => options.logger.error("Usage record persistence failed", { error: usageError }));
