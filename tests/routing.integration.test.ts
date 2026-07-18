@@ -203,7 +203,7 @@ test("HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage recor
 });
 
 test("provider-side DNS remains authoritative while local and provider observations are diagnostic", async (t) => {
-  const target = await startHttpTarget();
+  const target = await startHttpTarget({ host: "localhost" });
   const lines: Array<{ message: string; context?: Record<string, unknown> }> = [];
   const logger = {
     info: (message: string, context?: Record<string, unknown>) => lines.push({ message, ...(context === undefined ? {} : { context }) }),
@@ -225,7 +225,7 @@ test("provider-side DNS remains authoritative while local and provider observati
     targeting: { country: "US" },
     shouldRetry: false,
   });
-  const domainUrl = target.url.replace("127.0.0.1", "localhost");
+  const domainUrl = target.url;
 
   assert.equal((await requestViaProxy(route.proxyUrls.http, domainUrl)).status, 200);
   assert.equal(

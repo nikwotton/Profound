@@ -94,7 +94,9 @@ function authenticatedProxyUrl(endpoint: string, username: string, password: str
   return url.toString();
 }
 
-export async function startHttpTarget(options: { responseBody?: string | Buffer; onRequest?: () => void } = {}): Promise<TestTarget> {
+export async function startHttpTarget(
+  options: { responseBody?: string | Buffer; onRequest?: () => void; host?: "127.0.0.1" | "localhost" } = {},
+): Promise<TestTarget> {
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk) => chunks.push(expectBufferChunk(chunk)));
@@ -117,9 +119,10 @@ export async function startHttpTarget(options: { responseBody?: string | Buffer;
       );
     });
   });
-  const address = await listen(server, "127.0.0.1", 0);
+  const host = options.host ?? "127.0.0.1";
+  const address = await listen(server, host, 0);
   return {
-    url: `http://127.0.0.1:${address.port}/resource?secret=query-value`,
+    url: `http://${host}:${address.port}/resource?secret=query-value`,
     port: address.port,
     stop: () => closeServer(server),
   };
