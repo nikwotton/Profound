@@ -1,15 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { request as httpRequest, createServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, isIP, type Socket } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { startApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
+import { startTestApplication, type ApplicationDependencies, type RunningApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { expectBufferChunk } from "../src/decoding.js";
 import { basicAuth, closeServer, listen } from "../src/net-utils.js";
 import { silentLogger, type Logger } from "../src/logger.js";
 import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../src/types.js";
+import { InMemoryRouteStore, InMemoryRouteStoreState } from "./in-memory-route-store.js";
 
 export interface TestTarget {
   url: string;
@@ -19,9 +17,8 @@ export interface TestTarget {
 
 export interface TestApp {
   application: RunningApplication;
-  databasePath: string;
-  directory: string;
-  stop(remove?: boolean): Promise<void>;
+  storeState: InMemoryRouteStoreState;
+  stop(): Promise<void>;
 }
 
 export interface CreatedRouteResponse {
@@ -140,13 +137,12 @@ export async function startEchoTarget(): Promise<TestTarget> {
 
 export async function startTestApp(
   allowedPorts: number[],
-  existing?: { databasePath: string; directory: string },
+  existing?: { storeState: InMemoryRouteStoreState },
   logger: Logger = silentLogger,
   environment: NodeJS.ProcessEnv = {},
   dependencies: ApplicationDependencies = {},
 ): Promise<TestApp> {
-  const directory = existing?.directory ?? mkdtempSync(join(tmpdir(), "profound-test-"));
-  const databasePath = existing?.databasePath ?? join(directory, "routes.db");
+  const storeState = existing?.storeState ?? new InMemoryRouteStoreState();
   const config = loadConfig({
     PROVIDER_MODE: "mock",
     FORWARD_PROXY_HOST: "127.0.0.1",
@@ -157,23 +153,20 @@ export async function startTestApp(
     CONTROL_API_PORT: "0",
     CONTROL_API_TOKEN: "test-admin-token",
     ADVERTISED_PROXY_HOST: "127.0.0.1",
-    SQLITE_PATH: databasePath,
+    ROUTE_TABLE_NAME: "unused-test-table",
     ALLOWED_TARGET_PORTS: allowedPorts.join(","),
     CONNECT_TIMEOUT_MS: "250",
     ...environment,
   });
-  const application = await startApplication(config, logger, {
+  const application = await startTestApplication(config, logger, {
     targetValidator: async () => undefined,
+    storeFactory: () => new InMemoryRouteStore(storeState),
     ...dependencies,
   });
   return {
     application,
-    databasePath,
-    directory,
-    stop: async (remove = true) => {
-      await application.stop();
-      if (remove) rmSync(directory, { recursive: true, force: true });
-    },
+    storeState,
+    stop: () => application.stop(),
   };
 }
 

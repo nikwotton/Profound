@@ -70,10 +70,10 @@ Configure the production environment with:
 - `CONTROL_CERT_ARN` when control DNS is externally managed
 - `DATA_PLANE_ALLOWED_CIDRS`
 - `CONTROL_PLANE_ALLOWED_CIDRS`
-- intended `MIN_TASKS` and `MAX_TASKS`
-- intended Axiom endpoint/dataset/retention overrides
 
 Configure equivalent `STAGING_*` values consumed by the release workflows. Point each private proxy DNS name at the emitted Network Load Balancer hostname. Validate certificate region, hostname coverage, and private DNS resolution before enabling clients.
+
+Provider mode, scaling bounds, Axiom endpoint/dataset naming, retention, timeouts, thresholds, and optional feature policy are code-owned in v0 and are not repository or environment variables.
 
 Runtime/vendor values belong in SST secrets, not GitHub variables or repository files. Required secret names and setup commands are documented in [OPERATIONS.md](OPERATIONS.md#required-stage-secrets).
 

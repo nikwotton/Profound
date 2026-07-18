@@ -4,6 +4,7 @@ import type {
   ProxyTarget,
   ProviderDescriptor,
   ProviderHealth,
+  ProviderId,
   StoredRoute,
   UpstreamEndpoint,
 } from "../types.js";
@@ -18,14 +19,16 @@ export interface ResolveOptions {
 }
 
 /** Generic provider boundary used by routing; vendor details stay adapter-local. */
-export interface ProviderAdapter {
-  readonly descriptor: ProviderDescriptor;
+export interface ProviderAdapter<Id extends ProviderId = ProviderId> {
+  readonly descriptor: ProviderDescriptor & { id: Id };
   resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint>;
   rotate(route: StoredRoute, signal?: AbortSignal): Promise<void>;
   health(signal?: AbortSignal): Promise<ProviderHealth>;
 }
 
-export interface MobileProviderAdapter extends ProviderAdapter {
+export interface MobileProviderAdapter extends ProviderAdapter<"proxidize"> {
+  readonly providerAccountId: string;
   listEndpoints(refresh?: boolean, signal?: AbortSignal): Promise<MobileEndpoint[]>;
   setRotationInterval(endpointId: string, intervalSeconds?: number): Promise<void>;
+  matches(endpoint: MobileEndpoint, route: StoredRoute | { targeting: StoredRoute["targeting"] }): boolean;
 }

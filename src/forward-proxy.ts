@@ -542,7 +542,7 @@ export class ForwardProxyServer {
             response.destroy();
           });
           const abortUpstream = (): void => {
-            upstreamRequest.destroy(abortReason(budget.signal) as Error);
+            upstreamRequest.destroy(abortReason(budget.signal));
           };
           budget.signal.addEventListener("abort", abortUpstream, { once: true });
           upstreamRequest.setTimeout(budget.remainingMs(), () => {

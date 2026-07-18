@@ -21,13 +21,41 @@ export function expectString(value: unknown, context: string): string {
 
 export function expectNonEmptyString(value: unknown, context: string): string {
   const result = expectString(value, context);
-  if (result.length === 0) throw new TypeError(`${context} must not be empty`);
+  if (result.trim().length === 0) throw new TypeError(`${context} must not be empty`);
   return result;
 }
 
 export function expectNumber(value: unknown, context: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError(`${context} must be a finite number`);
   return value;
+}
+
+export function expectNonNegativeNumber(value: unknown, context: string): number {
+  const result = expectNumber(value, context);
+  if (result < 0) throw new TypeError(`${context} must be non-negative`);
+  return result;
+}
+
+export function expectInteger(
+  value: unknown,
+  context: string,
+  minimum = Number.MIN_SAFE_INTEGER,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  const result = expectNumber(value, context);
+  if (!Number.isSafeInteger(result) || result < minimum || result > maximum) {
+    throw new TypeError(`${context} must be a safe integer from ${minimum} to ${maximum}`);
+  }
+  return result;
+}
+
+export function expectIsoTimestamp(value: unknown, context: string): string {
+  const result = expectString(value, context);
+  const timestamp = Date.parse(result);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== result) {
+    throw new TypeError(`${context} must be a canonical ISO-8601 timestamp`);
+  }
+  return result;
 }
 
 export function expectBoolean(value: unknown, context: string): boolean {
@@ -39,9 +67,14 @@ export function expectOptionalString(value: unknown, context: string): string | 
   return value === undefined ? undefined : expectString(value, context);
 }
 
+export function expectOptionalNonEmptyString(value: unknown, context: string): string | undefined {
+  return value === undefined ? undefined : expectNonEmptyString(value, context);
+}
+
 export function parseJson(text: string, context: string): unknown {
   try {
-    return JSON.parse(text) as unknown;
+    const parsed: unknown = JSON.parse(text);
+    return parsed;
   } catch (cause) {
     throw new TypeError(`${context} is not valid JSON`, { cause });
   }

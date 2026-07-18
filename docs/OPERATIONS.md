@@ -18,11 +18,11 @@ AWS is the only deployment provider implemented in v0. The SST module deploys in
 | Product telemetry collector | OTLP buffering/filtering/export and passive health forwarding | n/a                          | ECS Fargate in the product VPC                     |
 | Canary telemetry collector  | Isolated canary OTLP export                                   | n/a                          | ECS Fargate in the canary VPC                      |
 
-`SERVICE_MODE=proxy` starts the combined local data and control planes. `integration-target` is a controlled recipient used by tests and is not a production component.
+`SERVICE_MODE` is internal SST/container wiring. `integration-target` is a controlled recipient used by tests and is not a production component.
 
 The product VPC holds provider credentials, route state, and customer attribution. The public canary has no provider credentials, customer data, company-private routes, or path into the product VPC. Target traffic always travels through a selected provider and never falls back to a direct connection.
 
-## Local operation
+## Personal development operation
 
 ### Install
 
@@ -33,17 +33,17 @@ pnpm install
 pnpm sst install
 ```
 
-### Start the proxy and control plane
+### Start the stack
 
 ```sh
-pnpm dev
+pnpm sst:dev --stage yourname-dev
 ```
 
-The defaults are offline and safe for local development:
+SST provisions the stage's DynamoDB and supporting AWS resources, then starts the application services locally with generated configuration. Personal stages are safe for development:
 
 - provider mode: local Bright Data and Proxidize simulators;
-- persistence: `./data/profound.db` with SQLite;
-- control principal: `local-dev` authenticated by `change-me`;
+- persistence: the stage's DynamoDB table;
+- control principal: the stage identity authenticated by `change-me`;
 - all listeners: loopback only.
 
 Check the process:
@@ -53,71 +53,17 @@ curl -sS http://127.0.0.1:8081/health/live
 curl -sS http://127.0.0.1:8081/health/ready
 ```
 
-### Start the supporting services
-
-Run each command in a separate terminal. The default SQLite path lets every mode share local state.
+The dashboard is at `http://127.0.0.1:8083/`. Without a dedicated health route, provider and passive health work while `Health Verification` reports that no synthetic proxy validation has run. Stop with Ctrl-C and remove the persistent personal stage when finished:
 
 ```sh
-SERVICE_MODE=canary \
-CANARY_SIGNING_SECRET=local-canary-secret \
-pnpm dev
+pnpm aws:remove --stage yourname-dev
 ```
-
-```sh
-SERVICE_MODE=health-aggregator \
-HEALTH_AGGREGATOR_TOKEN=local-health-secret \
-CANARY_SIGNING_SECRET=local-canary-secret \
-HEALTH_CANARY_URL=http://127.0.0.1:8090/v1/challenge \
-pnpm dev
-```
-
-```sh
-SERVICE_MODE=status \
-HEALTH_AGGREGATOR_TOKEN=local-health-secret \
-HEALTH_AGGREGATOR_URL=http://127.0.0.1:8082 \
-pnpm dev
-```
-
-```sh
-SERVICE_MODE=usage-accounting pnpm dev
-```
-
-```sh
-SERVICE_MODE=notification \
-HEALTH_ALERT_DESTINATIONS_JSON='{"version":"local","destinations":[]}' \
-pnpm dev
-```
-
-The dashboard is at `http://127.0.0.1:8083/`. Without a dedicated health route, provider and passive health work while `Health Verification` reports that no synthetic proxy validation has run.
 
 The dashboard lists non-null profile provider overrides and every current hard-capacity circuit with its provider/candidate, normalized failure class, state, and cooldown. `/api/capacity` additionally exposes the typed routing policy, recent candidate component scores, soft pressure, and circuit state for operator diagnosis.
 
 ## Configuration contract
 
-[`.env.example`](../.env.example) is the complete environment-variable reference and must be updated whenever a new setting is introduced. The tables below group the values operators normally change.
-
-### Core data and control plane
-
-| Variable                       | Default                                         | Notes                                                                                            |
-| ------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `PROVIDER_MODE`                | `mock`                                          | `mock` or `live`; developer SST stages reject `live`.                                            |
-| `PERSISTENCE_BACKEND`          | `sqlite`                                        | `sqlite` or `dynamodb`.                                                                          |
-| `SQLITE_PATH`                  | `./data/profound.db`                            | Shared local state path.                                                                         |
-| `ROUTE_TABLE_NAME`             | none                                            | Required for DynamoDB; supplied by SST.                                                          |
-| `CONTROL_API_TOKEN`            | `change-me`                                     | Placeholder accepted only for loopback mock mode.                                                |
-| `CONTROL_API_USER_ID`          | `local-dev`                                     | Trusted principal attached to owned grants and telemetry.                                        |
-| `CONTROL_API_IDENTITIES_JSON`  | none                                            | Complete token-to-principal map; replaces the single identity.                                   |
-| `ALLOWED_TARGET_PORTS`         | `80,443`                                        | Comma-separated public TCP ports accepted by both listeners.                                     |
-| `CONNECT_TIMEOUT_MS`           | `10000`                                         | Per-candidate establishment limit; maximum 10 seconds.                                           |
-| `OPERATION_TIMEOUT_MS`         | `30000`                                         | Overall establishment limit; maximum 30 seconds.                                                 |
-| `STREAM_IDLE_TIMEOUT_MS`       | `60000` local                                   | Post-establishment application idle safeguard.                                                   |
-| `MAX_HEADER_BYTES`             | `32768`                                         | HTTP header and bounded handshake limit.                                                         |
-| `MAX_HTTP_REQUEST_BODY_BYTES`  | `10485760`                                      | Complete plain-HTTP request buffer cap (10 MB); tunnels are unaffected.                          |
-| `MAX_HTTP_RESPONSE_BODY_BYTES` | `52428800`                                      | Complete plain-HTTP response buffer cap (50 MB); tunnels are unaffected.                         |
-| `RETRY_MAX_ATTEMPTS`           | `4`                                             | Central default, range 1–6.                                                                      |
-| `PROXIDIZE_EXACT_CITY_SUPPORT` | mock: `provider_guaranteed`; live: `verifiable` | Live inventory evidence is revalidated; use guaranteed only with an established vendor contract. |
-
-Never bind the control plane beyond loopback with `change-me`. Configuration validation rejects the placeholder in live mode or on a non-loopback control host.
+The [configuration and secret-source audit](CONFIGURATION.md) defines the supported SST secrets, six non-secret operator deployment inputs, typed policy, internal runtime wiring, and test-only inputs. There is no standalone application environment or persistence configuration.
 
 ### Provider credentials
 
@@ -129,11 +75,11 @@ Live mode requires all of the following:
 - `BRIGHT_DATA_API_KEY`
 - `PROXIDIZE_API_TOKEN`
 
-Optional endpoint overrides are `BRIGHT_DATA_HOST`, `BRIGHT_DATA_PORT`, `BRIGHT_DATA_STATUS_API_URL`, and `PROXIDIZE_API_BASE_URL`. Keep provider configuration in SST secrets or a local secret source, never committed environment files.
+SST uses the reviewed v0 endpoints and reads provider credentials only from SST secrets.
 
 ### Persistence
 
-SQLite is disposable local state. DynamoDB is the deployed system of record for:
+DynamoDB is the application system of record for:
 
 - route profiles and access-grant verifier hashes;
 - provider-account and proxy-slot inventory snapshots, active connection loads, and deployment drain state;
@@ -142,7 +88,7 @@ SQLite is disposable local state. DynamoDB is the deployed system of record for:
 - immutable usage records, cost rollups, and reconciliation evidence;
 - alert episodes and notification delivery state.
 
-The AWS table uses on-demand capacity and point-in-time recovery. Production removal is protected. V0 is pre-stable and carries only migrations required by the current design; do not preserve obsolete pre-v0 shapes in disposable environments.
+The AWS table uses on-demand capacity and point-in-time recovery. Production removal is protected. Personal stages are disposable; remove them instead of preserving obsolete pre-v0 state. Offline tests use a test-only in-memory adapter; Dynamo-specific and deployed acceptance tests verify persistence semantics.
 
 ## AWS deployment with SST
 
@@ -166,11 +112,12 @@ aws sts get-caller-identity
 | Stage                | Classification     | Provider default | Data-plane tasks | Removal                                      |
 | -------------------- | ------------------ | ---------------- | ---------------- | -------------------------------------------- |
 | `prod`, `production` | production         | live             | 2–4              | protected/retain                             |
-| `staging`, `preview` | shared             | mock             | 1–2              | removable                                    |
+| `staging`            | shared             | live             | 1–2              | removable                                    |
+| `preview`            | shared             | mock             | 1–2              | removable                                    |
 | `ci`, `ci-*`         | CI                 | mock             | 1–2              | removable; includes transport test recipient |
 | any other valid name | personal developer | mock only        | 1–2              | removable                                    |
 
-Stage names are 1–32 lowercase letters, digits, or hyphens. Use a personal name such as `alice-dev`; do not share a generic development stage. Override data-plane bounds with `MIN_TASKS` and `MAX_TASKS`.
+Stage names are 1–32 lowercase letters, digits, or hyphens. Use a personal name such as `alice-dev`; do not share a generic development stage. Provider mode and data-plane bounds are fixed by the typed stage policy.
 
 ### Telemetry backend
 
@@ -180,7 +127,7 @@ Create three Axiom datasets before deployment:
 - `<app>-<stage>-traces`: Logs + Traces event dataset;
 - `<app>-<stage>-metrics`: Metrics dataset.
 
-All three default to 30-day retention. `TELEMETRY_RETENTION_DAYS` records the expected policy but does not create or mutate the external datasets; configure the same retention in Axiom. `AXIOM_OTLP_ENDPOINT` and `AXIOM_*_DATASET` override the defaults.
+All three use a reviewed 30-day retention expectation. SST fixes the Axiom endpoint and derives dataset names from the application and stage; configure matching external datasets and retention in Axiom.
 
 Store a token scoped only to ingest into those datasets:
 
@@ -192,9 +139,9 @@ pnpm sst secret set AxiomIngestToken \
 
 The token is injected into collectors, not application containers or the canary Lambda.
 
-### Required stage secrets
+### Required non-development stage secrets
 
-Every stage requires independent control, health, canary, and telemetry secrets:
+Every shared, CI, staging, and production stage requires independent control, health, canary, and telemetry secrets:
 
 ```sh
 pnpm sst secret set ControlApiToken \
@@ -207,14 +154,13 @@ pnpm sst secret set AxiomIngestToken \
   'AXIOM_DATASET_SCOPED_INGEST_TOKEN' --stage staging
 ```
 
-One `ControlApiToken` represents one principal. To authorize multiple principals, store the complete mapping and enable it at deployment:
+One `ControlApiToken` represents one principal. Multi-principal identities are disabled in the initial v0 stage policy. To enable them, make a reviewed change to `stage.features.controlApiIdentities`, then store the complete mapping before deployment:
 
 ```sh
 pnpm sst secret set ControlApiIdentities \
   '{"TOKEN_FOR_USER_ONE":"user-one","TOKEN_FOR_SERVICE_TWO":"service-two"}' \
   --stage staging
 
-CONTROL_API_IDENTITIES_CONFIGURED=true \
 pnpm aws:deploy --stage staging
 ```
 
@@ -239,10 +185,10 @@ Use documentation-only example CIDRs as placeholders; replace them with the actu
 ```sh
 CONTROL_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
 DATA_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
-pnpm aws:deploy --stage staging
+pnpm aws:deploy --stage preview
 ```
 
-Non-production uses provider simulators by default. SST prints private proxy, control, dashboard, health, accounting, notification, canary, and telemetry metadata. Private names resolve only from an approved company network connected to the product VPC or from an SST tunnel.
+Preview, CI, and personal stages use provider simulators. SST prints private proxy, control, dashboard, health, accounting, notification, canary, and telemetry metadata. Private names resolve only from an approved company network connected to the product VPC or from an SST tunnel.
 
 ### Deploy production
 
@@ -259,14 +205,11 @@ pnpm sst secret set ProxidizeApiToken 'TOKEN' --stage production
 Also set the four required stage secrets described above for `production`. Then deploy with explicit private domains, validated certificates, and trusted CIDRs:
 
 ```sh
-PROVIDER_MODE=live \
 PROXY_DOMAIN='proxy.corp.example.com' \
 PROXY_CERT_ARN='arn:aws:acm:us-east-1:123456789012:certificate/REPLACE_ME' \
 CONTROL_DOMAIN='proxy-control.corp.example.com' \
 CONTROL_PLANE_ALLOWED_CIDRS='203.0.113.10/32' \
 DATA_PLANE_ALLOWED_CIDRS='203.0.113.10/32,198.51.100.0/24' \
-MIN_TASKS=2 \
-MAX_TASKS=4 \
 pnpm aws:deploy --stage production
 ```
 
@@ -274,23 +217,19 @@ The domain names above are syntax placeholders and must be replaced. Production 
 
 The proxy NLB terminates TLS on port `8080` for HTTP proxy traffic. The control plane terminates HTTPS on port `443`. SOCKS5 remains unencrypted on port `1080` and is private-network only.
 
-AWS fixes the TLS-listener idle timeout at 350 seconds. The configurable SOCKS5 TCP listener defaults to 1,200 seconds, and target-group deregistration defaults to 300 seconds. Set `NLB_TCP_IDLE_TIMEOUT_SECONDS` and `NLB_DEREGISTRATION_DELAY_SECONDS` deliberately. Proxy-slot load exists only while an upstream connection is active and is heartbeated independently of those load-balancer timeouts.
+AWS fixes the TLS-listener idle timeout at 350 seconds. V0 fixes the SOCKS5 TCP listener at 1,200 seconds and target-group deregistration at 300 seconds. Proxy-slot load exists only while an upstream connection is active and is heartbeated independently of those load-balancer timeouts.
 
 ### Personal SST development
 
-Create secrets for a personal stage and start SST dev:
+Personal `sst dev` sessions force mock providers and use fixed non-sensitive development placeholders. Start one without provisioning stage secrets:
 
 ```sh
-pnpm sst secret set ControlApiToken 'REPLACE_WITH_A_LONG_RANDOM_VALUE' --stage alice-dev
-pnpm sst secret set HealthAggregatorToken 'REPLACE_WITH_ANOTHER_LONG_RANDOM_VALUE' --stage alice-dev
-pnpm sst secret set CanarySigningSecret 'REPLACE_WITH_A_SIGNING_SECRET' --stage alice-dev
-pnpm sst secret set AxiomIngestToken 'AXIOM_DATASET_SCOPED_INGEST_TOKEN' --stage alice-dev
 pnpm sst:dev --stage alice-dev
 ```
 
-Application modes with a dev command run locally; SST prints their addresses. This does not deploy the production-shaped Fargate topology. Stop with Ctrl-C and remove persistent stage resources:
+Application modes with a dev command run locally; SST prints their addresses. This does not deploy the production-shaped Fargate topology. Stop with Ctrl-C and remove persistent stage resources when finished.
 
-SST's VPC tunnel reserves local port `1080`, so `sst dev` runs and advertises the local SOCKS5 listener on `127.0.0.1:1081`. The standalone `pnpm dev` command and deployed ECS service continue to use port `1080`.
+SST's VPC tunnel reserves local port `1080`, so `sst dev` runs and advertises the local SOCKS5 listener on `127.0.0.1:1081`. The deployed ECS service uses port `1080`.
 
 In another terminal, copy the printed `integrationTarget` URL and run the black-box lifecycle suite against the local services. It does not read the SST stage or AWS metadata:
 
@@ -326,14 +265,12 @@ Aggregator endpoints:
 
 ### Configure the synthetic route
 
-After the initial deploy, create a dedicated unauthenticated route and retain its access-grant URL. Store the separated username/token and redeploy:
+The dedicated synthetic route is disabled in the initial v0 stage policy. After the initial deploy, create a dedicated unauthenticated route and retain its access-grant URL. Make a reviewed change to `stage.features.syntheticHealthRoute`, store the separated username/token, and redeploy:
 
 ```sh
 pnpm sst secret set HealthProxyUsername 'ACCESS_GRANT_ID' --stage production
 pnpm sst secret set HealthProxyPassword 'ACCESS_GRANT_TOKEN' --stage production
 
-HEALTH_SYNTHETIC_ROUTE_CONFIGURED=true \
-PROVIDER_MODE=live \
 PROXY_DOMAIN='proxy.corp.example.com' \
 PROXY_CERT_ARN='arn:aws:acm:us-east-1:123456789012:certificate/REPLACE_ME' \
 CONTROL_DOMAIN='proxy-control.corp.example.com' \
@@ -414,7 +351,7 @@ The durable usage ledger, not OTLP, is authoritative. Every upstream attempt rec
 - Idle slot capacity and unexplained reconciliation differences are posted to the synthetic `Unallocated` customer, never silently prorated to customers. Customer attribution plus `Unallocated` normalizes to reconciled provisioned-slot cost.
 - The component provides company-only billing inputs. Invoice generation, approval, adjustments, collection, and customer-facing audit are out of scope.
 
-The accounting worker can read static `PROVIDER_COST_TOTALS_JSON` and `PROVISIONED_PROXY_SLOT_CAPACITY_JSON`, or poll `USAGE_ACCOUNTING_SOURCE_URL`. The optional source returns:
+The initial v0 policy uses empty provider-total and provisioned-capacity inputs. The optional external accounting source is disabled; enabling `stage.features.usageAccountingSource` through a reviewed code change allows a source returning:
 
 ```json
 {
@@ -423,7 +360,7 @@ The accounting worker can read static `PROVIDER_COST_TOTALS_JSON` and `PROVISION
 }
 ```
 
-Protect it with the `UsageAccountingSourceToken` SST secret and `USAGE_ACCOUNTING_SOURCE_TOKEN_CONFIGURED=true` when required.
+Protect it with the `UsageAccountingSourceToken` SST secret when enabled.
 
 Each reconciliation persists estimated total, reported total, variance, source version, and `Unallocated` attribution. Default policy:
 
@@ -432,7 +369,7 @@ Each reconciliation persists estimated total, reported total, variance, source v
 - error above `15%`;
 - escalate repeated warnings to error.
 
-Configure these initial thresholds with `USAGE_VARIANCE_ABSOLUTE_FLOOR_USD`, `USAGE_VARIANCE_WARNING_RELATIVE`, and `USAGE_VARIANCE_ERROR_RELATIVE`. Revisit them using observed data.
+These thresholds are versioned v0 policy constants. Revisit them through code review using observed data.
 
 Usage accounting owns reconciliation-variance classification and capacity-planning recommendations derived from usage, cost, and capacity rollups. It persists idempotent warning/error events before emitting aggregate logs. Authorized dashboard users can inspect those non-capability events through the private `GET /api/usage/events` endpoint. Events contain only the period, provider, related rollup or reconciliation ID, policy/constraint evidence, aggregate failure/fallback/wait counts, and aggregate variance; they do not include credentials, destinations, customers, routes, or proxy-slot identifiers.
 
@@ -442,16 +379,13 @@ Capacity pressure is also persisted as normalized evidence through the shared se
 
 The health aggregator owns capability-state classification, capability alerts, and recovery events in v0, including `degraded` states supported by fresh capacity-pressure evidence. `unavailable` alerts are immediate. `degraded` alerts wait five minutes by default. An alerted capability emits one recovery when it returns to `operational`. Geography is context on global events, not a separate subscription.
 
-Configure signed HTTPS webhooks as one versioned secret:
+Signed HTTPS webhooks are disabled in the initial v0 stage policy. To enable them, make a reviewed change to `stage.features.healthAlerting` and configure one versioned secret:
 
 ```sh
 pnpm sst secret set HealthAlertDestinations \
   '{"version":"2026-07-15","destinations":[{"id":"primary-ops","url":"https://alerts.example.com/profound","secret":"REPLACE_WITH_A_LONG_SIGNING_SECRET"}]}' \
   --stage staging
 
-HEALTH_ALERTING_CONFIGURED=true \
-HEALTH_ALERT_CONFIGURATION_VERSION='2026-07-15' \
-HEALTH_ALERT_DESTINATION_IDS='primary-ops' \
 pnpm aws:deploy --stage staging
 ```
 

@@ -4,7 +4,7 @@ import test from "node:test";
 import { HealthAlertCoordinator, parseHealthAlertDestinationConfig, WebhookNotificationAdapter } from "../src/alerting.js";
 import { silentLogger } from "../src/logger.js";
 import { requireServiceOwnedCapabilityAlerts } from "../src/runtime-services.js";
-import { SqliteRouteStore } from "../src/store.js";
+import { InMemoryRouteStore } from "./in-memory-route-store.js";
 import type { CapabilityHealthSnapshot, HealthAlertEvent } from "../src/types.js";
 
 function snapshot(id: string, generatedAt: string, status: "operational" | "degraded" | "unavailable"): CapabilityHealthSnapshot {
@@ -28,7 +28,7 @@ function snapshot(id: string, generatedAt: string, status: "operational" | "degr
   };
 }
 
-function coordinator(store: SqliteRouteStore, degradedDelayMs = 300_000): HealthAlertCoordinator {
+function coordinator(store: InMemoryRouteStore, degradedDelayMs = 300_000): HealthAlertCoordinator {
   const notifier = new WebhookNotificationAdapter(
     store,
     [],
@@ -52,7 +52,7 @@ function coordinator(store: SqliteRouteStore, degradedDelayMs = 300_000): Health
 }
 
 test("alert episodes persist, delay degraded alerts, alert unavailable immediately, and recover", async (t) => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   t.after(() => store.close());
   const first = coordinator(store);
   await first.evaluate(snapshot("s1", "2026-07-15T00:00:00.000Z", "degraded"), {
@@ -91,7 +91,7 @@ test("alert episodes persist, delay degraded alerts, alert unavailable immediate
   assert.equal(events[0]?.status, "operational");
   assert.equal(events[0]?.previousStatus, "degraded");
 
-  const unavailableStore = new SqliteRouteStore(":memory:");
+  const unavailableStore = new InMemoryRouteStore();
   t.after(() => unavailableStore.close());
   await coordinator(unavailableStore).evaluate(snapshot("u1", "2026-07-15T00:00:00.000Z", "unavailable"), {
     conflicting: false,
@@ -101,7 +101,7 @@ test("alert episodes persist, delay degraded alerts, alert unavailable immediate
 });
 
 test("webhook delivery is signed, retried, deduplicated, and tracked", async (t) => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   t.after(() => store.close());
   const secret = "a-long-webhook-secret";
   let now = Date.parse("2026-07-15T00:00:00.000Z");

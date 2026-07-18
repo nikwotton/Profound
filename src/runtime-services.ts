@@ -1,6 +1,5 @@
 import type { AppConfig } from "./config.js";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { createServer } from "node:http";
 import { HealthAlertCoordinator, parseHealthAlertDestinationConfig, WebhookNotificationAdapter } from "./alerting.js";
 import { DynamoRouteStore } from "./dynamo-store.js";
@@ -10,13 +9,15 @@ import { IntegrationTargetServer } from "./integration-target.js";
 import type { Logger } from "./logger.js";
 import { closeServer, listen } from "./net-utils.js";
 import { BrightDataAdapter } from "./providers/bright-data.js";
-import type { ProviderAdapter } from "./providers/provider.js";
+import type { BrightDataConfig } from "./providers/bright-data.js";
+import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import { ProxidizeAdapter } from "./providers/proxidize.js";
+import type { ProxidizeConfig } from "./providers/proxidize.js";
 import { PublicCanaryServer } from "./public-canary.js";
 import { SignedCanaryProbe } from "./signed-canary-probe.js";
 import { BrightDataSimulator } from "./simulators/bright-data.js";
 import { ProxidizeSimulator } from "./simulators/proxidize.js";
-import { SqliteRouteStore, type RouteStore } from "./store.js";
+import type { RouteStore } from "./store.js";
 import { StatusApplicationServer } from "./status-app.js";
 import {
   decodeProviderCostTotal,
@@ -31,14 +32,25 @@ export interface RunningService {
   stop(): Promise<void>;
 }
 
+export interface RuntimePersistenceConfig {
+  routeTableName: string;
+}
+
+export interface RuntimeServiceDependencies {
+  storeFactory?: (config: RuntimePersistenceConfig) => RouteStore;
+  brightDataFactory?: (config: BrightDataConfig) => ProviderAdapter<"bright_data">;
+  mobileProviderFactory?: (config: ProxidizeConfig) => MobileProviderAdapter;
+  fetchImplementation?: typeof fetch;
+}
+
 export async function startIntegrationTargetService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
-  if (env.NODE_ENV === "production" && env.ALLOW_INTEGRATION_TARGET !== "true") {
+  if (env["NODE_ENV"] === "production" && env["ALLOW_INTEGRATION_TARGET"] !== "true") {
     throw new Error("The integration target requires ALLOW_INTEGRATION_TARGET=true");
   }
   const server = new IntegrationTargetServer(
     {
-      host: env.INTEGRATION_TARGET_HOST ?? "127.0.0.1",
-      port: integer(env.INTEGRATION_TARGET_PORT, 8091, "INTEGRATION_TARGET_PORT", 0),
+      host: env["INTEGRATION_TARGET_HOST"] ?? "127.0.0.1",
+      port: integer(env["INTEGRATION_TARGET_PORT"], 8091, "INTEGRATION_TARGET_PORT", 0),
     },
     logger,
   );
@@ -65,15 +77,24 @@ function nonnegativeNumber(value: string | undefined, fallback: number, name: st
   return parsed;
 }
 
-function createStore(config: AppConfig): RouteStore {
-  if (config.persistenceBackend === "dynamodb") {
-    if (config.routeTableName === undefined) throw new Error("DynamoDB route table name is missing");
-    return new DynamoRouteStore(config.routeTableName);
-  }
-  return new SqliteRouteStore(config.sqlitePath);
+function persistenceConfig(env: NodeJS.ProcessEnv): RuntimePersistenceConfig {
+  return { routeTableName: required(env["ROUTE_TABLE_NAME"], "ROUTE_TABLE_NAME") };
 }
 
-async function createHealthProviders(config: AppConfig, logger: Logger): Promise<{ providers: ProviderAdapter[]; stop(): Promise<void> }> {
+function appPersistenceConfig(config: AppConfig): RuntimePersistenceConfig {
+  return { routeTableName: config.routeTableName };
+}
+
+function createStore(config: RuntimePersistenceConfig, dependencies: RuntimeServiceDependencies): RouteStore {
+  if (dependencies.storeFactory !== undefined) return dependencies.storeFactory(config);
+  return new DynamoRouteStore(config.routeTableName);
+}
+
+async function createHealthProviders(
+  config: AppConfig,
+  logger: Logger,
+  dependencies: RuntimeServiceDependencies,
+): Promise<{ providers: ProviderAdapter[]; stop(): Promise<void> }> {
   let brightConfig = config.brightData;
   let proxidizeConfig = config.proxidize;
   let brightSimulator: BrightDataSimulator | undefined;
@@ -101,13 +122,20 @@ async function createHealthProviders(config: AppConfig, logger: Logger): Promise
       apiBaseUrl: `http://${proxidizeAddress.control.host}:${proxidizeAddress.control.port}`,
     };
   }
+  const brightDataAdapterConfig: BrightDataConfig = {
+    ...brightConfig,
+    connectTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
+  };
+  const proxidizeAdapterConfig: ProxidizeConfig = {
+    ...proxidizeConfig,
+    requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
+    exactCity: config.proxidizeExactCity,
+    ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
+  };
   const providers: ProviderAdapter[] = [
-    new BrightDataAdapter({ ...brightConfig, connectTimeoutMs: config.attemptEstablishmentTimeoutMs }),
-    new ProxidizeAdapter({
-      ...proxidizeConfig,
-      requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
-      exactCity: config.proxidizeExactCity,
-    }),
+    dependencies.brightDataFactory?.(brightDataAdapterConfig) ?? new BrightDataAdapter(brightDataAdapterConfig),
+    dependencies.mobileProviderFactory?.(proxidizeAdapterConfig) ?? new ProxidizeAdapter(proxidizeAdapterConfig),
   ];
   return {
     providers,
@@ -121,7 +149,7 @@ async function createHealthProviders(config: AppConfig, logger: Logger): Promise
 }
 
 export function requireServiceOwnedCapabilityAlerts(env: NodeJS.ProcessEnv = process.env): void {
-  const owner = env.HEALTH_ALERT_RULE_OWNER?.trim() || "service";
+  const owner = env["HEALTH_ALERT_RULE_OWNER"]?.trim() || "service";
   if (owner !== "service") {
     throw new Error("HEALTH_ALERT_RULE_OWNER must remain service for v0 capability health and recovery alerts");
   }
@@ -131,20 +159,21 @@ export async function startHealthAggregatorService(
   config: AppConfig,
   logger: Logger,
   env: NodeJS.ProcessEnv = process.env,
+  dependencies: RuntimeServiceDependencies = {},
 ): Promise<RunningService> {
-  const store = createStore(config);
-  const providerRuntime = await createHealthProviders(config, logger);
-  const canaryUrl = env.HEALTH_CANARY_URL?.trim();
-  const signingSecret = env.CANARY_SIGNING_SECRET?.trim();
+  const store = createStore(appPersistenceConfig(config), dependencies);
+  const providerRuntime = await createHealthProviders(config, logger, dependencies);
+  const canaryUrl = env["HEALTH_CANARY_URL"]?.trim();
+  const signingSecret = env["CANARY_SIGNING_SECRET"]?.trim();
   const probe =
     canaryUrl && signingSecret
       ? new SignedCanaryProbe({
           canaryUrl,
           signingSecret,
-          ...(env.HEALTH_PROXY_URL?.trim() ? { proxyUrl: env.HEALTH_PROXY_URL.trim() } : {}),
-          ...(env.HEALTH_PROXY_USERNAME?.trim() ? { proxyUsername: env.HEALTH_PROXY_USERNAME.trim() } : {}),
-          ...(env.HEALTH_PROXY_PASSWORD?.trim() ? { proxyPassword: env.HEALTH_PROXY_PASSWORD.trim() } : {}),
-          timeoutMs: integer(env.HEALTH_SYNTHETIC_TIMEOUT_MS, 10_000, "HEALTH_SYNTHETIC_TIMEOUT_MS"),
+          ...(env["HEALTH_PROXY_URL"]?.trim() ? { proxyUrl: env["HEALTH_PROXY_URL"].trim() } : {}),
+          ...(env["HEALTH_PROXY_USERNAME"]?.trim() ? { proxyUsername: env["HEALTH_PROXY_USERNAME"].trim() } : {}),
+          ...(env["HEALTH_PROXY_PASSWORD"]?.trim() ? { proxyPassword: env["HEALTH_PROXY_PASSWORD"].trim() } : {}),
+          timeoutMs: integer(env["HEALTH_SYNTHETIC_TIMEOUT_MS"], 10_000, "HEALTH_SYNTHETIC_TIMEOUT_MS"),
         })
       : undefined;
   const syntheticValidator =
@@ -152,19 +181,19 @@ export async function startHealthAggregatorService(
       ? undefined
       : new CooldownSyntheticValidator(
           (scope) => probe.run(scope),
-          integer(env.HEALTH_SYNTHETIC_COOLDOWN_MS, 300_000, "HEALTH_SYNTHETIC_COOLDOWN_MS"),
+          integer(env["HEALTH_SYNTHETIC_COOLDOWN_MS"], 300_000, "HEALTH_SYNTHETIC_COOLDOWN_MS"),
         );
   requireServiceOwnedCapabilityAlerts(env);
-  const configuredDestinationIds = (env.HEALTH_ALERT_DESTINATION_IDS ?? "")
+  const configuredDestinationIds = (env["HEALTH_ALERT_DESTINATION_IDS"] ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
   const alerting = new HealthAlertCoordinator(
     store,
     {
-      configurationVersion: env.HEALTH_ALERT_CONFIGURATION_VERSION?.trim() || "unconfigured",
+      configurationVersion: env["HEALTH_ALERT_CONFIGURATION_VERSION"]?.trim() || "unconfigured",
       destinationIds: configuredDestinationIds,
-      degradedDelayMs: integer(env.HEALTH_ALERT_DEGRADED_DELAY_MS, 300_000, "HEALTH_ALERT_DEGRADED_DELAY_MS", 0),
+      degradedDelayMs: integer(env["HEALTH_ALERT_DEGRADED_DELAY_MS"], 300_000, "HEALTH_ALERT_DEGRADED_DELAY_MS", 0),
     },
     logger,
   );
@@ -172,8 +201,8 @@ export async function startHealthAggregatorService(
     store,
     providerRuntime.providers,
     {
-      passiveValidationMaxAgeMs: integer(env.HEALTH_PASSIVE_MAX_AGE_MS, 300_000, "HEALTH_PASSIVE_MAX_AGE_MS"),
-      capacityPressureMaxAgeMs: integer(env.HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS, 300_000, "HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS"),
+      passiveValidationMaxAgeMs: integer(env["HEALTH_PASSIVE_MAX_AGE_MS"], 300_000, "HEALTH_PASSIVE_MAX_AGE_MS"),
+      capacityPressureMaxAgeMs: integer(env["HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS"], 300_000, "HEALTH_CAPACITY_PRESSURE_MAX_AGE_MS"),
       ...(syntheticValidator === undefined ? {} : { syntheticValidator }),
       alerting,
     },
@@ -183,10 +212,10 @@ export async function startHealthAggregatorService(
     aggregator,
     store,
     {
-      host: env.HEALTH_AGGREGATOR_HOST ?? "127.0.0.1",
-      port: integer(env.HEALTH_AGGREGATOR_PORT, 8082, "HEALTH_AGGREGATOR_PORT", 0),
-      token: required(env.HEALTH_AGGREGATOR_TOKEN, "HEALTH_AGGREGATOR_TOKEN"),
-      refreshIntervalMs: integer(env.HEALTH_PROVIDER_REFRESH_MS, 60_000, "HEALTH_PROVIDER_REFRESH_MS"),
+      host: env["HEALTH_AGGREGATOR_HOST"] ?? "127.0.0.1",
+      port: integer(env["HEALTH_AGGREGATOR_PORT"], 8082, "HEALTH_AGGREGATOR_PORT", 0),
+      token: required(env["HEALTH_AGGREGATOR_TOKEN"], "HEALTH_AGGREGATOR_TOKEN"),
+      refreshIntervalMs: integer(env["HEALTH_PROVIDER_REFRESH_MS"], 60_000, "HEALTH_PROVIDER_REFRESH_MS"),
     },
     logger,
   );
@@ -207,30 +236,25 @@ export async function startHealthAggregatorService(
   }
 }
 
-export async function startNotificationService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
-  const backend = env.PERSISTENCE_BACKEND ?? "sqlite";
-  let store: RouteStore;
-  if (backend === "dynamodb") {
-    store = new DynamoRouteStore(required(env.ROUTE_TABLE_NAME, "ROUTE_TABLE_NAME"));
-  } else if (backend === "sqlite") {
-    const path = resolve(env.SQLITE_PATH ?? "./data/profound.db");
-    mkdirSync(dirname(path), { recursive: true });
-    store = new SqliteRouteStore(path);
-  } else {
-    throw new Error("PERSISTENCE_BACKEND must be sqlite or dynamodb");
-  }
-  const config = parseHealthAlertDestinationConfig(env.HEALTH_ALERT_DESTINATIONS_JSON);
+export async function startNotificationService(
+  logger: Logger,
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: RuntimeServiceDependencies = {},
+): Promise<RunningService> {
+  const store = createStore(persistenceConfig(env), dependencies);
+  const config = parseHealthAlertDestinationConfig(env["HEALTH_ALERT_DESTINATIONS_JSON"]);
   const notifier = new WebhookNotificationAdapter(
     store,
     config.destinations,
     {
-      timeoutMs: integer(env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS, 5_000, "HEALTH_ALERT_WEBHOOK_TIMEOUT_MS"),
-      maxAttempts: integer(env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS, 5, "HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS"),
-      initialBackoffMs: integer(env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS, 1_000, "HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS"),
+      timeoutMs: integer(env["HEALTH_ALERT_WEBHOOK_TIMEOUT_MS"], 5_000, "HEALTH_ALERT_WEBHOOK_TIMEOUT_MS"),
+      maxAttempts: integer(env["HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS"], 5, "HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS"),
+      initialBackoffMs: integer(env["HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS"], 1_000, "HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS"),
+      ...(dependencies.fetchImplementation === undefined ? {} : { fetch: dependencies.fetchImplementation }),
     },
     logger,
   );
-  const intervalMs = integer(env.NOTIFICATION_POLL_INTERVAL_MS, 5_000, "NOTIFICATION_POLL_INTERVAL_MS");
+  const intervalMs = integer(env["NOTIFICATION_POLL_INTERVAL_MS"], 5_000, "NOTIFICATION_POLL_INTERVAL_MS");
   let lastError: string | undefined;
   let running = false;
   const flush = async (): Promise<void> => {
@@ -267,8 +291,8 @@ export async function startNotificationService(logger: Logger, env: NodeJS.Proce
   try {
     const address = await listen(
       server,
-      env.NOTIFICATION_HOST ?? "127.0.0.1",
-      integer(env.NOTIFICATION_PORT, 8084, "NOTIFICATION_PORT", 0),
+      env["NOTIFICATION_HOST"] ?? "127.0.0.1",
+      integer(env["NOTIFICATION_PORT"], 8084, "NOTIFICATION_PORT", 0),
     );
     await flush();
     const timer = setInterval(() => void flush(), intervalMs);
@@ -288,27 +312,22 @@ export async function startNotificationService(logger: Logger, env: NodeJS.Proce
   }
 }
 
-export async function startStatusApplicationService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
-  const backend = env.PERSISTENCE_BACKEND ?? "sqlite";
-  let store: RouteStore;
-  if (backend === "dynamodb") {
-    store = new DynamoRouteStore(required(env.ROUTE_TABLE_NAME, "ROUTE_TABLE_NAME"));
-  } else if (backend === "sqlite") {
-    const path = resolve(env.SQLITE_PATH ?? "./data/profound.db");
-    mkdirSync(dirname(path), { recursive: true });
-    store = new SqliteRouteStore(path);
-  } else {
-    throw new Error("PERSISTENCE_BACKEND must be sqlite or dynamodb");
-  }
+export async function startStatusApplicationService(
+  logger: Logger,
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: RuntimeServiceDependencies = {},
+): Promise<RunningService> {
+  const store = createStore(persistenceConfig(env), dependencies);
   const server = new StatusApplicationServer(
     store,
     {
-      host: env.STATUS_APP_HOST ?? "127.0.0.1",
-      port: integer(env.STATUS_APP_PORT, 8083, "STATUS_APP_PORT", 0),
-      staleAfterMs: integer(env.STATUS_STALE_AFTER_MS, 300_000, "STATUS_STALE_AFTER_MS"),
-      historyLimit: integer(env.STATUS_HISTORY_LIMIT, 100, "STATUS_HISTORY_LIMIT"),
-      ...(env.HEALTH_AGGREGATOR_URL?.trim() ? { healthAggregatorUrl: env.HEALTH_AGGREGATOR_URL.trim() } : {}),
-      ...(env.HEALTH_AGGREGATOR_TOKEN?.trim() ? { healthAggregatorToken: env.HEALTH_AGGREGATOR_TOKEN.trim() } : {}),
+      host: env["STATUS_APP_HOST"] ?? "127.0.0.1",
+      port: integer(env["STATUS_APP_PORT"], 8083, "STATUS_APP_PORT", 0),
+      staleAfterMs: integer(env["STATUS_STALE_AFTER_MS"], 300_000, "STATUS_STALE_AFTER_MS"),
+      historyLimit: integer(env["STATUS_HISTORY_LIMIT"], 100, "STATUS_HISTORY_LIMIT"),
+      ...(env["HEALTH_AGGREGATOR_URL"]?.trim() ? { healthAggregatorUrl: env["HEALTH_AGGREGATOR_URL"].trim() } : {}),
+      ...(env["HEALTH_AGGREGATOR_TOKEN"]?.trim() ? { healthAggregatorToken: env["HEALTH_AGGREGATOR_TOKEN"].trim() } : {}),
+      ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
     },
     logger,
   );
@@ -332,27 +351,24 @@ function jsonArray<T>(value: string | undefined, name: string, decode: (value: u
   return expectArray(parseJson(value, name), name).map((item, index) => decode(item, `${name}[${index}]`));
 }
 
-export async function startUsageAccountingService(logger: Logger, env: NodeJS.ProcessEnv = process.env): Promise<RunningService> {
-  const backend = env.PERSISTENCE_BACKEND ?? "sqlite";
-  let store: RouteStore;
-  if (backend === "dynamodb") store = new DynamoRouteStore(required(env.ROUTE_TABLE_NAME, "ROUTE_TABLE_NAME"));
-  else if (backend === "sqlite") {
-    const path = resolve(env.SQLITE_PATH ?? "./data/profound.db");
-    mkdirSync(dirname(path), { recursive: true });
-    store = new SqliteRouteStore(path);
-  } else throw new Error("PERSISTENCE_BACKEND must be sqlite or dynamodb");
+export async function startUsageAccountingService(
+  logger: Logger,
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: RuntimeServiceDependencies = {},
+): Promise<RunningService> {
+  const store = createStore(persistenceConfig(env), dependencies);
 
-  let providerTotals = jsonArray(env.PROVIDER_COST_TOTALS_JSON, "PROVIDER_COST_TOTALS_JSON", decodeProviderCostTotal);
+  let providerTotals = jsonArray(env["PROVIDER_COST_TOTALS_JSON"], "PROVIDER_COST_TOTALS_JSON", decodeProviderCostTotal);
   let capacity = jsonArray(
-    env.PROVISIONED_PROXY_SLOT_CAPACITY_JSON,
+    env["PROVISIONED_PROXY_SLOT_CAPACITY_JSON"],
     "PROVISIONED_PROXY_SLOT_CAPACITY_JSON",
     decodeProvisionedProxySlotCapacity,
   );
-  const sourceUrl = env.USAGE_ACCOUNTING_SOURCE_URL?.trim() || undefined;
+  const sourceUrl = env["USAGE_ACCOUNTING_SOURCE_URL"]?.trim() || undefined;
   const thresholds: UsageVarianceThresholds = {
-    absoluteFloorUsd: nonnegativeNumber(env.USAGE_VARIANCE_ABSOLUTE_FLOOR_USD, 1, "USAGE_VARIANCE_ABSOLUTE_FLOOR_USD"),
-    warningRelative: nonnegativeNumber(env.USAGE_VARIANCE_WARNING_RELATIVE, 0.05, "USAGE_VARIANCE_WARNING_RELATIVE"),
-    errorRelative: nonnegativeNumber(env.USAGE_VARIANCE_ERROR_RELATIVE, 0.15, "USAGE_VARIANCE_ERROR_RELATIVE"),
+    absoluteFloorUsd: nonnegativeNumber(env["USAGE_VARIANCE_ABSOLUTE_FLOOR_USD"], 1, "USAGE_VARIANCE_ABSOLUTE_FLOOR_USD"),
+    warningRelative: nonnegativeNumber(env["USAGE_VARIANCE_WARNING_RELATIVE"], 0.05, "USAGE_VARIANCE_WARNING_RELATIVE"),
+    errorRelative: nonnegativeNumber(env["USAGE_VARIANCE_ERROR_RELATIVE"], 0.15, "USAGE_VARIANCE_ERROR_RELATIVE"),
   };
   const worker = new UsageAccountingWorker(
     store,
@@ -396,7 +412,7 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
       else logger.warn("Proxy-slot capacity recommendation created from pressure evidence", attributes);
     },
   );
-  const intervalMs = integer(env.USAGE_ACCOUNTING_INTERVAL_MS, 60_000, "USAGE_ACCOUNTING_INTERVAL_MS", 1_000);
+  const intervalMs = integer(env["USAGE_ACCOUNTING_INTERVAL_MS"], 60_000, "USAGE_ACCOUNTING_INTERVAL_MS", 1_000);
   let lastError: string | undefined;
   let running = false;
   const run = async (): Promise<void> => {
@@ -404,20 +420,22 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
     running = true;
     try {
       if (sourceUrl !== undefined) {
-        const response = await fetch(sourceUrl, {
-          headers: env.USAGE_ACCOUNTING_SOURCE_TOKEN?.trim() ? { authorization: `Bearer ${env.USAGE_ACCOUNTING_SOURCE_TOKEN.trim()}` } : {},
-          signal: AbortSignal.timeout(integer(env.USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS, 10_000, "USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS")),
+        const response = await (dependencies.fetchImplementation ?? fetch)(sourceUrl, {
+          headers: env["USAGE_ACCOUNTING_SOURCE_TOKEN"]?.trim()
+            ? { authorization: `Bearer ${env["USAGE_ACCOUNTING_SOURCE_TOKEN"].trim()}` }
+            : {},
+          signal: AbortSignal.timeout(integer(env["USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS"], 10_000, "USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS")),
         });
         if (!response.ok) throw new Error(`usage_accounting_source_${response.status}`);
         const published = expectRecord(await response.json(), "usage-accounting source response");
-        if (published.providerTotals !== undefined) {
-          providerTotals = expectArray(published.providerTotals, "usage-accounting source response.providerTotals").map((item, index) =>
+        if (published["providerTotals"] !== undefined) {
+          providerTotals = expectArray(published["providerTotals"], "usage-accounting source response.providerTotals").map((item, index) =>
             decodeProviderCostTotal(item, `usage-accounting source response.providerTotals[${index}]`),
           );
         }
-        if (published.provisionedProxySlotCapacity !== undefined) {
+        if (published["provisionedProxySlotCapacity"] !== undefined) {
           capacity = expectArray(
-            published.provisionedProxySlotCapacity,
+            published["provisionedProxySlotCapacity"],
             "usage-accounting source response.provisionedProxySlotCapacity",
           ).map((item, index) =>
             decodeProvisionedProxySlotCapacity(item, `usage-accounting source response.provisionedProxySlotCapacity[${index}]`),
@@ -458,8 +476,8 @@ export async function startUsageAccountingService(logger: Logger, env: NodeJS.Pr
   try {
     const address = await listen(
       server,
-      env.USAGE_ACCOUNTING_HOST ?? "127.0.0.1",
-      integer(env.USAGE_ACCOUNTING_PORT, 8085, "USAGE_ACCOUNTING_PORT", 0),
+      env["USAGE_ACCOUNTING_HOST"] ?? "127.0.0.1",
+      integer(env["USAGE_ACCOUNTING_PORT"], 8085, "USAGE_ACCOUNTING_PORT", 0),
     );
     await run();
     const timer = setInterval(() => void run(), intervalMs);
@@ -483,17 +501,18 @@ export async function startPublicCanaryService(
   logger: Logger,
   env: NodeJS.ProcessEnv = process.env,
   securityLogger: Logger = logger,
+  dependencies: RuntimeServiceDependencies = {},
 ): Promise<RunningService> {
-  const accountId = env.MAXMIND_ACCOUNT_ID?.trim() || undefined;
-  const licenseKey = env.MAXMIND_LICENSE_KEY?.trim() || undefined;
+  const accountId = env["MAXMIND_ACCOUNT_ID"]?.trim() || undefined;
+  const licenseKey = env["MAXMIND_LICENSE_KEY"]?.trim() || undefined;
   if ((accountId === undefined) !== (licenseKey === undefined)) {
     throw new Error("MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY must be configured together");
   }
-  const databasePath = resolve(env.GEOIP_DATABASE_PATH ?? "./data/GeoLite2-City.mmdb");
+  const databasePath = resolve(env["GEOIP_DATABASE_PATH"] ?? "./data/GeoLite2-City.mmdb");
   const geoIp = new LocalGeoIpResolver(
     {
       databasePath,
-      maximumAccuracyRadiusKm: integer(env.GEOIP_MAX_ACCURACY_RADIUS_KM, 100, "GEOIP_MAX_ACCURACY_RADIUS_KM"),
+      maximumAccuracyRadiusKm: integer(env["GEOIP_MAX_ACCURACY_RADIUS_KM"], 100, "GEOIP_MAX_ACCURACY_RADIUS_KM"),
     },
     logger,
   );
@@ -506,7 +525,8 @@ export async function startPublicCanaryService(
           {
             accountId,
             licenseKey,
-            intervalMs: integer(env.GEOIP_UPDATE_INTERVAL_MS, 302_400_000, "GEOIP_UPDATE_INTERVAL_MS"),
+            intervalMs: integer(env["GEOIP_UPDATE_INTERVAL_MS"], 302_400_000, "GEOIP_UPDATE_INTERVAL_MS"),
+            ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
           },
           logger,
         );
@@ -523,14 +543,14 @@ export async function startPublicCanaryService(
   }
   const server = new PublicCanaryServer(
     {
-      host: env.CANARY_HOST ?? "127.0.0.1",
-      port: integer(env.CANARY_PORT, 8090, "CANARY_PORT", 0),
-      signingSecret: required(env.CANARY_SIGNING_SECRET, "CANARY_SIGNING_SECRET"),
-      trustedProxyCidrs: (env.CANARY_TRUSTED_PROXY_CIDRS ?? "")
+      host: env["CANARY_HOST"] ?? "127.0.0.1",
+      port: integer(env["CANARY_PORT"], 8090, "CANARY_PORT", 0),
+      signingSecret: required(env["CANARY_SIGNING_SECRET"], "CANARY_SIGNING_SECRET"),
+      trustedProxyCidrs: (env["CANARY_TRUSTED_PROXY_CIDRS"] ?? "")
         .split(",")
         .map((entry) => entry.trim())
         .filter(Boolean),
-      requestsPerMinute: integer(env.CANARY_REQUESTS_PER_MINUTE, 60, "CANARY_REQUESTS_PER_MINUTE"),
+      requestsPerMinute: integer(env["CANARY_REQUESTS_PER_MINUTE"], 60, "CANARY_REQUESTS_PER_MINUTE"),
     },
     securityLogger,
     geoIp,

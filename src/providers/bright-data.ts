@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { connect } from "node:net";
 import { expectRecord } from "../decoding.js";
-import { ProviderUnavailableError } from "../errors.js";
+import { ProviderUnavailableError, attributeProvider } from "../errors.js";
 import type { ProviderAdapter, ResolveOptions } from "./provider.js";
 import type { ProviderHealth, StoredRoute, Targeting, UpstreamEndpoint } from "../types.js";
 
@@ -19,6 +19,11 @@ export interface BrightDataConfig {
 
 function compact(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_]/g, "");
+}
+
+function brightDataError(error: ProviderUnavailableError): ProviderUnavailableError {
+  attributeProvider(error, "bright_data");
+  return error;
 }
 
 function sessionId(route: StoredRoute, now: number, logicalOperationId = route.id, candidateIndex = 0): string {
@@ -48,7 +53,7 @@ export function buildBrightDataUsername(
   return fields.join("-");
 }
 
-export class BrightDataAdapter implements ProviderAdapter {
+export class BrightDataAdapter implements ProviderAdapter<"bright_data"> {
   readonly descriptor = {
     id: "bright_data" as const,
     providerClass: "residential" as const,
@@ -87,7 +92,7 @@ export class BrightDataAdapter implements ProviderAdapter {
   constructor(private readonly config: BrightDataConfig) {}
 
   async resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint> {
-    if (options.signal.aborted) throw new ProviderUnavailableError("Candidate establishment was cancelled");
+    if (options.signal.aborted) throw brightDataError(new ProviderUnavailableError("Candidate establishment was cancelled"));
     const username = buildBrightDataUsername(this.config, route, Date.now(), options);
     const providerSessionId = username.match(/-session-([a-z0-9]+)$/)?.[1] ?? "unknown";
     const candidateId = `bright-data:${providerSessionId}`;
@@ -135,7 +140,7 @@ export class BrightDataAdapter implements ProviderAdapter {
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = expectRecord(await response.json(), "Bright Data network-status response");
-        return body.status === true
+        return body["status"] === true
           ? { provider: this.descriptor.id, state: "healthy", checkedAt }
           : {
               provider: this.descriptor.id,

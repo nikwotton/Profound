@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { silentLogger } from "../src/logger.js";
-import { SqliteRouteStore } from "../src/store.js";
+import { InMemoryRouteStore } from "./in-memory-route-store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
 import { CAPACITY_POLICY, recommendCapacity } from "../src/capacity-policy.js";
 import { ROUTING_POLICY } from "../src/routing-policy.js";
@@ -36,7 +36,7 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
 }
 
 test("usage records are immutable and idempotent", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   try {
     assert.equal(await store.recordUsage(record()), true);
     assert.equal(await store.recordUsage(record({ bytesReceived: 0 })), false);
@@ -225,7 +225,7 @@ test("capacity recommendations use the versioned v0 policy and suppress location
 });
 
 test("accounting worker persists hourly, daily, and customer rollups", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   try {
     await store.recordUsage(record());
     const worker = new UsageAccountingWorker(store);
@@ -238,7 +238,7 @@ test("accounting worker persists hourly, daily, and customer rollups", async () 
 });
 
 test("reconciliation persists variance evidence and posts unexplained differences to Unallocated", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   try {
     await store.recordUsage(record());
     const worker = new UsageAccountingWorker(store, () => [
@@ -304,7 +304,7 @@ test("reconciliation persists variance evidence and posts unexplained difference
 });
 
 test("capacity pressure publishes provider-attributed health evidence and one idempotent planning recommendation per period", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   const from = "2026-07-15T10:00:00.000Z";
   const to = "2026-07-15T12:00:00.000Z";
   try {
@@ -371,7 +371,7 @@ test("capacity pressure publishes provider-attributed health evidence and one id
 });
 
 test("variance thresholds enforce the absolute floor, 5% warning, 15% error, and repeated-warning escalation", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   const periodStartedAt = "2026-07-15T00:00:00.000Z";
   const periodEndsAt = "2026-07-16T00:00:00.000Z";
   try {
@@ -397,7 +397,7 @@ test("variance thresholds enforce the absolute floor, 5% warning, 15% error, and
 });
 
 test("company-facing dashboard supports usage filters and surfaces provider overrides and capacity circuits", async (t) => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   await store.create(
     "overridden-profile",
     {

@@ -6,13 +6,16 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   const root = readFileSync("sst.config.ts", "utf8");
   const aws = readFileSync("infra/providers/aws.ts", "utf8");
 
-  assert.match(root, /DEPLOYMENT_PROVIDER/);
+  assert.doesNotMatch(root, /DEPLOYMENT_PROVIDER|process\.env/);
   assert.match(root, /infra\/providers\/aws\.js/);
   assert.match(root, /import\("\.\/infra\/providers\/aws\.js"\)/);
   assert.match(root, /awsDeployment\.(app|run)/);
   assert.doesNotMatch(root, /sst\.aws\.|new aws\./);
 
-  assert.match(aws, /new sst\.Secret\("AxiomIngestToken"\)/);
+  assert.match(aws, /new sst\.Secret\("AxiomIngestToken", \$dev \? "unused-in-sst-dev" : undefined\)/);
+  assert.match(aws, /new sst\.Secret\("ControlApiToken", \$dev \? devControlApiToken : undefined\)/);
+  assert.match(aws, /new sst\.Secret\("HealthAggregatorToken", \$dev \? devHealthAggregatorToken : undefined\)/);
+  assert.match(aws, /"CanarySigningSecret",\s*\$dev \? devCanarySigningSecret : undefined/);
   assert.match(aws, /schemaVersion: 3/);
   assert.match(aws, /new sst\.Secret\("ControlApiIdentities"\)/);
   assert.match(aws, /CONTROL_API_IDENTITIES_JSON: controlIdentitiesSecret/);
@@ -60,7 +63,7 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /connectionTermination: false/);
   assert.match(aws, /iam::aws:policy\/AmazonECSInfrastructureRolePolicyForLoadBalancers/);
   assert.doesNotMatch(aws, /iam::aws:policy\/service-role\/AmazonECSInfrastructureRolePolicyForLoadBalancers/);
-  assert.match(aws, /GEOIP_DATABASE_SOURCE/);
+  assert.match(aws, /geoIpDatabaseSource: "\.sst\/geoip\/GeoLite2-City\.mmdb"/);
   assert.match(aws, /copyFiles: geoIpBundleConfigured/);
   assert.match(aws, /otlp_http\/axiom_logs/);
   assert.match(aws, /otlp_http\/axiom_traces/);

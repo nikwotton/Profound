@@ -12,6 +12,12 @@ export interface StageConfiguration {
   readonly minimumTasks: number;
   readonly maximumTasks: number;
   readonly deployTransportTarget: boolean;
+  readonly features: {
+    readonly controlApiIdentities: boolean;
+    readonly syntheticHealthRoute: boolean;
+    readonly healthAlerting: boolean;
+    readonly usageAccountingSource: boolean;
+  };
 }
 
 export function classifyStage(stage: string): StageKind {
@@ -24,23 +30,10 @@ export function classifyStage(stage: string): StageKind {
   return "developer";
 }
 
-function positiveInteger(value: string | undefined, fallback: number, name: string): number {
-  const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`);
-  return parsed;
-}
-
-export function resolveStageConfiguration(stage: string, environment: Readonly<Record<string, string | undefined>>): StageConfiguration {
+export function resolveStageConfiguration(stage: string): StageConfiguration {
   const kind = classifyStage(stage);
   const production = kind === "production";
-  const providerMode = environment.PROVIDER_MODE ?? (production ? "live" : "mock");
-  if (providerMode !== "mock" && providerMode !== "live") throw new Error("PROVIDER_MODE must be mock or live");
-  if (kind === "developer" && providerMode === "live") {
-    throw new Error("Personal developer stages cannot use live provider credentials");
-  }
-  const minimumTasks = positiveInteger(environment.MIN_TASKS, production ? 2 : 1, "MIN_TASKS");
-  const maximumTasks = positiveInteger(environment.MAX_TASKS, production ? 4 : 2, "MAX_TASKS");
-  if (maximumTasks < minimumTasks) throw new Error("MAX_TASKS must be greater than or equal to MIN_TASKS");
+  const providerMode = production || stage === "staging" ? "live" : "mock";
   return {
     name: stage,
     kind,
@@ -50,8 +43,14 @@ export function resolveStageConfiguration(stage: string, environment: Readonly<R
     protect: production,
     removal: production ? "retain" : "remove",
     providerMode,
-    minimumTasks,
-    maximumTasks,
+    minimumTasks: production ? 2 : 1,
+    maximumTasks: production ? 4 : 2,
     deployTransportTarget: kind === "ci",
+    features: {
+      controlApiIdentities: false,
+      syntheticHealthRoute: false,
+      healthAlerting: false,
+      usageAccountingSource: false,
+    },
   };
 }

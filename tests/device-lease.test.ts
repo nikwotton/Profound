@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { SqliteRouteStore, toPublicAccessGrant } from "../src/store.js";
+import { toPublicAccessGrant } from "../src/store.js";
 import type { RouteProfile, StoredAccessGrant } from "../src/types.js";
+import { InMemoryRouteStore, InMemoryRouteStoreState } from "./in-memory-route-store.js";
 
 const base = Date.parse("2026-07-15T00:00:00.000Z");
 const at = (offsetMs: number): string => new Date(base + offsetMs).toISOString();
@@ -24,10 +22,9 @@ const profile: RouteProfile = {
   retryPolicy: { maxAttempts: 1 },
 };
 
-test("active proxy-slot loads are shared across callers, durable, and released with each connection", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "profound-slot-loads-"));
-  const path = join(directory, "routes.db");
-  const firstStore = new SqliteRouteStore(path);
+test("active proxy-slot loads are shared across store adapters and released with each connection", async () => {
+  const state = new InMemoryRouteStoreState();
+  const firstStore = new InMemoryRouteStore(state);
   try {
     await firstStore.registerActiveTunnel({
       id: "connection-a",
@@ -61,7 +58,7 @@ test("active proxy-slot loads are shared across callers, durable, and released w
     );
     await firstStore.close();
 
-    const restartedStore = new SqliteRouteStore(path);
+    const restartedStore = new InMemoryRouteStore(state);
     try {
       assert.equal((await restartedStore.listAllActiveTunnels(at(60_000)))[0]?.id, "connection-b");
       assert.deepEqual(await restartedStore.listAllActiveTunnels(at(122_000)), [], "expired connection load is not retained");
@@ -69,12 +66,12 @@ test("active proxy-slot loads are shared across callers, durable, and released w
       await restartedStore.close();
     }
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    await firstStore.close();
   }
 });
 
 test("concurrent proxy-slot claims atomically include earlier claims in candidate load", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   let sequence = 0;
   try {
     const claim = () =>
@@ -109,7 +106,7 @@ test("concurrent proxy-slot claims atomically include earlier claims in candidat
 });
 
 test("shared capacity circuits open, back off, half-open exactly one probe, and reset after success", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   try {
     const first = await store.recordCapacityCircuitFailure("bright_data", "bright_data", "establishment_failure", at(0));
     const second = await store.recordCapacityCircuitFailure("bright_data", "bright_data", "establishment_failure", at(1));
@@ -139,7 +136,7 @@ test("shared capacity circuits open, back off, half-open exactly one probe, and 
 });
 
 test("routine revocation preserves active work and emergency revocation raises the kill switch", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   try {
     await store.create("routine", profile, "proxidize");
     await store.revoke("routine", false);
@@ -157,7 +154,7 @@ test("routine revocation preserves active work and emergency revocation raises t
 });
 
 test("route profiles contain no credential verifier and access grants rotate and revoke independently", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   try {
     const route = await store.create("shared-route", profile, "proxidize");
     assert.doesNotMatch(JSON.stringify(route), /tokenSalt|tokenHash/);

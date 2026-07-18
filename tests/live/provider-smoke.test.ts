@@ -3,15 +3,15 @@ import { test } from "node:test";
 test(
   "live Bright Data and Proxidize smoke test",
   {
-    skip: process.env.RUN_LIVE_PROXY_TESTS !== "1" ? "Set RUN_LIVE_PROXY_TESTS=1 and provider credentials" : false,
+    skip: process.env["RUN_LIVE_PROXY_TESTS"] !== "1" ? "Set RUN_LIVE_PROXY_TESTS=1 and provider credentials" : false,
   },
   async () => {
     if (
-      !process.env.BRIGHT_DATA_CUSTOMER_ID ||
-      !process.env.BRIGHT_DATA_ZONE ||
-      !process.env.BRIGHT_DATA_PASSWORD ||
-      !process.env.BRIGHT_DATA_API_KEY ||
-      !process.env.PROXIDIZE_API_TOKEN
+      !process.env["BRIGHT_DATA_CUSTOMER_ID"] ||
+      !process.env["BRIGHT_DATA_ZONE"] ||
+      !process.env["BRIGHT_DATA_PASSWORD"] ||
+      !process.env["BRIGHT_DATA_API_KEY"] ||
+      !process.env["PROXIDIZE_API_TOKEN"]
     ) {
       throw new Error("Live provider credentials are required");
     }

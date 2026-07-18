@@ -219,13 +219,15 @@ export class ProxidizeSimulator {
     if (request.method === "POST" && url.pathname === "/api/v1/perproxy/set-rotation-interval") {
       try {
         const body = await readJson(request);
-        const device = this.#devices.find((candidate) => candidate.username === body.username && candidate.publicKey === body.public_key);
-        if (device === undefined || typeof body.interval !== "number") {
+        const device = this.#devices.find(
+          (candidate) => candidate.username === body["username"] && candidate.publicKey === body["public_key"],
+        );
+        if (device === undefined || typeof body["interval"] !== "number") {
           json(response, 400, { error: "invalid_request" });
           return;
         }
-        if (body.interval === -1) delete device.rotationIntervalSeconds;
-        else device.rotationIntervalSeconds = body.interval;
+        if (body["interval"] === -1) delete device.rotationIntervalSeconds;
+        else device.rotationIntervalSeconds = body["interval"];
         response.writeHead(204);
         response.end();
       } catch {

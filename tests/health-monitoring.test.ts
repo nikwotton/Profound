@@ -20,7 +20,7 @@ import type { ProviderAdapter } from "../src/providers/provider.js";
 import { PublicCanaryServer } from "../src/public-canary.js";
 import { startPublicCanaryService } from "../src/runtime-services.js";
 import { SignedCanaryProbe } from "../src/signed-canary-probe.js";
-import { SqliteRouteStore } from "../src/store.js";
+import { InMemoryRouteStore } from "./in-memory-route-store.js";
 import { StatusApplicationServer } from "../src/status-app.js";
 import { v0TraceSampler } from "../src/telemetry.js";
 import type { CapabilityHealthSnapshot, ProviderDescriptor, ProviderHealth, ProviderId, UpstreamEndpoint } from "../src/types.js";
@@ -191,8 +191,8 @@ test("public canary trusts forwarding headers only from configured load-balancer
 
   const trusted = await start(["127.0.0.0/8"]);
   const trustedBody = (await (await request(trusted.port, randomUUID())).json()) as Record<string, unknown>;
-  assert.equal(trustedBody.observedIp, "203.0.113.10");
-  assert.deepEqual(trustedBody.geo, {
+  assert.equal(trustedBody["observedIp"], "203.0.113.10");
+  assert.deepEqual(trustedBody["geo"], {
     status: "available",
     countryCode: "US",
     subdivisionCode: "NY",
@@ -200,7 +200,7 @@ test("public canary trusts forwarding headers only from configured load-balancer
     geonameId: 5_128_581,
     accuracyRadiusKm: 20,
   });
-  assert.deepEqual(trustedBody.geoDataset, {
+  assert.deepEqual(trustedBody["geoDataset"], {
     vendor: "MaxMind",
     edition: "GeoLite2-City",
     buildTimestamp: "2026-07-14T00:00:00.000Z",
@@ -208,7 +208,7 @@ test("public canary trusts forwarding headers only from configured load-balancer
 
   const untrusted = await start([]);
   const untrustedBody = (await (await request(untrusted.port, randomUUID())).json()) as Record<string, unknown>;
-  assert.equal(untrustedBody.observedIp, "127.0.0.1");
+  assert.equal(untrustedBody["observedIp"], "127.0.0.1");
 });
 
 test("local GeoIP resolver activates versioned MaxMind evidence and marks weak data unverifiable", async (t) => {
@@ -342,7 +342,7 @@ test("public canary keeps access events on its security logger", async (t) => {
   );
   assert.equal(securityMessages.length, 0);
 
-  const address = operationalMessages[0]?.context?.address as { port?: unknown } | undefined;
+  const address = operationalMessages[0]?.context?.["address"] as { port?: unknown } | undefined;
   assert.equal(typeof address?.port, "number");
   const response = await fetch(`http://127.0.0.1:${String(address?.port)}/not-a-canary-route?secret=query-value`, {
     headers: {
@@ -360,11 +360,11 @@ test("public canary keeps access events on its security logger", async (t) => {
     securityMessages.map(({ message }) => message),
     ["Canary request rejected"],
   );
-  assert.equal(securityMessages[0]?.context?.geoStatus, "unavailable");
-  assert.equal(securityMessages[0]?.context?.derivedCountry, "unknown");
-  assert.equal(securityMessages[0]?.context?.path, "/not-a-canary-route");
-  assert.equal(securityMessages[0]?.context?.derivedAsn, "unknown");
-  assert.equal(securityMessages[0]?.context?.userAgent, "safe-test-agent");
+  assert.equal(securityMessages[0]?.context?.["geoStatus"], "unavailable");
+  assert.equal(securityMessages[0]?.context?.["derivedCountry"], "unknown");
+  assert.equal(securityMessages[0]?.context?.["path"], "/not-a-canary-route");
+  assert.equal(securityMessages[0]?.context?.["derivedAsn"], "unknown");
+  assert.equal(securityMessages[0]?.context?.["userAgent"], "safe-test-agent");
   const encodedSecurityLog = JSON.stringify(securityMessages);
   for (const secret of ["query-value", "header-secret", "cookie-secret"]) {
     assert.ok(!encodedSecurityLog.includes(secret));
@@ -441,7 +441,7 @@ test("signed synthetic probe uses the normal proxy path and a direct control on 
 });
 
 test("synthetic GeoIP mismatch degrades expected geography without rewriting it as observed", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   const checkedAt = "2026-07-15T00:00:00.000Z";
   const synthetic = new CooldownSyntheticValidator(
     async () => ({
@@ -496,7 +496,7 @@ test("synthetic GeoIP mismatch degrades expected geography without rewriting it 
 });
 
 test("capability aggregation keeps freshness separate and requires corroboration for unavailability", async () => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   const checkedAt = "2026-07-15T00:00:00.000Z";
   const synthetic = new CooldownSyntheticValidator(
     async () => ({
@@ -566,7 +566,7 @@ test("capability health follows preferred provider classes without penalizing a 
     brightDataState: ProviderHealth["state"],
     proxidizeState: ProviderHealth["state"],
   ): Promise<CapabilityHealthSnapshot> => {
-    const store = new SqliteRouteStore(":memory:");
+    const store = new InMemoryRouteStore();
     try {
       const aggregator = new CapabilityHealthAggregator(
         store,
@@ -618,7 +618,7 @@ test("capability health follows preferred provider classes without penalizing a 
 
 test("health aggregation alone classifies fresh capacity-pressure evidence as degraded capability state", async () => {
   const checkedAt = "2026-07-15T00:00:00.000Z";
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   try {
     await store.saveCapacityPressureEvidence({
       id: "capacity:proxidize:hour",
@@ -698,7 +698,7 @@ test("health aggregation alone classifies fresh capacity-pressure evidence as de
 });
 
 test("notification failures cannot prevent finalized health persistence", async (t) => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   t.after(() => store.close());
   const checkedAt = "2026-07-15T00:00:00.000Z";
   const aggregator = new CapabilityHealthAggregator(
@@ -721,7 +721,7 @@ test("notification failures cannot prevent finalized health persistence", async 
 
 test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", async (t) => {
   const checkedAt = "2026-07-15T00:00:00.000Z";
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   const aggregator = new CapabilityHealthAggregator(
     store,
     [
@@ -807,7 +807,7 @@ test("health aggregator accepts collector-filtered OTLP JSON passive outcomes", 
 });
 
 test("status application serves durable snapshots, history, and explicit staleness", async (t) => {
-  const store = new SqliteRouteStore(":memory:");
+  const store = new InMemoryRouteStore();
   const snapshot: CapabilityHealthSnapshot = {
     id: "snapshot-1",
     generatedAt: "2026-07-15T00:00:00.000Z",

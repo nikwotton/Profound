@@ -44,13 +44,13 @@ deployedTest("deployed HTTP forwarding preserves native method, path, query, hea
   });
   assert.equal(response.status, 200);
   const observed = parsedBody(response);
-  assert.equal(observed.method, "POST");
-  assert.equal(observed.path, "/echo/path?first=one&second=two");
-  assert.equal(observed.authorization, "Bearer target-authorization-value");
-  assert.equal(observed.cookie, "target-session=private-cookie-value");
-  assert.equal(observed.testHeader, "preserved-header-value");
-  assert.equal(observed.requestBody, "streamed-request-body");
-  assert.equal(observed.requestCount, 1);
+  assert.equal(observed["method"], "POST");
+  assert.equal(observed["path"], "/echo/path?first=one&second=two");
+  assert.equal(observed["authorization"], "Bearer target-authorization-value");
+  assert.equal(observed["cookie"], "target-session=private-cookie-value");
+  assert.equal(observed["testHeader"], "preserved-header-value");
+  assert.equal(observed["requestBody"], "streamed-request-body");
+  assert.equal(observed["requestCount"], 1);
   assert.equal(response.headers["x-mock-postal-code"], "10001");
   assert.equal(response.headers["x-mock-asn"], "12345");
 });
@@ -72,7 +72,7 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
     headers: { "x-profound-test-id": statusId },
   });
   assert.equal(unavailable.status, 503);
-  assert.equal(parsedBody(unavailable).requestCount, 1);
+  assert.equal(parsedBody(unavailable)["requestCount"], 1);
 
   const redirectId = randomUUID();
   const redirect = await requestViaHttpProxy(
@@ -82,7 +82,7 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
   );
   assert.equal(redirect.status, 302);
   assert.equal(redirect.headers.location, "/caller-owned-destination");
-  assert.equal(parsedBody(redirect).requestCount, 1);
+  assert.equal(parsedBody(redirect)["requestCount"], 1);
 });
 
 deployedTest("deployed Bright Data routes support fresh exits and authenticated exact-city policies", async (t) => {
@@ -166,8 +166,8 @@ deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and T
     body: "connect-body",
   });
   assert.equal(connected.status, 200);
-  assert.equal(parsedBody(connected).path, "/connect?native=query");
-  assert.equal(parsedBody(connected).requestBody, "connect-body");
+  assert.equal(parsedBody(connected)["path"], "/connect?native=query");
+  assert.equal(parsedBody(connected)["requestBody"], "connect-body");
 
   const socksTarget = new URL("/socks?native=query", metadata.integrationTarget.url).toString();
   const socks = await requestViaSocks5(route.proxyUrls.socks5, socksTarget, {
@@ -176,8 +176,8 @@ deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and T
     body: "socks-body",
   });
   assert.equal(socks.status, 200);
-  assert.equal(parsedBody(socks).path, "/socks?native=query");
-  assert.equal(parsedBody(socks).requestBody, "socks-body");
+  assert.equal(parsedBody(socks)["path"], "/socks?native=query");
+  assert.equal(parsedBody(socks)["requestBody"], "socks-body");
 
   if (metadata.integrationTransportTarget !== null) {
     const plainHttpTarget = new URL("/plain-http", metadata.integrationTransportTarget.url).toString();

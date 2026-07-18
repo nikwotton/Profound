@@ -1,5 +1,13 @@
-import { ProviderUnavailableError, UpstreamError } from "../errors.js";
-import { expectArray, expectBoolean, expectNumber, expectOptionalString, expectRecord, expectString } from "../decoding.js";
+import { ProviderProtocolError, ProviderUnavailableError, attributeProvider } from "../errors.js";
+import {
+  expectArray,
+  expectBoolean,
+  expectInteger,
+  expectNonEmptyString,
+  expectOptionalNonEmptyString,
+  expectOptionalString,
+  expectRecord,
+} from "../decoding.js";
 import type { MobileProviderAdapter, ResolveOptions } from "./provider.js";
 import type { MobileEndpoint, ProviderHealth, StoredRoute, Targeting, UpstreamEndpoint } from "../types.js";
 
@@ -10,6 +18,12 @@ export interface ProxidizeConfig {
   cacheTtlMs?: number;
   exactCity: "provider_guaranteed" | "verifiable" | "unsupported";
   providerAccountId?: string;
+  fetchImplementation?: typeof fetch;
+}
+
+function providerError<ErrorType extends ProviderProtocolError | ProviderUnavailableError>(error: ErrorType): ErrorType {
+  attributeProvider(error, "proxidize");
+  return error;
 }
 
 function normalized(value: string): string {
@@ -77,19 +91,25 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
       headers.set("authorization", `Bearer ${this.config.apiToken}`);
       headers.set("accept", "application/json");
       if (init?.body !== undefined) headers.set("content-type", "application/json");
-      const response = await fetch(new URL(path, this.config.apiBaseUrl), {
-        ...init,
-        headers,
-        signal: controller.signal,
-      });
+      let response: Response;
+      try {
+        response = await (this.config.fetchImplementation ?? fetch)(new URL(path, this.config.apiBaseUrl), {
+          ...init,
+          headers,
+          signal: controller.signal,
+        });
+      } catch {
+        throw providerError(new ProviderUnavailableError("Proxidize control API is unavailable"));
+      }
       if (!response.ok) {
-        throw new UpstreamError(`Proxidize control API returned ${response.status}`);
+        throw providerError(new ProviderProtocolError(`Proxidize control API returned HTTP ${response.status}`));
       }
       if (response.status === 204) return undefined;
-      return await response.json();
-    } catch (error) {
-      if (error instanceof UpstreamError) throw error;
-      throw new ProviderUnavailableError("Proxidize control API is unavailable");
+      try {
+        return await response.json();
+      } catch {
+        throw providerError(new ProviderProtocolError("Proxidize control API returned malformed JSON"));
+      }
     } finally {
       clearTimeout(timeout);
       init?.signal?.removeEventListener("abort", abort);
@@ -98,50 +118,60 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
 
   async listEndpoints(refresh = false, signal?: AbortSignal): Promise<MobileEndpoint[]> {
     if (!refresh && Date.now() < this.#cacheExpiresAt) return this.#cachedEndpoints;
-    const subscriptions = expectRecord(
-      await this.#request("/api/v1/subscription?type=per_proxy", signal === undefined ? undefined : { signal }),
-      "Proxidize subscriptions response",
-    );
-    const subscriptionData = expectArray(subscriptions.data, "Proxidize subscriptions response.data");
-    const subscription = expectRecord(subscriptionData[0], "Proxidize subscriptions response.data[0]");
-    const metadata = expectRecord(subscription.meta_data, "Proxidize subscription metadata");
-    const accountUsername = expectOptionalString(metadata.username, "Proxidize subscription username");
-    if (accountUsername === undefined || accountUsername.length === 0) {
-      throw new ProviderUnavailableError("No Proxidize per-proxy subscription was found");
+    try {
+      const subscriptions = expectRecord(
+        await this.#request("/api/v1/subscription?type=per_proxy", signal === undefined ? undefined : { signal }),
+        "Proxidize subscriptions response",
+      );
+      const subscriptionData = expectArray(subscriptions["data"], "Proxidize subscriptions response.data");
+      const subscription = expectRecord(subscriptionData[0], "Proxidize subscriptions response.data[0]");
+      const metadata = expectRecord(subscription["meta_data"], "Proxidize subscription metadata");
+      const accountUsername = expectOptionalNonEmptyString(metadata["username"], "Proxidize subscription username");
+      if (accountUsername === undefined || accountUsername.length === 0) {
+        throw providerError(new ProviderUnavailableError("No Proxidize per-proxy subscription was found"));
+      }
+      const response = expectRecord(
+        await this.#request(
+          `/api/v1/perproxy/proxies/${encodeURIComponent(accountUsername)}`,
+          signal === undefined ? undefined : { signal },
+        ),
+        "Proxidize proxies response",
+      );
+      const endpoints = expectArray(response["data"], "Proxidize proxies response.data").map((value, index): MobileEndpoint => {
+        const record = expectRecord(value, `Proxidize proxy record ${index}`);
+        const currentIp = expectOptionalNonEmptyString(record["current_ip"], `Proxidize proxy record ${index}.current_ip`);
+        const ip = expectOptionalNonEmptyString(record["ip"], `Proxidize proxy record ${index}.ip`);
+        const egressIp = currentIp ?? ip;
+        const deviceId = expectOptionalNonEmptyString(record["device_id"], `Proxidize proxy record ${index}.device_id`);
+        const city = expectOptionalNonEmptyString(record["city"], `Proxidize proxy record ${index}.city`);
+        const status = expectOptionalString(record["status"], `Proxidize proxy record ${index}.status`);
+        const healthy =
+          record["healthy"] === undefined
+            ? status === "active"
+            : expectBoolean(record["healthy"], `Proxidize proxy record ${index}.healthy`);
+        return {
+          id: expectNonEmptyString(record["id"], `Proxidize proxy record ${index}.id`),
+          username: expectNonEmptyString(record["username"], `Proxidize proxy record ${index}.username`),
+          password: expectNonEmptyString(record["password"], `Proxidize proxy record ${index}.password`),
+          host: expectNonEmptyString(record["host"], `Proxidize proxy record ${index}.host`),
+          port: expectInteger(record["port"], `Proxidize proxy record ${index}.port`, 1, 65_535),
+          country: expectNonEmptyString(record["country"], `Proxidize proxy record ${index}.country`).toUpperCase(),
+          region: expectNonEmptyString(record["region"], `Proxidize proxy record ${index}.region`),
+          ...(city === undefined ? {} : { city }),
+          carrier: expectNonEmptyString(record["carrier"], `Proxidize proxy record ${index}.carrier`),
+          publicKey: expectNonEmptyString(record["public_key"], `Proxidize proxy record ${index}.public_key`),
+          ...(deviceId === undefined ? {} : { deviceId }),
+          healthy,
+          ...(egressIp === undefined ? {} : { egressIp }),
+        };
+      });
+      this.#cachedEndpoints = endpoints;
+      this.#cacheExpiresAt = Date.now() + (this.config.cacheTtlMs ?? 5_000);
+      return endpoints;
+    } catch (error) {
+      if (error instanceof ProviderProtocolError || error instanceof ProviderUnavailableError) throw error;
+      throw providerError(new ProviderProtocolError("Proxidize control API returned malformed data"));
     }
-    const response = expectRecord(
-      await this.#request(`/api/v1/perproxy/proxies/${encodeURIComponent(accountUsername)}`, signal === undefined ? undefined : { signal }),
-      "Proxidize proxies response",
-    );
-    const endpoints = expectArray(response.data, "Proxidize proxies response.data").map((value, index): MobileEndpoint => {
-      const record = expectRecord(value, `Proxidize proxy record ${index}`);
-      const currentIp = expectOptionalString(record.current_ip, `Proxidize proxy record ${index}.current_ip`);
-      const ip = expectOptionalString(record.ip, `Proxidize proxy record ${index}.ip`);
-      const egressIp = currentIp ?? ip;
-      const deviceId = expectOptionalString(record.device_id, `Proxidize proxy record ${index}.device_id`);
-      const city = expectOptionalString(record.city, `Proxidize proxy record ${index}.city`);
-      const status = expectOptionalString(record.status, `Proxidize proxy record ${index}.status`);
-      const healthy =
-        record.healthy === undefined ? status === "active" : expectBoolean(record.healthy, `Proxidize proxy record ${index}.healthy`);
-      return {
-        id: expectString(record.id, `Proxidize proxy record ${index}.id`),
-        username: expectString(record.username, `Proxidize proxy record ${index}.username`),
-        password: expectString(record.password, `Proxidize proxy record ${index}.password`),
-        host: expectString(record.host, `Proxidize proxy record ${index}.host`),
-        port: expectNumber(record.port, `Proxidize proxy record ${index}.port`),
-        country: expectString(record.country, `Proxidize proxy record ${index}.country`).toUpperCase(),
-        region: expectString(record.region, `Proxidize proxy record ${index}.region`),
-        ...(city === undefined ? {} : { city }),
-        carrier: expectString(record.carrier, `Proxidize proxy record ${index}.carrier`),
-        publicKey: expectString(record.public_key, `Proxidize proxy record ${index}.public_key`),
-        ...(deviceId === undefined ? {} : { deviceId }),
-        healthy,
-        ...(egressIp === undefined ? {} : { egressIp }),
-      };
-    });
-    this.#cachedEndpoints = endpoints;
-    this.#cacheExpiresAt = Date.now() + (this.config.cacheTtlMs ?? 5_000);
-    return endpoints;
   }
 
   async resolve(route: StoredRoute, options: ResolveOptions): Promise<UpstreamEndpoint> {
@@ -151,7 +181,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
       assigned ??
       endpoints.find((candidate) => candidate.healthy && !options.excludedEndpointIds?.has(candidate.id) && this.matches(candidate, route));
     if (endpoint === undefined || !endpoint.healthy) {
-      throw new ProviderUnavailableError("No healthy Proxidize proxy slot matches the route policy");
+      throw providerError(new ProviderUnavailableError("No healthy Proxidize proxy slot matches the route policy"));
     }
     return {
       provider: this.descriptor.id,
@@ -187,11 +217,11 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
 
   async rotate(route: StoredRoute, signal?: AbortSignal): Promise<void> {
     if (route.endpointId === undefined) {
-      throw new ProviderUnavailableError("Mobile route has no assigned endpoint");
+      throw providerError(new ProviderUnavailableError("Mobile route has no assigned endpoint"));
     }
     const endpoint = (await this.listEndpoints(true, signal)).find((candidate) => candidate.id === route.endpointId);
     if (endpoint === undefined || !endpoint.healthy) {
-      throw new ProviderUnavailableError("The mobile route's assigned device is unhealthy");
+      throw providerError(new ProviderUnavailableError("The mobile route's assigned device is unhealthy"));
     }
     await this.#request(
       `/api/v1/perproxy/rotate-url/${encodeURIComponent(endpoint.publicKey)}/`,
@@ -202,7 +232,7 @@ export class ProxidizeAdapter implements MobileProviderAdapter {
 
   async setRotationInterval(endpointId: string, intervalSeconds?: number): Promise<void> {
     const endpoint = (await this.listEndpoints(true)).find((candidate) => candidate.id === endpointId);
-    if (endpoint === undefined) throw new ProviderUnavailableError("Mobile endpoint was not found");
+    if (endpoint === undefined) throw providerError(new ProviderUnavailableError("Mobile endpoint was not found"));
     await this.#request("/api/v1/perproxy/set-rotation-interval", {
       method: "POST",
       body: JSON.stringify({

@@ -449,32 +449,23 @@
             "type": "string"
           },
           "geography": {
-            "additionalProperties": false,
-            "properties": {
-              "city": {
-                "type": "string"
-              },
-              "countryCode": {
-                "type": "string"
-              },
-              "regionCode": {
-                "type": "string"
-              }
-            },
-            "type": "object"
+            "$ref": "#/components/schemas/Geography"
           },
           "isTargetAuthenticated": {
             "type": "boolean"
           },
           "providerOverride": {
-            "enum": [
-              "bright_data",
-              "proxidize",
-              null
-            ],
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "enum": [
+                  "bright_data",
+                  "proxidize"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },

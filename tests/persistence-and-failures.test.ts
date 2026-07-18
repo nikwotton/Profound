@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createLogger } from "../src/logger.js";
 import { createRoute, requestViaProxy, socks5AuthenticationStatus, startHttpTarget, startTestApp } from "./helpers.js";
 
-test("access-grant credentials and route requirements survive a service restart", async (t) => {
+test("access-grant credentials and route requirements are reloaded when the application restarts", async (t) => {
   const target = await startHttpTarget();
   let testApp = await startTestApp([target.port]);
   t.after(async () => {
@@ -18,8 +18,8 @@ test("access-grant credentials and route requirements survive a service restart"
   });
   const before = await requestViaProxy(route.proxyUrls.http, target.url);
   const city = before.headers["x-mock-city"];
-  const saved = { databasePath: testApp.databasePath, directory: testApp.directory };
-  await testApp.stop(false);
+  const saved = { storeState: testApp.storeState };
+  await testApp.stop();
   testApp = await startTestApp([target.port], saved);
 
   const restartedHttpProxy = new URL(route.proxyUrls.http);

@@ -11,7 +11,7 @@ import { basicAuth } from "../../src/net-utils.js";
 import type { RouteProfileInput } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
-export const deployedTestsEnabled = process.env.RUN_DEPLOYED_SST_TESTS === "1";
+export const deployedTestsEnabled = process.env["RUN_DEPLOYED_SST_TESTS"] === "1";
 
 export interface ServiceMetadata {
   cluster: string;

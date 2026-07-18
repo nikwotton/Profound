@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { expectBufferChunk } from "./decoding.js";
+import { Schema } from "effect";
+import { expectBufferChunk, isUnknownRecord, parseJson } from "./decoding.js";
 import type { HealthAlertEvaluator } from "./alerting.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAdapter } from "./providers/provider.js";
@@ -22,6 +23,16 @@ export interface SyntheticValidationScope {
   capability?: Exclude<CapabilityName, "health_verification">;
   country?: string;
   city?: string;
+}
+
+const SyntheticValidationScopeSchema: Schema.Schema<SyntheticValidationScope> = Schema.Struct({
+  capability: Schema.optionalWith(Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic"), { exact: true }),
+  country: Schema.optionalWith(Schema.String, { exact: true }),
+  city: Schema.optionalWith(Schema.String, { exact: true }),
+}).annotations({ identifier: "SyntheticValidationScope", parseOptions: { onExcessProperty: "error" } });
+
+export function decodeSyntheticValidationScope(value: unknown): SyntheticValidationScope {
+  return Schema.decodeUnknownSync(SyntheticValidationScopeSchema)(value);
 }
 
 export interface SyntheticValidator {
@@ -89,26 +100,24 @@ function combinedTrafficStatus(
 }
 
 function isPassiveSignal(value: unknown): value is PassiveHealthSignal {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
+  if (!isUnknownRecord(value)) return false;
   return (
-    (candidate.provider === "bright_data" || candidate.provider === "proxidize") &&
-    (candidate.capability === "all_traffic" ||
-      candidate.capability === "authenticated_traffic" ||
-      candidate.capability === "unauthenticated_traffic") &&
-    (candidate.outcome === "success" || candidate.outcome === "failure") &&
-    typeof candidate.observedAt === "string" &&
-    Number.isFinite(Date.parse(candidate.observedAt))
+    (value["provider"] === "bright_data" || value["provider"] === "proxidize") &&
+    (value["capability"] === "all_traffic" ||
+      value["capability"] === "authenticated_traffic" ||
+      value["capability"] === "unauthenticated_traffic") &&
+    (value["outcome"] === "success" || value["outcome"] === "failure") &&
+    typeof value["observedAt"] === "string" &&
+    Number.isFinite(Date.parse(value["observedAt"]))
   );
 }
 
 function otlpScalar(value: unknown): string | number | boolean | undefined {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const candidate = value as Record<string, unknown>;
-  if (typeof candidate.stringValue === "string") return candidate.stringValue;
-  if (typeof candidate.boolValue === "boolean") return candidate.boolValue;
-  if (typeof candidate.intValue === "string" || typeof candidate.intValue === "number") return candidate.intValue;
-  if (typeof candidate.doubleValue === "number") return candidate.doubleValue;
+  if (!isUnknownRecord(value)) return undefined;
+  if (typeof value["stringValue"] === "string") return value["stringValue"];
+  if (typeof value["boolValue"] === "boolean") return value["boolValue"];
+  if (typeof value["intValue"] === "string" || typeof value["intValue"] === "number") return value["intValue"];
+  if (typeof value["doubleValue"] === "number") return value["doubleValue"];
   return undefined;
 }
 
@@ -122,44 +131,41 @@ function otlpTimestamp(value: unknown): string | undefined {
 }
 
 export function passiveSignalsFromOtlpJson(value: unknown): PassiveHealthSignal[] {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (!isUnknownRecord(value)) {
     throw new Error("invalid_otlp_logs");
   }
-  const resourceLogs = (value as Record<string, unknown>).resourceLogs;
+  const resourceLogs = value["resourceLogs"];
   if (!Array.isArray(resourceLogs)) throw new Error("invalid_otlp_logs");
   const signals: PassiveHealthSignal[] = [];
   for (const resourceLog of resourceLogs) {
-    if (resourceLog === null || typeof resourceLog !== "object" || Array.isArray(resourceLog)) continue;
-    const record = resourceLog as Record<string, unknown>;
-    const scopeLogs = Array.isArray(record.scopeLogs)
-      ? record.scopeLogs
-      : Array.isArray(record.instrumentationLibraryLogs)
-        ? record.instrumentationLibraryLogs
+    if (!isUnknownRecord(resourceLog)) continue;
+    const scopeLogs = Array.isArray(resourceLog["scopeLogs"])
+      ? resourceLog["scopeLogs"]
+      : Array.isArray(resourceLog["instrumentationLibraryLogs"])
+        ? resourceLog["instrumentationLibraryLogs"]
         : [];
     for (const scopeLog of scopeLogs) {
-      if (scopeLog === null || typeof scopeLog !== "object" || Array.isArray(scopeLog)) continue;
-      const logRecords = (scopeLog as Record<string, unknown>).logRecords;
+      if (!isUnknownRecord(scopeLog)) continue;
+      const logRecords = scopeLog["logRecords"];
       if (!Array.isArray(logRecords)) continue;
       for (const logRecord of logRecords) {
-        if (logRecord === null || typeof logRecord !== "object" || Array.isArray(logRecord)) continue;
-        const log = logRecord as Record<string, unknown>;
+        if (!isUnknownRecord(logRecord)) continue;
         const attributes = new Map<string, string | number | boolean>();
-        if (Array.isArray(log.attributes)) {
-          for (const attribute of log.attributes) {
-            if (attribute === null || typeof attribute !== "object" || Array.isArray(attribute)) continue;
-            const entry = attribute as Record<string, unknown>;
-            const scalar = otlpScalar(entry.value);
-            if (typeof entry.key === "string" && scalar !== undefined) attributes.set(entry.key, scalar);
+        if (Array.isArray(logRecord["attributes"])) {
+          for (const attribute of logRecord["attributes"]) {
+            if (!isUnknownRecord(attribute)) continue;
+            const scalar = otlpScalar(attribute["value"]);
+            if (typeof attribute["key"] === "string" && scalar !== undefined) attributes.set(attribute["key"], scalar);
           }
         }
-        const body = otlpScalar(log.body);
+        const body = otlpScalar(logRecord["body"]);
         const eventName = attributes.get("event.name");
         if (body !== "profound.proxy.passive_health" && eventName !== "profound.proxy.passive_health") continue;
         const signal = {
           provider: attributes.get("proxy.provider"),
           capability: attributes.get("proxy.capability"),
           outcome: attributes.get("proxy.outcome"),
-          observedAt: attributes.get("proxy.observed_at") ?? otlpTimestamp(log.timeUnixNano),
+          observedAt: attributes.get("proxy.observed_at") ?? otlpTimestamp(logRecord["timeUnixNano"]),
           ...(typeof attributes.get("proxy.country") === "string" ? { country: attributes.get("proxy.country") } : {}),
           ...(typeof attributes.get("proxy.city") === "string" ? { city: attributes.get("proxy.city") } : {}),
         };
@@ -392,7 +398,7 @@ async function readJson(request: IncomingMessage, maximumBytes: number): Promise
     if (size > maximumBytes) throw new Error("request_too_large");
     chunks.push(buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return parseJson(Buffer.concat(chunks).toString("utf8"), "health-aggregator request body");
 }
 
 export class HealthAggregatorServer {
@@ -465,7 +471,7 @@ export class HealthAggregatorServer {
         return;
       }
       if (request.method === "POST" && path === "/v1/validate") {
-        const body = (await readJson(request, this.options.maximumBodyBytes ?? 16_384)) as SyntheticValidationScope;
+        const body = decodeSyntheticValidationScope(await readJson(request, this.options.maximumBodyBytes ?? 16_384));
         json(response, 200, { snapshot: await this.aggregator.refresh({ forceSynthetic: true, scope: body }) });
         return;
       }

@@ -27,7 +27,7 @@
     "openapi:generate": "tsx scripts/openapi-contract.ts generate",
     "openapi:check": "tsx scripts/openapi-contract.ts check",
     "openapi:compat": "tsx scripts/openapi-contract.ts compatibility",
-    "dev": "tsx watch src/index.ts",
+    "dev:service": "tsx watch src/index.ts",
     "geoip:prepare": "tsx scripts/prepare-geoip.ts",
     "aws:deploy": "sst deploy",
     "aws:remove": "sst remove",

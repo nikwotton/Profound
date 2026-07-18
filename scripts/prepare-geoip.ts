@@ -7,13 +7,13 @@ import { tmpdir } from "node:os";
 import { extract } from "tar";
 import { expectOptionalString, expectRecord, parseJson } from "../src/decoding.js";
 
-const accountId = process.env.MAXMIND_ACCOUNT_ID?.trim();
-const licenseKey = process.env.MAXMIND_LICENSE_KEY?.trim();
+const accountId = process.env["MAXMIND_ACCOUNT_ID"]?.trim();
+const licenseKey = process.env["MAXMIND_LICENSE_KEY"]?.trim();
 if (!accountId || !licenseKey) {
   throw new Error("MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY are required");
 }
 
-const outputDirectory = resolve(process.env.GEOIP_BUNDLE_DIRECTORY ?? ".sst/geoip");
+const outputDirectory = resolve(process.env["GEOIP_BUNDLE_DIRECTORY"] ?? ".sst/geoip");
 const databasePath = join(outputDirectory, "GeoLite2-City.mmdb");
 const metadataPath = `${databasePath}.metadata.json`;
 const downloadUrl = "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz";
@@ -25,7 +25,7 @@ async function existingBuildTimestamp(): Promise<string | undefined> {
       parseJson(await readFile(metadataPath, "utf8"), `GeoIP metadata ${metadataPath}`),
       `GeoIP metadata ${metadataPath}`,
     );
-    return expectOptionalString(parsed.buildTimestamp, "GeoIP metadata buildTimestamp");
+    return expectOptionalString(parsed["buildTimestamp"], "GeoIP metadata buildTimestamp");
   } catch {
     return undefined;
   }

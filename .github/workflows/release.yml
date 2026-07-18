@@ -61,7 +61,6 @@ jobs:
         env:
           RELEASE_IMAGE_URI: ${{ steps.image.outputs.uri }}
           RELEASE_SHA: ${{ github.sha }}
-          PROVIDER_MODE: live
           PROXY_DOMAIN: ${{ vars.STAGING_PROXY_DOMAIN }}
           PROXY_CERT_ARN: ${{ vars.STAGING_PROXY_CERT_ARN }}
           CONTROL_DOMAIN: ${{ vars.STAGING_CONTROL_DOMAIN }}
@@ -93,7 +92,6 @@ jobs:
         env:
           RELEASE_IMAGE_URI: ${{ steps.image.outputs.uri }}
           RELEASE_SHA: ${{ github.sha }}
-          PROVIDER_MODE: live
           PROXY_DOMAIN: ${{ vars.PROXY_DOMAIN }}
           PROXY_CERT_ARN: ${{ vars.PROXY_CERT_ARN }}
           CONTROL_DOMAIN: ${{ vars.CONTROL_DOMAIN }}

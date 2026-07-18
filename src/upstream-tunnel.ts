@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { connect, isIP, type Socket } from "node:net";
 import { AppError, ProviderCapacityLimitError, ProviderUnavailableError, UpstreamError } from "./errors.js";
+import { expectBufferChunk } from "./decoding.js";
 import { abortReason } from "./establishment-budget.js";
 import { basicAuth } from "./net-utils.js";
 import { resolvedAddressesFromHeader, type ProviderResolutionMetadata } from "./destination-resolution.js";
@@ -33,8 +34,9 @@ async function readExactly(socket: Socket, length: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let remaining = length;
   while (remaining > 0) {
-    const chunk = socket.read(remaining) as Buffer | null;
-    if (chunk !== null) {
+    const rawChunk: unknown = socket.read(remaining);
+    if (rawChunk !== null) {
+      const chunk = expectBufferChunk(rawChunk, "upstream SOCKS5 response chunk");
       chunks.push(chunk);
       remaining -= chunk.length;
       continue;

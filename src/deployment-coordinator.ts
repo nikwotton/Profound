@@ -83,9 +83,9 @@ interface EcsLifecycleHookResult {
 }
 
 export async function handler(): Promise<EcsLifecycleHookResult> {
-  const tableName = process.env.ROUTE_TABLE_NAME?.trim();
-  const currentDeploymentId = process.env.DEPLOYMENT_ID?.trim();
-  const notificationTopicArn = process.env.DEPLOYMENT_NOTIFICATION_TOPIC_ARN?.trim();
+  const tableName = process.env["ROUTE_TABLE_NAME"]?.trim();
+  const currentDeploymentId = process.env["DEPLOYMENT_ID"]?.trim();
+  const notificationTopicArn = process.env["DEPLOYMENT_NOTIFICATION_TOPIC_ARN"]?.trim();
   if (!tableName || !currentDeploymentId || !notificationTopicArn) {
     return { hookStatus: "FAILED", hookDetails: "ROUTE_TABLE_NAME, DEPLOYMENT_ID, and DEPLOYMENT_NOTIFICATION_TOPIC_ARN are required" };
   }

@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { AddressNotFoundError, Reader, type ReaderModel } from "@maxmind/geoip2-node";
 import { extract } from "tar";
+import { isUnknownRecord } from "./decoding.js";
 import type { Logger } from "./logger.js";
 import type { GeoIpDatasetMetadata, GeoIpLookupResult } from "./types.js";
 
@@ -41,13 +42,12 @@ function metadataPath(databasePath: string): string {
 }
 
 function validMetadata(value: unknown): value is DatasetSidecar {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Partial<DatasetSidecar>;
+  if (!isUnknownRecord(value)) return false;
   return (
-    candidate.vendor === VENDOR &&
-    candidate.edition === EDITION &&
-    typeof candidate.buildTimestamp === "string" &&
-    Number.isFinite(Date.parse(candidate.buildTimestamp))
+    value["vendor"] === VENDOR &&
+    value["edition"] === EDITION &&
+    typeof value["buildTimestamp"] === "string" &&
+    Number.isFinite(Date.parse(value["buildTimestamp"]))
   );
 }
 

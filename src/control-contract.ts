@@ -1,5 +1,8 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, HttpApiSecurity, OpenApi } from "@effect/platform";
 import { Context, Schema } from "effect";
+import { GeographyPayload as Geography, RouteProfilePayload } from "./route-profile-schema.js";
+
+export { RouteProfilePayload } from "./route-profile-schema.js";
 
 export const CONTROL_API_VERSION = "0.6.0";
 
@@ -44,37 +47,6 @@ export class AdminAuthorization extends HttpApiMiddleware.Tag<AdminAuthorization
     ),
   },
 }) {}
-
-const Geography = Schema.Struct({
-  countryCode: Schema.optional(Schema.String),
-  regionCode: Schema.optional(Schema.String),
-  city: Schema.optional(Schema.String),
-}).annotations({ identifier: "Geography", parseOptions: { onExcessProperty: "error" } });
-
-export const RouteProfilePayload = Schema.Unknown.annotations({
-  identifier: "RouteProfileInput",
-  jsonSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      customerId: { type: "string" },
-      geography: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          countryCode: { type: "string" },
-          regionCode: { type: "string" },
-          city: { type: "string" },
-        },
-      },
-      carrier: { type: "string" },
-      providerOverride: { type: ["string", "null"], enum: ["bright_data", "proxidize", null] },
-      isTargetAuthenticated: { type: "boolean" },
-      allowConnectionRetry: { type: "boolean" },
-    },
-    required: ["customerId", "isTargetAuthenticated", "allowConnectionRetry"],
-  },
-});
 
 const PublicRoute = Schema.Struct({
   profileId: Schema.String,

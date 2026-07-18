@@ -74,7 +74,8 @@ test("developer stages are isolated and destination simulators preserve configur
   const stage = file("infra/stage-config.ts");
   const simulator = file("src/destination-simulator.ts");
   assert.match(file("Dockerfile"), /COPY infra \.\/infra/);
-  assert.match(stage, /Personal developer stages cannot use live provider credentials/);
+  assert.match(stage, /production \|\| stage === "staging" \? "live" : "mock"/);
+  assert.doesNotMatch(stage, /process\.env|environment:/);
   for (const option of ["responseStatus", "responseHeader", "responseBody", "delayMs", "connection"]) {
     assert.ok(simulator.includes(option), `Destination simulator is missing ${option}`);
   }

@@ -7,8 +7,8 @@ V0 includes:
 - native HTTP forwarding, HTTPS `CONNECT`, and SOCKS5 TCP `CONNECT`;
 - reusable, secret-free route profiles and independently revocable access grants;
 - versioned, capacity-aware candidate scoring, safe pre-commit retry, and atomic per-connection proxy-slot assignment;
-- local provider simulators that require no vendor account or payment;
-- SQLite for local state and DynamoDB for deployed state;
+- mock providers in personal SST stages that require no vendor account or payment;
+- DynamoDB as the only application runtime store;
 - health aggregation, signed external canaries, alerts, usage accounting, and a company-facing dashboard;
 - an AWS deployment built with SST and separate ECS Fargate services.
 
@@ -25,7 +25,7 @@ The deployed control API, proxy gateways, and dashboard are company-wide service
 | Contributors and maintainers               | [Development guide](docs/DEVELOPMENT.md)                                   |
 | Repository administrators                  | [Repository and release settings](docs/repository-and-release-settings.md) |
 | Control-plane client generators            | [OpenAPI 3.1 contract](openapi/profound-control-api.v0.6.0.json)           |
-| Complete environment reference             | [.env.example](.env.example)                                               |
+| Configuration and secret sources           | [Configuration audit](docs/CONFIGURATION.md)                               |
 
 The OpenAPI contract covers management operations. Forwarding remains native HTTP proxy and SOCKS5 protocol traffic, so consumers do not wrap requests in a Profound-specific envelope.
 
@@ -33,7 +33,8 @@ The OpenAPI contract covers management operations. Forwarding remains native HTT
 
 - Node.js 22.13 or newer
 - pnpm 10.12.1
-- Docker and AWS credentials only when deploying with SST
+- AWS credentials for SST development and deployment
+- Docker when building or deploying container images
 
 ## Install
 
@@ -46,23 +47,23 @@ pnpm sst install
 
 The second command installs SST's generated infrastructure providers and types. Neither command starts a server.
 
-## Start locally
+## Start with SST
 
-Start the combined proxy and control plane in offline mock mode:
+Start a personal development stage. SST provisions DynamoDB and supporting AWS resources, then runs the application services locally with injected configuration and mock providers:
 
 ```sh
-pnpm dev
+pnpm sst:dev --stage yourname-dev
 ```
 
 | Interface                | Address                              |
 | ------------------------ | ------------------------------------ |
 | HTTP/HTTPS forward proxy | `127.0.0.1:8080`                     |
-| SOCKS5 proxy             | `127.0.0.1:1080`                     |
+| SOCKS5 proxy             | `127.0.0.1:1081`                     |
 | Control API              | `http://127.0.0.1:8081`              |
 | Swagger UI               | `http://127.0.0.1:8081/docs`         |
 | OpenAPI JSON             | `http://127.0.0.1:8081/openapi.json` |
 
-Loopback-only mock mode supplies the development control token `change-me` and trusted principal `local-dev`.
+Personal stages supply the development control token `change-me`; no `.env` file or vendor secret is required. SST prints every service address, including the internal dashboard at `http://127.0.0.1:8083`.
 
 Create a reusable provider-neutral profile:
 

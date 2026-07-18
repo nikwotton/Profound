@@ -1,15 +1,19 @@
 import { ControlApiServer } from "./control-api.js";
+import { Context, Effect, Layer, ManagedRuntime } from "effect";
 import type { AppConfig } from "./config.js";
 import { DynamoRouteStore } from "./dynamo-store.js";
 import { ForwardProxyServer } from "./forward-proxy.js";
 import type { Logger } from "./logger.js";
 import { BrightDataAdapter } from "./providers/bright-data.js";
+import type { BrightDataConfig } from "./providers/bright-data.js";
+import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import { ProxidizeAdapter } from "./providers/proxidize.js";
+import type { ProxidizeConfig } from "./providers/proxidize.js";
 import { RouteService } from "./route-service.js";
 import { Socks5ProxyServer } from "./socks5-proxy.js";
 import { BrightDataSimulator } from "./simulators/bright-data.js";
 import { ProxidizeSimulator } from "./simulators/proxidize.js";
-import { SqliteRouteStore, type RouteStore } from "./store.js";
+import type { RouteStore } from "./store.js";
 import { Telemetry } from "./telemetry.js";
 import { createTargetValidator, type TargetValidator } from "./target-security.js";
 import type { ListenAddress } from "./types.js";
@@ -43,6 +47,10 @@ export interface ApplicationDependencies {
   targetValidator?: TargetValidator;
   now?: () => number;
   telemetry?: Telemetry;
+  storeFactory?: (config: AppConfig) => RouteStore;
+  brightDataFactory?: (config: BrightDataConfig) => ProviderAdapter<"bright_data">;
+  mobileProviderFactory?: (config: ProxidizeConfig) => MobileProviderAdapter;
+  fetchImplementation?: typeof fetch;
 }
 
 interface RoutingRuntime {
@@ -51,20 +59,21 @@ interface RoutingRuntime {
   stop(): Promise<void>;
 }
 
-async function createRoutingRuntime(
+class RoutingRuntimeService extends Context.Tag("Profound/RoutingRuntime")<RoutingRuntimeService, RoutingRuntime>() {}
+
+async function createUnmanagedRoutingRuntime(
   config: AppConfig,
   logger: Logger,
   telemetry: Telemetry,
   proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress },
-  dependencies: Pick<ApplicationDependencies, "now">,
+  dependencies: Pick<
+    ApplicationDependencies,
+    "now" | "storeFactory" | "brightDataFactory" | "mobileProviderFactory" | "fetchImplementation"
+  >,
 ): Promise<RoutingRuntime> {
   let store: RouteStore;
-  if (config.persistenceBackend === "dynamodb") {
-    if (config.routeTableName === undefined) throw new Error("DynamoDB route table name is missing");
-    store = new DynamoRouteStore(config.routeTableName);
-  } else {
-    store = new SqliteRouteStore(config.sqlitePath);
-  }
+  if (dependencies.storeFactory !== undefined) store = dependencies.storeFactory(config);
+  else store = new DynamoRouteStore(config.routeTableName);
   let simulators: RunningApplication["simulators"];
   let brightConfig = config.brightData;
   let proxidizeConfig = config.proxidize;
@@ -95,29 +104,32 @@ async function createRoutingRuntime(
       };
     }
 
-    const brightData = new BrightDataAdapter({
+    const brightDataAdapterConfig: BrightDataConfig = {
       ...brightConfig,
       connectTimeoutMs: config.attemptEstablishmentTimeoutMs,
-    });
-    const proxidize = new ProxidizeAdapter({
+      ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
+    };
+    const proxidizeAdapterConfig: ProxidizeConfig = {
       ...proxidizeConfig,
       requestTimeoutMs: config.attemptEstablishmentTimeoutMs,
       exactCity: config.proxidizeExactCity,
-    });
-    const routes = new RouteService(
+      ...(dependencies.fetchImplementation === undefined ? {} : { fetchImplementation: dependencies.fetchImplementation }),
+    };
+    const brightData = dependencies.brightDataFactory?.(brightDataAdapterConfig) ?? new BrightDataAdapter(brightDataAdapterConfig);
+    const proxidize = dependencies.mobileProviderFactory?.(proxidizeAdapterConfig) ?? new ProxidizeAdapter(proxidizeAdapterConfig);
+    const routes = new RouteService({
       store,
       brightData,
       proxidize,
       proxyAddresses,
-      config.advertisedProxyHost,
-      config.advertisedHttpProxyProtocol,
+      advertisedProxyHost: config.advertisedProxyHost,
+      advertisedHttpProxyProtocol: config.advertisedHttpProxyProtocol,
       logger,
       telemetry,
-      config.retryDefaults,
-      0,
-      config.deploymentId,
-      dependencies.now,
-    );
+      retryDefaults: config.retryDefaults,
+      deploymentId: config.deploymentId,
+      ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+    });
     return {
       routes,
       ...(simulators === undefined ? {} : { simulators }),
@@ -133,7 +145,47 @@ async function createRoutingRuntime(
   }
 }
 
-export async function startApplication(
+async function createRoutingRuntime(
+  config: AppConfig,
+  logger: Logger,
+  telemetry: Telemetry,
+  proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress },
+  dependencies: Pick<
+    ApplicationDependencies,
+    "now" | "storeFactory" | "brightDataFactory" | "mobileProviderFactory" | "fetchImplementation"
+  >,
+): Promise<RoutingRuntime> {
+  const managed = ManagedRuntime.make(
+    Layer.scoped(
+      RoutingRuntimeService,
+      Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () => createUnmanagedRoutingRuntime(config, logger, telemetry, proxyAddresses, dependencies),
+          catch: (error) => error,
+        }),
+        (runtime) => Effect.promise(() => runtime.stop()),
+      ),
+    ),
+  );
+  try {
+    const runtime = await managed.runPromise(RoutingRuntimeService);
+    let stopped = false;
+    return {
+      ...runtime,
+      stop: async () => {
+        if (stopped) return;
+        stopped = true;
+        await managed.dispose();
+      },
+    };
+  } catch (error) {
+    await managed.dispose();
+    throw error;
+  }
+}
+
+/** Offline integration-test harness; production and SST development start split service modes. */
+export async function startTestApplication(
   config: AppConfig,
   logger: Logger,
   dependencies: ApplicationDependencies = {},

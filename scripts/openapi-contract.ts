@@ -24,7 +24,7 @@ function sortJson(value: unknown): unknown {
 const document = decodeOpenApiDocument(sortJson(OpenApi.fromApi(ControlApi)));
 const output = `${JSON.stringify(document, null, 2)}\n`;
 const packageJson = expectRecord(parseJson(await readFile(resolve(root, "package.json"), "utf8"), "package.json"), "package.json");
-const packageVersion = expectString(packageJson.version, "package.json version");
+const packageVersion = expectString(packageJson["version"], "package.json version");
 if (document.info?.version !== CONTROL_API_VERSION || packageVersion !== CONTROL_API_VERSION) {
   throw new Error(
     `Control API, package, and artifact versions must match (${document.info?.version}, ${packageVersion}, ${CONTROL_API_VERSION})`,

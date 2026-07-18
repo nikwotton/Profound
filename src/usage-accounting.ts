@@ -1,5 +1,5 @@
 import type { RouteStore } from "./store.js";
-import { expectEnum, expectNumber, expectOptionalString, expectRecord, expectString } from "./decoding.js";
+import { expectEnum, expectIsoTimestamp, expectNonNegativeNumber, expectOptionalString, expectRecord, expectString } from "./decoding.js";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import type {
   CapacityPressureEvidence,
@@ -52,13 +52,15 @@ export interface ProvisionedProxySlotCapacity {
 
 export function decodeProviderCostTotal(value: unknown, context = "provider cost total"): ProviderCostTotal {
   const total = expectRecord(value, context);
-  return {
-    provider: expectEnum(total.provider, ["bright_data", "proxidize"] as const, `${context}.provider`),
-    periodStartedAt: expectString(total.periodStartedAt, `${context}.periodStartedAt`),
-    periodEndsAt: expectString(total.periodEndsAt, `${context}.periodEndsAt`),
-    amountUsd: expectNumber(total.amountUsd, `${context}.amountUsd`),
-    sourceVersion: expectString(total.sourceVersion, `${context}.sourceVersion`),
+  const result = {
+    provider: expectEnum(total["provider"], ["bright_data", "proxidize"] as const, `${context}.provider`),
+    periodStartedAt: expectIsoTimestamp(total["periodStartedAt"], `${context}.periodStartedAt`),
+    periodEndsAt: expectIsoTimestamp(total["periodEndsAt"], `${context}.periodEndsAt`),
+    amountUsd: expectNonNegativeNumber(total["amountUsd"], `${context}.amountUsd`),
+    sourceVersion: expectString(total["sourceVersion"], `${context}.sourceVersion`),
   };
+  if (result.periodStartedAt >= result.periodEndsAt) throw new TypeError(`${context} must have a positive time range`);
+  return result;
 }
 
 export function decodeProvisionedProxySlotCapacity(
@@ -66,27 +68,35 @@ export function decodeProvisionedProxySlotCapacity(
   context = "provisioned proxy-slot capacity",
 ): ProvisionedProxySlotCapacity {
   const capacity = expectRecord(value, context);
-  const health = expectOptionalString(capacity.health, `${context}.health`);
-  if (health !== undefined && health !== "healthy" && health !== "unhealthy") {
-    throw new TypeError(`${context}.health must be healthy or unhealthy`);
-  }
-  const country = expectOptionalString(capacity.country, `${context}.country`);
-  const city = expectOptionalString(capacity.city, `${context}.city`);
-  return {
-    id: expectString(capacity.id, `${context}.id`),
-    proxySlotId: expectString(capacity.proxySlotId, `${context}.proxySlotId`),
-    periodStartedAt: expectString(capacity.periodStartedAt, `${context}.periodStartedAt`),
-    periodEndsAt: expectString(capacity.periodEndsAt, `${context}.periodEndsAt`),
-    priceUsd: expectNumber(capacity.priceUsd, `${context}.priceUsd`),
-    pricingVersion: expectString(capacity.pricingVersion, `${context}.pricingVersion`),
+  const healthValue = capacity["health"];
+  const health = healthValue === undefined ? undefined : expectEnum(healthValue, ["healthy", "unhealthy"] as const, `${context}.health`);
+  const country = expectOptionalString(capacity["country"], `${context}.country`);
+  const city = expectOptionalString(capacity["city"], `${context}.city`);
+  const result = {
+    id: expectString(capacity["id"], `${context}.id`),
+    proxySlotId: expectString(capacity["proxySlotId"], `${context}.proxySlotId`),
+    periodStartedAt: expectIsoTimestamp(capacity["periodStartedAt"], `${context}.periodStartedAt`),
+    periodEndsAt: expectIsoTimestamp(capacity["periodEndsAt"], `${context}.periodEndsAt`),
+    priceUsd: expectNonNegativeNumber(capacity["priceUsd"], `${context}.priceUsd`),
+    pricingVersion: expectString(capacity["pricingVersion"], `${context}.pricingVersion`),
     ...(country === undefined ? {} : { country }),
     ...(city === undefined ? {} : { city }),
     ...(health === undefined ? {} : { health }),
   };
+  if (result.periodStartedAt >= result.periodEndsAt) throw new TypeError(`${context} must have a positive time range`);
+  return result;
 }
 
 export function provisionedProxySlotCapacityRecord(capacity: ProvisionedProxySlotCapacity): UsageRecord {
-  if (Date.parse(capacity.periodStartedAt) >= Date.parse(capacity.periodEndsAt)) throw new Error("invalid_capacity_period");
+  if (
+    !Number.isFinite(Date.parse(capacity.periodStartedAt)) ||
+    !Number.isFinite(Date.parse(capacity.periodEndsAt)) ||
+    capacity.periodStartedAt >= capacity.periodEndsAt ||
+    !Number.isFinite(capacity.priceUsd) ||
+    capacity.priceUsd < 0
+  ) {
+    throw new Error("invalid_capacity_period");
+  }
   return {
     kind: "capacity",
     id: `capacity:${capacity.id}`,
@@ -631,7 +641,10 @@ export class UsageAccountingWorker {
       const customerRollups = rollups.filter((rollup) => rollup.interval === interval && rollup.group.customer !== undefined);
       const periods = new Set(customerRollups.map((rollup) => `${rollup.periodStartedAt}\u0000${rollup.periodEndsAt}`));
       for (const key of periods) {
-        const [periodStartedAt, periodEndsAt] = key.split("\u0000") as [string, string];
+        const [periodStartedAt, periodEndsAt, unexpected] = key.split("\u0000");
+        if (periodStartedAt === undefined || periodEndsAt === undefined || unexpected !== undefined) {
+          throw new Error("invalid_usage_period_key");
+        }
         const periodReconciliations = reconciliations.filter(
           (record) => record.periodStartedAt === periodStartedAt && record.periodEndsAt === periodEndsAt,
         );

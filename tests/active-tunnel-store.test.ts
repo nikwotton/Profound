@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SqliteRouteStore } from "../src/store.js";
+import { InMemoryRouteStore } from "./in-memory-route-store.js";
 import type { ActiveTunnel } from "../src/types.js";
 
-test("active tunnel registry and deployment drain flags persist in SQLite", async (t) => {
-  const store = new SqliteRouteStore(":memory:");
+test("active tunnel registry and deployment drain flags share a store", async (t) => {
+  const store = new InMemoryRouteStore();
   t.after(() => store.close());
   const tunnel: ActiveTunnel = {
     id: "tunnel-1",

@@ -1,4 +1,4 @@
-import { startApplication, startControlPlaneApplication, startDataPlaneApplication } from "./app.js";
+import { startControlPlaneApplication, startDataPlaneApplication } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { Telemetry } from "./telemetry.js";
@@ -12,8 +12,8 @@ import {
   type RunningService,
 } from "./runtime-services.js";
 
-const mode = process.env.SERVICE_MODE ?? "proxy";
-const serviceName = process.env.OTEL_SERVICE_NAME ?? `profound-proxy-${mode}`;
+const mode = process.env["SERVICE_MODE"];
+const serviceName = process.env["OTEL_SERVICE_NAME"] ?? `profound-proxy-${mode}`;
 const telemetry = new Telemetry({
   serviceName,
   serviceVersion: "0.3.0",
@@ -31,9 +31,6 @@ const securityLogger = createLogger({
 let application: RunningService;
 try {
   switch (mode) {
-    case "proxy":
-      application = await startApplication(loadConfig(), logger, { telemetry });
-      break;
     case "data-plane":
       application = await startDataPlaneApplication(loadConfig(), logger, { telemetry });
       break;
@@ -58,9 +55,10 @@ try {
     case "integration-target":
       application = await startIntegrationTargetService(logger);
       break;
+    case undefined:
     default:
       throw new Error(
-        "SERVICE_MODE must be proxy, data-plane, control-plane, health-aggregator, status, usage-accounting, notification, canary, or integration-target",
+        "SERVICE_MODE is SST-managed and must be data-plane, control-plane, health-aggregator, status, usage-accounting, notification, canary, or integration-target",
       );
   }
 } catch (error) {

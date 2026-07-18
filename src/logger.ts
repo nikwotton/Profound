@@ -1,4 +1,5 @@
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { isUnknownRecord } from "./decoding.js";
 
 const REDACTED_KEYS = new Set(["authorization", "proxy-authorization", "cookie", "set-cookie", "password", "token", "proxyurl"]);
 
@@ -30,12 +31,12 @@ function sanitize(value: unknown, key?: string): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sanitize(item));
   }
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([childKey, child]) => [childKey, sanitize(child, childKey)]),
-    );
-  }
+  if (isUnknownRecord(value)) return sanitizeRecord(value);
   return value;
+}
+
+function sanitizeRecord(value: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, sanitize(child, childKey)]));
 }
 
 export interface Logger {
@@ -61,7 +62,7 @@ export function createLogger(options?: LoggerOptions | ((line: string) => void))
     typeof options === "function" ? "profound-proxy-router" : (options?.instrumentationScope ?? "profound-proxy-router"),
   );
   const log = (level: string, message: string, context?: Record<string, unknown>): void => {
-    const safeContext = context === undefined ? undefined : (sanitize(context) as Record<string, unknown>);
+    const safeContext = context === undefined ? undefined : sanitizeRecord(context);
     const time = new Date().toISOString();
     if (consoleMode === "all" || (consoleMode === "errors" && level === "error")) {
       write(

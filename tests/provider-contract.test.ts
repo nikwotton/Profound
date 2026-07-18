@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { ProviderProtocolError, ProviderUnavailableError, providerIdFromError } from "../src/errors.js";
 import { BrightDataAdapter } from "../src/providers/bright-data.js";
 import { ProxidizeAdapter } from "../src/providers/proxidize.js";
 import type { ProviderDescriptor } from "../src/types.js";
@@ -50,4 +51,87 @@ test("every adapter satisfies the normalized provider capability contract and it
   assert.deepEqual([...brightData.descriptor.capabilities.geography], brightDataSpec.targeting);
   assert.deepEqual([...brightData.descriptor.capabilities.rotation], brightDataSpec.rotation);
   assert.equal(proxidize.descriptor.id, proxidizeSpec.provider);
+});
+
+test("Proxidize decodes injected control-plane responses and exposes typed, attributed protocol failures", async () => {
+  let requestCount = 0;
+  const malformed = new ProxidizeAdapter({
+    apiBaseUrl: "https://proxidize.invalid",
+    apiToken: "token",
+    requestTimeoutMs: 1_000,
+    exactCity: "provider_guaranteed",
+    fetchImplementation: () => {
+      requestCount += 1;
+      return Promise.resolve(
+        requestCount === 1
+          ? Response.json({ data: [{ meta_data: { username: "account" } }] })
+          : Response.json({
+              data: [
+                {
+                  id: "slot-1",
+                  username: "proxy-user",
+                  password: "proxy-password",
+                  host: "proxy.example",
+                  port: "not-a-port",
+                  country: "US",
+                  region: "NY",
+                  carrier: "T-Mobile",
+                  public_key: "key-1",
+                  healthy: true,
+                },
+              ],
+            }),
+      );
+    },
+  });
+
+  await assert.rejects(malformed.listEndpoints(true), (error: unknown) => {
+    assert.ok(error instanceof ProviderProtocolError);
+    assert.equal(error.code, "provider_protocol_error");
+    assert.equal(providerIdFromError(error), "proxidize");
+    return true;
+  });
+  assert.equal(requestCount, 2);
+
+  const rateLimited = new ProxidizeAdapter({
+    apiBaseUrl: "https://proxidize.invalid",
+    apiToken: "token",
+    requestTimeoutMs: 1_000,
+    exactCity: "provider_guaranteed",
+    fetchImplementation: () => Promise.resolve(new Response(undefined, { status: 429 })),
+  });
+  await assert.rejects(rateLimited.listEndpoints(true), (error: unknown) => {
+    assert.ok(error instanceof ProviderProtocolError);
+    assert.match(error.message, /HTTP 429/);
+    assert.equal(providerIdFromError(error), "proxidize");
+    return true;
+  });
+
+  const invalidJson = new ProxidizeAdapter({
+    apiBaseUrl: "https://proxidize.invalid",
+    apiToken: "token",
+    requestTimeoutMs: 1_000,
+    exactCity: "provider_guaranteed",
+    fetchImplementation: () => Promise.resolve(new Response("{", { status: 200 })),
+  });
+  await assert.rejects(invalidJson.listEndpoints(true), (error: unknown) => {
+    assert.ok(error instanceof ProviderProtocolError);
+    assert.match(error.message, /malformed JSON/);
+    assert.equal(providerIdFromError(error), "proxidize");
+    return true;
+  });
+
+  const unavailable = new ProxidizeAdapter({
+    apiBaseUrl: "https://proxidize.invalid",
+    apiToken: "token",
+    requestTimeoutMs: 1_000,
+    exactCity: "provider_guaranteed",
+    fetchImplementation: () => Promise.reject(new Error("private network detail")),
+  });
+  await assert.rejects(unavailable.listEndpoints(true), (error: unknown) => {
+    assert.ok(error instanceof ProviderUnavailableError);
+    assert.equal(error.message, "Proxidize control API is unavailable");
+    assert.equal(providerIdFromError(error), "proxidize");
+    return true;
+  });
 });

@@ -51,11 +51,13 @@ function validate(value: Record<string, unknown>) {
   );
 }
 
+const sstRuntime = { ROUTE_TABLE_NAME: "route-state" } as const;
+
 test("control API token defaults only for local mock mode", () => {
   const local = loadConfig({
+    ...sstRuntime,
     PROVIDER_MODE: "mock",
     CONTROL_API_HOST: "127.0.0.1",
-    SQLITE_PATH: "./data/config-test.db",
   });
   assert.equal(local.adminToken, "change-me");
   assert.equal(local.proxidizeExactCity, "provider_guaranteed");
@@ -63,10 +65,10 @@ test("control API token defaults only for local mock mode", () => {
   assert.equal(local.maxHttpResponseBodyBytes, 50 * 1024 * 1024);
 
   const bodyLimits = loadConfig({
+    ...sstRuntime,
     PROVIDER_MODE: "mock",
     MAX_HTTP_REQUEST_BODY_BYTES: "17",
     MAX_HTTP_RESPONSE_BODY_BYTES: "23",
-    SQLITE_PATH: "./data/config-test.db",
   });
   assert.equal(bodyLimits.maxHttpRequestBodyBytes, 17);
   assert.equal(bodyLimits.maxHttpResponseBodyBytes, 23);
@@ -74,9 +76,9 @@ test("control API token defaults only for local mock mode", () => {
   assert.throws(
     () =>
       loadConfig({
+        ...sstRuntime,
         PROVIDER_MODE: "mock",
         CONTROL_API_HOST: "0.0.0.0",
-        SQLITE_PATH: "./data/config-test.db",
       }),
     /CONTROL_API_TOKEN must be set/,
   );
@@ -84,6 +86,7 @@ test("control API token defaults only for local mock mode", () => {
   assert.throws(
     () =>
       loadConfig({
+        ...sstRuntime,
         PROVIDER_MODE: "live",
         CONTROL_API_HOST: "127.0.0.1",
         BRIGHT_DATA_CUSTOMER_ID: "customer",
@@ -91,20 +94,20 @@ test("control API token defaults only for local mock mode", () => {
         BRIGHT_DATA_PASSWORD: "password",
         BRIGHT_DATA_API_KEY: "api-key",
         PROXIDIZE_API_TOKEN: "provider-token",
-        SQLITE_PATH: "./data/config-test.db",
       }),
     /CONTROL_API_TOKEN must be set/,
   );
 
   const shared = loadConfig({
+    ...sstRuntime,
     PROVIDER_MODE: "mock",
     CONTROL_API_HOST: "0.0.0.0",
     CONTROL_API_TOKEN: "local-network-secret",
-    SQLITE_PATH: "./data/config-test.db",
   });
   assert.equal(shared.adminToken, "local-network-secret");
 
   const live = loadConfig({
+    ...sstRuntime,
     PROVIDER_MODE: "live",
     CONTROL_API_TOKEN: "strong-token",
     BRIGHT_DATA_CUSTOMER_ID: "customer",
@@ -112,15 +115,14 @@ test("control API token defaults only for local mock mode", () => {
     BRIGHT_DATA_PASSWORD: "password",
     BRIGHT_DATA_API_KEY: "api-key",
     PROXIDIZE_API_TOKEN: "provider-token",
-    SQLITE_PATH: "./data/config-test.db",
   });
   assert.equal(live.proxidizeExactCity, "verifiable");
 
   assert.equal(
     loadConfig({
+      ...sstRuntime,
       PROVIDER_MODE: "mock",
       PROXIDIZE_EXACT_CITY_SUPPORT: "verifiable",
-      SQLITE_PATH: "./data/config-test.db",
     }).proxidizeExactCity,
     "verifiable",
   );
@@ -128,50 +130,48 @@ test("control API token defaults only for local mock mode", () => {
   assert.throws(
     () =>
       loadConfig({
+        ...sstRuntime,
         PROVIDER_MODE: "mock",
         CONNECT_TIMEOUT_MS: "10001",
-        SQLITE_PATH: "./data/config-test.db",
       }),
     /CONNECT_TIMEOUT_MS/,
   );
   assert.throws(
     () =>
       loadConfig({
+        ...sstRuntime,
         PROVIDER_MODE: "mock",
         OPERATION_TIMEOUT_MS: "30001",
-        SQLITE_PATH: "./data/config-test.db",
       }),
     /OPERATION_TIMEOUT_MS/,
   );
 
   const identities = loadConfig({
+    ...sstRuntime,
     PROVIDER_MODE: "mock",
     CONTROL_API_HOST: "0.0.0.0",
     CONTROL_API_IDENTITIES_JSON: JSON.stringify({ tokenOne: "user-one", tokenTwo: "user-two" }),
-    SQLITE_PATH: "./data/config-test.db",
   });
   assert.equal(identities.controlIdentities.get("tokenTwo"), "user-two");
 });
 
-test("DynamoDB persistence configuration requires an explicit table", () => {
+test("SST runtime configuration requires its DynamoDB table", () => {
   assert.throws(
     () =>
       loadConfig({
         PROVIDER_MODE: "mock",
-        PERSISTENCE_BACKEND: "dynamodb",
       }),
     /ROUTE_TABLE_NAME is required/,
   );
   const config = loadConfig({
+    ...sstRuntime,
     PROVIDER_MODE: "mock",
-    PERSISTENCE_BACKEND: "dynamodb",
-    ROUTE_TABLE_NAME: "route-state",
   });
-  assert.equal(config.persistenceBackend, "dynamodb");
   assert.equal(config.routeTableName, "route-state");
   assert.throws(
     () =>
       loadConfig({
+        ...sstRuntime,
         PROVIDER_MODE: "mock",
         ADVERTISED_HTTP_PROXY_PROTOCOL: "ftp",
       }),

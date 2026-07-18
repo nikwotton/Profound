@@ -26,6 +26,7 @@ export interface StatusApplicationOptions {
   healthAggregatorUrl?: string;
   healthAggregatorToken?: string;
   now?: () => number;
+  fetchImplementation?: typeof fetch;
 }
 
 const LABELS = {
@@ -195,9 +196,13 @@ table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td
 </main></body></html>`;
 }
 
-const USAGE_INTERVALS = new Set<UsageInterval>(["hour", "day", "week", "month"]);
-const USAGE_GROUPS = new Set<UsageGroupBy>(["provider", "customer", "user", "route", "country", "city", "outcome"]);
-const USAGE_PROVIDERS = new Set<UsageProvider>(["bright_data", "proxidize", "unresolved"]);
+const USAGE_INTERVALS = ["hour", "day", "week", "month"] as const satisfies readonly UsageInterval[];
+const USAGE_GROUPS = ["provider", "customer", "user", "route", "country", "city", "outcome"] as const satisfies readonly UsageGroupBy[];
+const USAGE_PROVIDERS = ["bright_data", "proxidize", "unresolved"] as const satisfies readonly UsageProvider[];
+
+function includes<const Values extends readonly string[]>(values: Values, value: string): value is Values[number] {
+  return values.some((candidate) => candidate === value);
+}
 
 function usageQuery(url: URL, now: number): UsageQuery {
   const preset = url.searchParams.get("preset");
@@ -206,17 +211,17 @@ function usageQuery(url: URL, now: number): UsageQuery {
   const from = url.searchParams.get("from") ?? new Date(now - (presetMs ?? 30 * 86_400_000)).toISOString();
   const to = url.searchParams.get("to") ?? new Date(now).toISOString();
   const intervalValue = url.searchParams.get("interval") ?? "day";
-  if (!USAGE_INTERVALS.has(intervalValue as UsageInterval)) throw new Error("invalid_usage_interval");
+  if (!includes(USAGE_INTERVALS, intervalValue)) throw new Error("invalid_usage_interval");
   const groupValue = url.searchParams.get("groupBy") ?? undefined;
-  if (groupValue !== undefined && !USAGE_GROUPS.has(groupValue as UsageGroupBy)) throw new Error("invalid_usage_group");
+  if (groupValue !== undefined && !includes(USAGE_GROUPS, groupValue)) throw new Error("invalid_usage_group");
   const providerValue = url.searchParams.get("provider") ?? undefined;
-  if (providerValue !== undefined && !USAGE_PROVIDERS.has(providerValue as UsageProvider)) throw new Error("invalid_usage_provider");
+  if (providerValue !== undefined && !includes(USAGE_PROVIDERS, providerValue)) throw new Error("invalid_usage_provider");
   return {
     from,
     to,
-    interval: intervalValue as UsageInterval,
-    ...(groupValue === undefined ? {} : { groupBy: groupValue as UsageGroupBy }),
-    ...(providerValue === undefined ? {} : { provider: providerValue as UsageProvider }),
+    interval: intervalValue,
+    ...(groupValue === undefined ? {} : { groupBy: groupValue }),
+    ...(providerValue === undefined ? {} : { provider: providerValue }),
     ...Object.fromEntries(
       (["customerId", "userId", "routeId", "country", "city", "outcome"] as const).flatMap((name) => {
         const value = url.searchParams.get(name);
@@ -399,7 +404,7 @@ export class StatusApplicationServer {
           json(response, 503, { error: "validation_unavailable" });
           return;
         }
-        const result = await fetch(new URL("/v1/validate", this.options.healthAggregatorUrl), {
+        const result = await (this.options.fetchImplementation ?? fetch)(new URL("/v1/validate", this.options.healthAggregatorUrl), {
           method: "POST",
           headers: {
             authorization: `Bearer ${this.options.healthAggregatorToken}`,

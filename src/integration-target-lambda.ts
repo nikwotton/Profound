@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { Schema } from "effect";
 import { expectNumber, expectRecord } from "./decoding.js";
 import { destinationResponsePlan, waitForDestinationDelay } from "./destination-simulator.js";
 
@@ -10,14 +11,34 @@ const replayCounterTtlSeconds = 60 * 60;
 export interface IntegrationTargetEvent {
   rawPath?: string;
   rawQueryString?: string;
-  headers?: Record<string, string | undefined>;
-  cookies?: string[];
+  headers?: Readonly<Record<string, string>>;
+  cookies?: readonly string[];
   body?: string | null;
   isBase64Encoded?: boolean;
   requestContext?: {
     requestId?: string;
     http?: { method?: string };
   };
+}
+
+const exactOptional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
+const IntegrationTargetEventSchema: Schema.Schema<IntegrationTargetEvent> = Schema.Struct({
+  rawPath: exactOptional(Schema.String),
+  rawQueryString: exactOptional(Schema.String),
+  headers: exactOptional(Schema.Record({ key: Schema.String, value: Schema.String })),
+  cookies: exactOptional(Schema.Array(Schema.String)),
+  body: exactOptional(Schema.NullOr(Schema.String)),
+  isBase64Encoded: exactOptional(Schema.Boolean),
+  requestContext: exactOptional(
+    Schema.Struct({
+      requestId: exactOptional(Schema.String),
+      http: exactOptional(Schema.Struct({ method: exactOptional(Schema.String) })),
+    }),
+  ),
+});
+
+export function decodeIntegrationTargetEvent(value: unknown): IntegrationTargetEvent {
+  return Schema.decodeUnknownSync(IntegrationTargetEventSchema)(value);
 }
 
 export interface IntegrationTargetResult {
@@ -55,7 +76,7 @@ function response(statusCode: number, body: unknown, headers: Record<string, str
 function header(event: IntegrationTargetEvent, name: string): string | undefined {
   const expected = name.toLowerCase();
   for (const [candidate, value] of Object.entries(event.headers ?? {})) {
-    if (candidate.toLowerCase() === expected && value !== undefined) return value;
+    if (candidate.toLowerCase() === expected) return value;
   }
   return undefined;
 }
@@ -140,14 +161,20 @@ class DynamoRequestCounter implements IntegrationTargetRequestCounter {
       }),
     );
     const attributes = expectRecord(result.Attributes, "integration target replay counter attributes");
-    return expectNumber(attributes.requestCount, "integration target replay counter requestCount");
+    return expectNumber(attributes["requestCount"], "integration target replay counter requestCount");
   }
 }
 
 let counter: IntegrationTargetRequestCounter | undefined;
 
-export async function handler(event: IntegrationTargetEvent): Promise<IntegrationTargetResult> {
-  const tableName = process.env.INTEGRATION_TARGET_TABLE_NAME?.trim();
+export async function handler(input: unknown): Promise<IntegrationTargetResult> {
+  let event: IntegrationTargetEvent;
+  try {
+    event = decodeIntegrationTargetEvent(input);
+  } catch {
+    return response(400, { error: "invalid_gateway_event" });
+  }
+  const tableName = process.env["INTEGRATION_TARGET_TABLE_NAME"]?.trim();
   if (!tableName) throw new Error("INTEGRATION_TARGET_TABLE_NAME is required");
   counter ??= new DynamoRequestCounter(tableName);
   return await handleIntegrationTargetRequest(event, counter);

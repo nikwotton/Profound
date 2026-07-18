@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { Effect } from "effect";
 import { CAPACITY_POLICY } from "./capacity-policy.js";
 import { capacityCircuitAllowsCandidate } from "./capacity-circuit.js";
 import {
@@ -7,15 +8,16 @@ import {
   NotFoundError,
   ProviderOverrideUnsatisfiedError,
   ProviderUnavailableError,
+  type RouteServiceError,
   attributeAssignment,
   attributeProvider,
   isRetryableUpstreamFailure,
   safeErrorMessage,
+  toRouteServiceError,
 } from "./errors.js";
 import { abortReason } from "./establishment-budget.js";
 import type { Logger } from "./logger.js";
-import type { ProviderAdapter } from "./providers/provider.js";
-import { ProxidizeAdapter } from "./providers/proxidize.js";
+import type { MobileProviderAdapter, ProviderAdapter } from "./providers/provider.js";
 import { DEPLOYMENT_POLL_INTERVAL_MS } from "./release-policy.js";
 import {
   historicalRoutingEvidence,
@@ -72,10 +74,50 @@ export interface ResolutionState {
   capacityPolicyVersion?: string;
 }
 
+export interface RouteServiceDependencies {
+  store: RouteStore;
+  brightData: ProviderAdapter<"bright_data">;
+  proxidize: MobileProviderAdapter;
+  proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress };
+  advertisedProxyHost: string;
+  advertisedHttpProxyProtocol: "http" | "https";
+  logger: Logger;
+  telemetry: Telemetry;
+  retryDefaults: RetryPolicy;
+  deploymentId: string;
+  now?: () => number;
+  random?: () => number;
+}
+
+export interface RouteServiceEffects {
+  ready(): Effect.Effect<boolean, RouteServiceError>;
+  create(input: unknown, userId: string): Effect.Effect<PublicRoute, RouteServiceError>;
+  update(id: string, input: unknown, userId: string): Effect.Effect<PublicRoute, RouteServiceError>;
+  list(userId: string): Effect.Effect<PublicRoute[], RouteServiceError>;
+  get(id: string, userId: string): Effect.Effect<PublicRoute, RouteServiceError>;
+  delete(id: string, userId: string): Effect.Effect<void, RouteServiceError>;
+  createAccessGrant(routeId: string, principalId: string): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
+  listAccessGrants(routeId: string, principalId: string): Effect.Effect<PublicAccessGrant[], RouteServiceError>;
+  getAccessGrant(id: string, principalId: string): Effect.Effect<PublicAccessGrant, RouteServiceError>;
+  getAccessGrantCredential(
+    grantId: string,
+    credentialId: string,
+    principalId: string,
+  ): Effect.Effect<PublicAccessGrantCredential, RouteServiceError>;
+  rotateAccessGrantCredential(
+    id: string,
+    principalId: string,
+    suspectedCompromise?: boolean,
+  ): Effect.Effect<IssuedAccessGrant, RouteServiceError>;
+  revokeAccessGrantCredential(grantId: string, credentialId: string, principalId: string): Effect.Effect<void, RouteServiceError>;
+  revokeAccessGrant(id: string, principalId: string): Effect.Effect<void, RouteServiceError>;
+}
+
 const MAX_PROVIDERS_PER_OPERATION = 3;
 const MAX_PEERS_PER_PROVIDER = 2;
 const MAX_VERIFICATION_CANDIDATES_PER_PROVIDER = 3;
 const SLOT_MONTH_SECONDS = (365.25 / 12) * 24 * 60 * 60;
+const TARGETING_KEYS = ["country", "region", "city", "postalCode", "asn", "carrier"] as const;
 
 export interface ResolutionContext {
   logicalOperationId: string;
@@ -111,9 +153,7 @@ function compatible(provider: ProviderAdapter, route: RouteProfile, protocol?: D
   ) {
     return false;
   }
-  return Object.entries(route.targeting).every(
-    ([key, value]) => value === undefined || capabilities.geography.has(key as keyof RouteProfile["targeting"]),
-  );
+  return TARGETING_KEYS.every((key) => route.targeting[key] === undefined || capabilities.geography.has(key));
 }
 
 function preferredProviderClass(route: Pick<RouteProfile, "isAuthenticated">): ProviderClass {
@@ -136,31 +176,60 @@ function compareProviders(
 }
 
 export class RouteService {
+  readonly effects: RouteServiceEffects;
   readonly #providers: ReadonlyMap<ProviderId, ProviderAdapter>;
   readonly #activeByRoute = new Map<string, Set<() => void>>();
   readonly #activeByGrant = new Map<string, Set<() => void>>();
   readonly #rotationDisabledSlots = new Set<string>();
 
-  constructor(
-    private readonly store: RouteStore,
-    brightData: ProviderAdapter,
-    private readonly proxidize: ProxidizeAdapter,
-    private readonly proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress },
-    private readonly advertisedProxyHost: string,
-    private readonly advertisedHttpProxyProtocol: "http" | "https",
-    private readonly logger: Logger,
-    private readonly telemetry: Telemetry,
-    private readonly retryDefaults: RetryPolicy,
-    _legacyDeviceLeaseIdleTimeoutMs: number,
-    private readonly deploymentId: string,
-    private readonly now: () => number = Date.now,
-    private readonly random: () => number = Math.random,
-  ) {
-    void _legacyDeviceLeaseIdleTimeoutMs;
-    this.#providers = new Map([
-      [brightData.descriptor.id, brightData],
-      [proxidize.descriptor.id, proxidize],
+  private readonly store: RouteStore;
+  private readonly proxidize: MobileProviderAdapter;
+  private readonly proxyAddresses: () => { http: ListenAddress; socks5: ListenAddress };
+  private readonly advertisedProxyHost: string;
+  private readonly advertisedHttpProxyProtocol: "http" | "https";
+  private readonly logger: Logger;
+  private readonly telemetry: Telemetry;
+  private readonly retryDefaults: RetryPolicy;
+  private readonly deploymentId: string;
+  private readonly now: () => number;
+  private readonly random: () => number;
+
+  constructor(dependencies: RouteServiceDependencies) {
+    this.store = dependencies.store;
+    this.proxidize = dependencies.proxidize;
+    this.proxyAddresses = dependencies.proxyAddresses;
+    this.advertisedProxyHost = dependencies.advertisedProxyHost;
+    this.advertisedHttpProxyProtocol = dependencies.advertisedHttpProxyProtocol;
+    this.logger = dependencies.logger;
+    this.telemetry = dependencies.telemetry;
+    this.retryDefaults = dependencies.retryDefaults;
+    this.deploymentId = dependencies.deploymentId;
+    this.now = dependencies.now ?? Date.now;
+    this.random = dependencies.random ?? Math.random;
+    this.#providers = new Map<ProviderId, ProviderAdapter>([
+      [dependencies.brightData.descriptor.id, dependencies.brightData],
+      [dependencies.proxidize.descriptor.id, dependencies.proxidize],
     ]);
+    const attempt = <A>(operation: () => Promise<A>): Effect.Effect<A, RouteServiceError> =>
+      Effect.tryPromise({ try: operation, catch: toRouteServiceError });
+    this.effects = {
+      ready: () => attempt(() => this.ready()),
+      create: (input, userId) => attempt(() => this.create(input, userId)),
+      update: (id, input, userId) => attempt(() => this.update(id, input, userId)),
+      list: (userId) => attempt(() => this.list(userId)),
+      get: (id, userId) => attempt(() => this.get(id, userId)),
+      delete: (id, userId) => attempt(() => this.delete(id, userId)),
+      createAccessGrant: (routeId, principalId) => attempt(() => this.createAccessGrant(routeId, principalId)),
+      listAccessGrants: (routeId, principalId) => attempt(() => this.listAccessGrants(routeId, principalId)),
+      getAccessGrant: (id, principalId) => attempt(() => this.getAccessGrant(id, principalId)),
+      getAccessGrantCredential: (grantId, credentialId, principalId) =>
+        attempt(() => this.getAccessGrantCredential(grantId, credentialId, principalId)),
+      rotateAccessGrantCredential: (id, principalId, suspectedCompromise) =>
+        attempt(() => this.rotateAccessGrantCredential(id, principalId, suspectedCompromise)),
+      revokeAccessGrantCredential: (grantId, credentialId, principalId) =>
+        attempt(() => this.revokeAccessGrantCredential(grantId, credentialId, principalId)),
+      revokeAccessGrant: (id, principalId) => attempt(() => this.revokeAccessGrant(id, principalId)),
+    };
   }
 
   #scoreCandidate(
@@ -205,7 +274,7 @@ export class RouteService {
     if (!isRetryableUpstreamFailure(error)) return undefined;
     if (error instanceof AppError && /hard_limit|capacity_limit/.test(error.code)) return "provider_hard_limit";
     if (error instanceof AppError && error.code.includes("capacity")) return "capacity_failure";
-    if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ETIMEDOUT") return "timeout";
+    if (error instanceof Error && "code" in error && error.code === "ETIMEDOUT") return "timeout";
     if (error instanceof ProviderUnavailableError && /timed out|timeout/i.test(error.message)) return "timeout";
     return "establishment_failure";
   }
@@ -248,7 +317,7 @@ export class RouteService {
         const compatibleEndpoints = (await this.proxidize.listEndpoints(true, signal)).filter(
           (endpoint) => endpoint.healthy && !state.excludedEndpointIds.has(endpoint.id) && this.proxidize.matches(endpoint, route),
         );
-        const endpoints = [] as typeof compatibleEndpoints;
+        const endpoints: typeof compatibleEndpoints = [];
         for (const endpoint of compatibleEndpoints) {
           if (await this.#capacityCircuitEligible("proxidize", endpoint.id)) endpoints.push(endpoint);
           else state.capacityConstraint = "capacity_circuit";
@@ -400,7 +469,7 @@ export class RouteService {
     const compatibleEndpoints = inventory.filter(
       (endpoint) => endpoint.healthy && !excludedEndpointIds.has(endpoint.id) && this.proxidize.matches(endpoint, route),
     );
-    const endpoints = [] as typeof compatibleEndpoints;
+    const endpoints: typeof compatibleEndpoints = [];
     for (const endpoint of compatibleEndpoints) {
       if (await this.#capacityCircuitEligible("proxidize", endpoint.id)) endpoints.push(endpoint);
       else state.capacityConstraint = "capacity_circuit";

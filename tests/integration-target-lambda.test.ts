@@ -43,7 +43,7 @@ test("the serverless integration target preserves request observations and durab
     parseJson((await handleIntegrationTargetRequest(event, counter)).body, "integration target response"),
     "integration target response",
   );
-  assert.equal(repeatedBody.requestCount, 2);
+  assert.equal(repeatedBody["requestCount"], 2);
 });
 
 test("the serverless integration target supports health, status, redirects, cookies, and body limits", async () => {
@@ -68,7 +68,7 @@ test("the serverless integration target supports health, status, redirects, cook
   );
   assert.equal(unavailable.statusCode, 503);
   const unavailableBody = expectRecord(parseJson(unavailable.body, "integration target response"), "integration target response");
-  assert.equal(unavailableBody.cookie, "first=one; second=two");
+  assert.equal(unavailableBody["cookie"], "first=one; second=two");
 
   const redirect = await handleIntegrationTargetRequest(
     {
@@ -79,7 +79,7 @@ test("the serverless integration target supports health, status, redirects, cook
     counter,
   );
   assert.equal(redirect.statusCode, 302);
-  assert.equal(redirect.headers.location, "/caller-owned");
+  assert.equal(redirect.headers["location"], "/caller-owned");
 
   const oversized = await handleIntegrationTargetRequest(
     {

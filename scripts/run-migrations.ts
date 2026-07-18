@@ -16,15 +16,15 @@ if (manifest.length === 0) {
   process.stdout.write("No registered migrations.\n");
   process.exit(0);
 }
-const tableName = process.env.ROUTE_TABLE_NAME?.trim();
+const tableName = process.env["ROUTE_TABLE_NAME"]?.trim();
 if (!tableName) throw new Error("ROUTE_TABLE_NAME is required when migrations are registered");
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOptions: { removeUndefinedValues: true } });
 const migrations = await Promise.all(
   manifest.map(async (entry): Promise<Migration> => {
     const module = expectRecord(await import(new URL(`../migrations/${entry}`, import.meta.url).href), entry);
-    const migration = expectRecord(module.migration, `${entry}.migration`);
-    const id = expectString(migration.id, `${entry}.migration.id`);
-    const apply = migration.apply;
+    const migration = expectRecord(module["migration"], `${entry}.migration`);
+    const id = expectString(migration["id"], `${entry}.migration.id`);
+    const apply = migration["apply"];
     if (!isMigrationApply(apply)) throw new TypeError(`${entry}.migration.apply must be a function`);
     return {
       id,
@@ -44,7 +44,7 @@ const ledger = {
         ConsistentRead: true,
       }),
     );
-    return new Set((response.Items ?? []).map((item, index) => expectString(item.id, `migration ledger item ${index}.id`)));
+    return new Set((response.Items ?? []).map((item, index) => expectString(item["id"], `migration ledger item ${index}.id`)));
   },
   async markApplied(id: string): Promise<void> {
     await client.send(

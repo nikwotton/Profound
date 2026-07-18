@@ -124,17 +124,17 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
       const collector = task.containerDefinitions?.[0];
       assert.match(collector?.image ?? "", /^public\.ecr\.aws\/aws-observability\/aws-otel-collector@sha256:[a-f0-9]{64}$/);
       const collectorEnvironment = environmentOf(collector);
-      assert.match(collectorEnvironment.AOT_CONFIG_CONTENT ?? "", /endpoint: 0\.0\.0\.0:4318/);
-      assert.match(collectorEnvironment.AOT_CONFIG_CONTENT ?? "", /otlp_http\/axiom_/);
-      assert.match(collectorEnvironment.AOT_CONFIG_CONTENT ?? "", /sending_queue/);
-      assert.match(collectorEnvironment.AOT_CONFIG_CONTENT ?? "", /retry_on_failure/);
-      assert.doesNotMatch(collectorEnvironment.AOT_CONFIG_CONTENT ?? "", /sigv4auth|cloudwatch|x-aws-/i);
-      assert.doesNotMatch(collectorEnvironment.AOT_CONFIG_CONTENT ?? "", /tail_sampling|probabilistic_sampler/);
-      assert.equal(collectorEnvironment.AXIOM_ENDPOINT, metadata.telemetry.endpoint);
-      assert.equal(collectorEnvironment.AXIOM_LOGS_DATASET, metadata.telemetry.datasets.logs);
-      assert.equal(collectorEnvironment.AXIOM_SECURITY_LOGS_DATASET, undefined);
-      assert.equal(collectorEnvironment.AXIOM_TRACES_DATASET, metadata.telemetry.datasets.traces);
-      assert.equal(collectorEnvironment.AXIOM_METRICS_DATASET, metadata.telemetry.datasets.metrics);
+      assert.match(collectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /endpoint: 0\.0\.0\.0:4318/);
+      assert.match(collectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /otlp_http\/axiom_/);
+      assert.match(collectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /sending_queue/);
+      assert.match(collectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /retry_on_failure/);
+      assert.doesNotMatch(collectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /sigv4auth|cloudwatch|x-aws-/i);
+      assert.doesNotMatch(collectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /tail_sampling|probabilistic_sampler/);
+      assert.equal(collectorEnvironment["AXIOM_ENDPOINT"], metadata.telemetry.endpoint);
+      assert.equal(collectorEnvironment["AXIOM_LOGS_DATASET"], metadata.telemetry.datasets.logs);
+      assert.equal(collectorEnvironment["AXIOM_SECURITY_LOGS_DATASET"], undefined);
+      assert.equal(collectorEnvironment["AXIOM_TRACES_DATASET"], metadata.telemetry.datasets.traces);
+      assert.equal(collectorEnvironment["AXIOM_METRICS_DATASET"], metadata.telemetry.datasets.metrics);
       assert.deepEqual(
         collector?.secrets
           ?.map(({ name: secretName }) => secretName)
@@ -144,11 +144,11 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
       );
     } else {
       const appEnvironment = environmentOf(task.containerDefinitions?.[0]);
-      assert.match(appEnvironment.OTEL_EXPORTER_OTLP_ENDPOINT ?? "", /^http:\/\/TelemetryCollector\./);
-      assert.equal(appEnvironment.OTEL_LOGS_EXPORTER, "otlp");
-      assert.equal(appEnvironment.OTEL_METRICS_EXPORTER, "otlp");
-      assert.equal(appEnvironment.OTEL_TRACES_EXPORTER, "otlp");
-      assert.equal(appEnvironment.OTEL_TRACES_SAMPLER, undefined);
+      assert.match(appEnvironment["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "", /^http:\/\/TelemetryCollector\./);
+      assert.equal(appEnvironment["OTEL_LOGS_EXPORTER"], "otlp");
+      assert.equal(appEnvironment["OTEL_METRICS_EXPORTER"], "otlp");
+      assert.equal(appEnvironment["OTEL_TRACES_EXPORTER"], "otlp");
+      assert.equal(appEnvironment["OTEL_TRACES_SAMPLER"], undefined);
     }
   }
 
@@ -166,8 +166,8 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
     assert.ok(!canaryText.includes(forbidden), `canary Lambda configuration contains ${forbidden}`);
   }
   const canaryEnvironment = canaryFunction.Configuration?.Environment?.Variables ?? {};
-  assert.equal(canaryEnvironment.GEOIP_DATABASE_PATH, "./data/GeoLite2-City.mmdb");
-  assert.match(canaryEnvironment.OTEL_EXPORTER_OTLP_ENDPOINT ?? "", /^http:\/\/CanaryTelemetryCollector\./);
+  assert.equal(canaryEnvironment["GEOIP_DATABASE_PATH"], "./data/GeoLite2-City.mmdb");
+  assert.match(canaryEnvironment["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "", /^http:\/\/CanaryTelemetryCollector\./);
   assert.equal(metadata.geoIpBundleConfigured, true);
   assert.equal(metadata.canary.geoIpPackaged, true);
   const canaryApi = await awsJson<{ ProtocolType?: string; ApiEndpoint?: string }>(
@@ -187,7 +187,7 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
   }>(["lambda", "get-function", "--function-name", integrationTarget.functionArn], environment.region);
   assert.equal(integrationFunction.Configuration?.FunctionArn, integrationTarget.functionArn);
   const integrationEnvironment = integrationFunction.Configuration?.Environment?.Variables ?? {};
-  assert.equal(integrationEnvironment.INTEGRATION_TARGET_TABLE_NAME, integrationTarget.stateTable);
+  assert.equal(integrationEnvironment["INTEGRATION_TARGET_TABLE_NAME"], integrationTarget.stateTable);
   for (const forbidden of ["ROUTE_TABLE_NAME", "BRIGHT_DATA", "PROXIDIZE", "CONTROL_API_TOKEN", "AXIOM_TOKEN"]) {
     assert.ok(!JSON.stringify(integrationEnvironment).includes(forbidden));
   }
@@ -205,12 +205,12 @@ deployedTest("deployed ECS components are independent Fargate services with dedi
 
   const productCollector = await describeTaskDefinition(metadata.services.telemetry.taskDefinition, environment.region);
   const productCollectorEnvironment = environmentOf(productCollector.containerDefinitions?.[0]);
-  assert.match(productCollectorEnvironment.AOT_CONFIG_CONTENT ?? "", /otlp_http\/passive_health/);
-  assert.match(productCollectorEnvironment.AOT_CONFIG_CONTENT ?? "", /profound\.proxy\.passive_health/);
+  assert.match(productCollectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /otlp_http\/passive_health/);
+  assert.match(productCollectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /profound\.proxy\.passive_health/);
   const canaryCollector = await describeTaskDefinition(metadata.services.canaryTelemetry.taskDefinition, environment.region);
   const canaryCollectorEnvironment = environmentOf(canaryCollector.containerDefinitions?.[0]);
-  assert.match(canaryCollectorEnvironment.AOT_CONFIG_CONTENT ?? "", /axiom_security_logs/);
-  assert.match(canaryCollectorEnvironment.AOT_CONFIG_CONTENT ?? "", /filter\/security|filter\/operational/);
+  assert.match(canaryCollectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /axiom_security_logs/);
+  assert.match(canaryCollectorEnvironment["AOT_CONFIG_CONTENT"] ?? "", /filter\/security|filter\/operational/);
 });
 
 deployedTest("deployed networks isolate the canary and keep status and aggregation private", async () => {
@@ -369,7 +369,7 @@ deployedTest("deployed networks isolate the canary and keep status and aggregati
 
 deployedTest("deployed DynamoDB and Axiom datasets preserve durable state and retention", async () => {
   const environment = await deployedEnvironment();
-  const expectedTelemetryRetention = Number(process.env.DEPLOYED_EXPECTED_TELEMETRY_RETENTION_DAYS ?? "30");
+  const expectedTelemetryRetention = 30;
   assert.equal(environment.metadata.telemetry.retentionDays, expectedTelemetryRetention);
   const table = await awsJson<{
     Table?: {
@@ -429,7 +429,7 @@ deployedTest("deployed DynamoDB and Axiom datasets preserve durable state and re
 });
 
 deployedTest("deployed access-grant credentials and route requirements survive an ECS replacement", async (t) => {
-  if (process.env.DEPLOYED_RUN_DISRUPTIVE_TESTS !== "1") {
+  if (process.env["DEPLOYED_RUN_DISRUPTIVE_TESTS"] !== "1") {
     t.skip("set DEPLOYED_RUN_DISRUPTIVE_TESTS=1 to replace the proxy ECS task");
     return;
   }

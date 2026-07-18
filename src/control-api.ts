@@ -13,7 +13,7 @@ import {
   ServiceUnavailable,
   Unauthorized,
 } from "./control-contract.js";
-import { AppError, NotFoundError, ProviderUnavailableError, ValidationError, safeErrorMessage } from "./errors.js";
+import { AppError, type RouteServiceError, safeErrorMessage } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { closeServer, listen } from "./net-utils.js";
 import { RouteService } from "./route-service.js";
@@ -36,6 +36,11 @@ type RouteCreateError = BadRequest | ServiceUnavailable | InternalError;
 type RouteUpdateError = RouteCreateError | RouteNotFound;
 type AccessGrantCreateError = RouteReadError | ServiceUnavailable;
 
+function unreachableRouteServiceError(error: never): never {
+  void error;
+  throw new Error("Unhandled route-service error");
+}
+
 function secureEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
@@ -49,33 +54,64 @@ function authenticatedUser(token: string, identities: ReadonlyMap<string, string
   return undefined;
 }
 
-function createError(error: unknown): RouteCreateError {
-  if (error instanceof ValidationError) {
-    return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+function createError(error: RouteServiceError): RouteCreateError {
+  switch (error.kind) {
+    case "validation":
+      return new BadRequest({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+    case "provider_unavailable":
+    case "provider_protocol":
+    case "provider_capacity_limit":
+    case "provider_override_unsatisfied":
+    case "upstream":
+      return new ServiceUnavailable({ code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() });
+    case "authentication":
+    case "not_found":
+    case "internal":
+      return internalError();
+    default:
+      return unreachableRouteServiceError(error);
   }
-  if (error instanceof AppError && error.statusCode === 503) {
-    return new ServiceUnavailable({ code: error.code, message: error.message, retryable: true, requestId: randomUUID() });
-  }
-  return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
 }
 
-function readError(error: unknown): RouteReadError {
-  if (error instanceof NotFoundError) {
-    return new RouteNotFound({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+function readError(error: RouteServiceError): RouteReadError {
+  switch (error.kind) {
+    case "not_found":
+      return new RouteNotFound({ code: error.code, message: error.message, retryable: false, requestId: randomUUID() });
+    case "validation":
+    case "authentication":
+    case "provider_unavailable":
+    case "provider_protocol":
+    case "provider_capacity_limit":
+    case "provider_override_unsatisfied":
+    case "upstream":
+    case "internal":
+      return internalError();
+    default:
+      return unreachableRouteServiceError(error);
   }
-  return new InternalError({ code: "internal_error", message: "Internal server error", retryable: true, requestId: randomUUID() });
 }
 
-function updateError(error: unknown): RouteUpdateError {
-  return error instanceof NotFoundError ? readError(error) : createError(error);
+function updateError(error: RouteServiceError): RouteUpdateError {
+  return error.kind === "not_found" ? readError(error) : createError(error);
 }
 
-function accessGrantCreateError(error: unknown): AccessGrantCreateError {
-  if (error instanceof NotFoundError) return readError(error);
-  if (error instanceof ProviderUnavailableError) {
-    return new ServiceUnavailable({ code: error.code, message: error.message, retryable: true, requestId: randomUUID() });
+function accessGrantCreateError(error: RouteServiceError): AccessGrantCreateError {
+  switch (error.kind) {
+    case "not_found":
+      return readError(error);
+    case "provider_unavailable":
+    case "provider_protocol":
+    case "provider_capacity_limit":
+    case "provider_override_unsatisfied":
+    case "upstream":
+      return new ServiceUnavailable({ code: error.code, message: error.message, retryable: error.retryable, requestId: randomUUID() });
+    case "validation":
+    case "authentication":
+    case "internal":
+      return internalError();
+    default:
+      return unreachableRouteServiceError(error);
   }
-  return internalError();
 }
 
 function internalError(): InternalError {
@@ -103,16 +139,16 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
     handlers
       .handle("live", () => Effect.succeed({ status: "live" as const }).pipe(Effect.withSpan("control.health.live")))
       .handle("ready", () =>
-        Effect.tryPromise({
-          try: () => routes.ready(),
-          catch: () =>
-            new ServiceUnavailable({
-              code: "not_ready",
-              message: "Service readiness check failed",
-              retryable: true,
-              requestId: randomUUID(),
-            }),
-        }).pipe(
+        routes.effects.ready().pipe(
+          Effect.mapError(
+            () =>
+              new ServiceUnavailable({
+                code: "not_ready",
+                message: "Service readiness check failed",
+                retryable: true,
+                requestId: randomUUID(),
+              }),
+          ),
           Effect.flatMap((ready) =>
             ready
               ? Effect.succeed({ status: "ready" as const })
@@ -134,94 +170,80 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
     handlers
       .handle("createProfile", ({ payload }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: async () => ({ profileId: (await routes.create(payload, identity.userId)).profileId }),
-            catch: createError,
-          }),
+          routes.effects.create(payload, identity.userId).pipe(
+            Effect.map((profile) => ({ profileId: profile.profileId })),
+            Effect.mapError(createError),
+          ),
         ).pipe(Effect.withSpan("control.profiles.create")),
       )
       .handle("listProfiles", () =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: async () => ({ data: await routes.list(identity.userId) }),
-            catch: internalError,
-          }),
+          routes.effects.list(identity.userId).pipe(
+            Effect.map((data) => ({ data })),
+            Effect.mapError(internalError),
+          ),
         ).pipe(Effect.withSpan("control.profiles.list")),
       )
       .handle("getProfile", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: async () => ({ profile: await routes.get(path.id, identity.userId) }),
-            catch: readError,
-          }),
+          routes.effects.get(path.id, identity.userId).pipe(
+            Effect.map((profile) => ({ profile })),
+            Effect.mapError(readError),
+          ),
         ).pipe(Effect.withSpan("control.profiles.get", { attributes: { "proxy.route.id": path.id } })),
       )
       .handle("updateProfile", ({ path, payload }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: async () => ({ profile: await routes.update(path.id, payload, identity.userId) }),
-            catch: updateError,
-          }),
+          routes.effects.update(path.id, payload, identity.userId).pipe(
+            Effect.map((profile) => ({ profile })),
+            Effect.mapError(updateError),
+          ),
         ).pipe(Effect.withSpan("control.profiles.update", { attributes: { "proxy.route.id": path.id } })),
       )
       .handle("deleteProfile", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.delete(path.id, identity.userId),
-            catch: readError,
-          }),
+          routes.effects.delete(path.id, identity.userId).pipe(Effect.mapError(readError)),
         ).pipe(Effect.withSpan("control.profiles.delete", { attributes: { "proxy.route.id": path.id } })),
       )
       .handle("createAccessGrant", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.createAccessGrant(path.id, identity.userId),
-            catch: accessGrantCreateError,
-          }),
+          routes.effects.createAccessGrant(path.id, identity.userId).pipe(Effect.mapError(accessGrantCreateError)),
         ).pipe(Effect.withSpan("control.access_grants.create", { attributes: { "proxy.route.id": path.id } })),
       )
       .handle("listAccessGrants", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: async () => ({ data: await routes.listAccessGrants(path.id, identity.userId) }),
-            catch: readError,
-          }),
+          routes.effects.listAccessGrants(path.id, identity.userId).pipe(
+            Effect.map((data) => ({ data })),
+            Effect.mapError(readError),
+          ),
         ).pipe(Effect.withSpan("control.access_grants.list", { attributes: { "proxy.route.id": path.id } })),
       )
       .handle("getAccessGrant", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: async () => ({ grant: await routes.getAccessGrant(path.grantId, identity.userId) }),
-            catch: readError,
-          }),
+          routes.effects.getAccessGrant(path.grantId, identity.userId).pipe(
+            Effect.map((grant) => ({ grant })),
+            Effect.mapError(readError),
+          ),
         ).pipe(Effect.withSpan("control.access_grants.get", { attributes: { "proxy.access_grant.id": path.grantId } })),
       )
       .handle("rotateAccessGrantCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.rotateAccessGrantCredential(path.grantId, identity.userId),
-            catch: readError,
-          }),
+          routes.effects.rotateAccessGrantCredential(path.grantId, identity.userId).pipe(Effect.mapError(readError)),
         ).pipe(Effect.withSpan("control.access_grants.rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } })),
       )
       .handle("emergencyRotateAccessGrantCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.rotateAccessGrantCredential(path.grantId, identity.userId, true),
-            catch: readError,
-          }),
+          routes.effects.rotateAccessGrantCredential(path.grantId, identity.userId, true).pipe(Effect.mapError(readError)),
         ).pipe(
           Effect.withSpan("control.access_grants.emergency_rotate_credential", { attributes: { "proxy.access_grant.id": path.grantId } }),
         ),
       )
       .handle("getAccessGrantCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: async () => ({
-              credential: await routes.getAccessGrantCredential(path.grantId, path.credentialId, identity.userId),
-            }),
-            catch: readError,
-          }),
+          routes.effects.getAccessGrantCredential(path.grantId, path.credentialId, identity.userId).pipe(
+            Effect.map((credential) => ({ credential })),
+            Effect.mapError(readError),
+          ),
         ).pipe(
           Effect.withSpan("control.access_grants.get_credential", {
             attributes: { "proxy.access_grant.id": path.grantId },
@@ -230,10 +252,7 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
       )
       .handle("revokeAccessGrantCredential", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.revokeAccessGrantCredential(path.grantId, path.credentialId, identity.userId),
-            catch: readError,
-          }),
+          routes.effects.revokeAccessGrantCredential(path.grantId, path.credentialId, identity.userId).pipe(Effect.mapError(readError)),
         ).pipe(
           Effect.withSpan("control.access_grants.revoke_credential", {
             attributes: { "proxy.access_grant.id": path.grantId },
@@ -242,10 +261,7 @@ function makeHandler(routes: RouteService, options: ControlApiOptions) {
       )
       .handle("revokeAccessGrant", ({ path }) =>
         Effect.flatMap(AuthenticatedUser, (identity) =>
-          Effect.tryPromise({
-            try: () => routes.revokeAccessGrant(path.grantId, identity.userId),
-            catch: readError,
-          }),
+          routes.effects.revokeAccessGrant(path.grantId, identity.userId).pipe(Effect.mapError(readError)),
         ).pipe(Effect.withSpan("control.access_grants.revoke", { attributes: { "proxy.access_grant.id": path.grantId } })),
       ),
   ).pipe(Layer.provide(AuthorizationLive));
@@ -289,14 +305,31 @@ function rewriteIssuedCredentialHost(body: Buffer, hostname: string): Buffer {
     url.hostname = hostname;
     return url.toString();
   };
-  if (payload.endpoints !== undefined) {
-    const endpoints = expectRecord(payload.endpoints, "issued-credential response.endpoints");
-    const http = rewrite(expectOptionalString(endpoints.http, "issued-credential response.endpoints.http"));
-    const socks5 = rewrite(expectOptionalString(endpoints.socks5, "issued-credential response.endpoints.socks5"));
-    if (http !== undefined) endpoints.http = http;
-    if (socks5 !== undefined) endpoints.socks5 = socks5;
+  if (payload["endpoints"] !== undefined) {
+    const endpoints = expectRecord(payload["endpoints"], "issued-credential response.endpoints");
+    const http = rewrite(expectOptionalString(endpoints["http"], "issued-credential response.endpoints.http"));
+    const socks5 = rewrite(expectOptionalString(endpoints["socks5"], "issued-credential response.endpoints.socks5"));
+    if (http !== undefined) endpoints["http"] = http;
+    if (socks5 !== undefined) endpoints["socks5"] = socks5;
   }
   return Buffer.from(JSON.stringify(payload));
+}
+
+function normalizeDecodeError(body: Buffer): Buffer {
+  try {
+    const payload = expectRecord(parseJson(body.toString("utf8"), "control API error response"), "control API error response");
+    if (payload["_tag"] !== "HttpApiDecodeError") return body;
+    return Buffer.from(
+      JSON.stringify({
+        code: "validation_error",
+        message: "Request payload does not match the control API contract",
+        retryable: false,
+        requestId: randomUUID(),
+      }),
+    );
+  } catch {
+    return body;
+  }
 }
 
 export class ControlApiServer {
@@ -358,6 +391,10 @@ export class ControlApiServer {
       const webResponse = await this.#handler(webRequest);
       let responseBody: Buffer = Buffer.from(await webResponse.arrayBuffer());
       const responseHeaders = Object.fromEntries(webResponse.headers.entries());
+      if (webResponse.status === 400) {
+        responseBody = normalizeDecodeError(responseBody);
+        delete responseHeaders["content-length"];
+      }
       if (
         this.options.advertisedProxyHostFromRequest &&
         request.method === "POST" &&

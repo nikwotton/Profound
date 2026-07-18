@@ -36,34 +36,34 @@ async function responseBody(response: NodeJS.ReadableStream, statusCode: number 
   for await (const chunk of response) chunks.push(expectBufferChunk(chunk, "canary response chunk"));
   if (statusCode !== 200) throw new Error(`Canary returned HTTP ${statusCode ?? 0}`);
   const parsed = expectRecord(parseJson(Buffer.concat(chunks).toString("utf8"), "canary response"), "canary response");
-  const rawGeo = expectRecord(parsed.geo, "canary response.geo");
-  const status = expectEnum(rawGeo.status, ["available", "unverifiable", "unavailable"] as const, "canary response.geo.status");
+  const rawGeo = expectRecord(parsed["geo"], "canary response.geo");
+  const status = expectEnum(rawGeo["status"], ["available", "unverifiable", "unavailable"] as const, "canary response.geo.status");
   const geo: GeoIpEvidence = {
     status,
-    ...(expectOptionalString(rawGeo.countryCode, "canary response.geo.countryCode") === undefined
+    ...(expectOptionalString(rawGeo["countryCode"], "canary response.geo.countryCode") === undefined
       ? {}
-      : { countryCode: expectString(rawGeo.countryCode, "canary response.geo.countryCode") }),
-    ...(expectOptionalString(rawGeo.subdivisionCode, "canary response.geo.subdivisionCode") === undefined
+      : { countryCode: expectString(rawGeo["countryCode"], "canary response.geo.countryCode") }),
+    ...(expectOptionalString(rawGeo["subdivisionCode"], "canary response.geo.subdivisionCode") === undefined
       ? {}
-      : { subdivisionCode: expectString(rawGeo.subdivisionCode, "canary response.geo.subdivisionCode") }),
-    ...(expectOptionalString(rawGeo.city, "canary response.geo.city") === undefined
+      : { subdivisionCode: expectString(rawGeo["subdivisionCode"], "canary response.geo.subdivisionCode") }),
+    ...(expectOptionalString(rawGeo["city"], "canary response.geo.city") === undefined
       ? {}
-      : { city: expectString(rawGeo.city, "canary response.geo.city") }),
-    ...(rawGeo.geonameId === undefined ? {} : { geonameId: expectNumber(rawGeo.geonameId, "canary response.geo.geonameId") }),
-    ...(rawGeo.accuracyRadiusKm === undefined
+      : { city: expectString(rawGeo["city"], "canary response.geo.city") }),
+    ...(rawGeo["geonameId"] === undefined ? {} : { geonameId: expectNumber(rawGeo["geonameId"], "canary response.geo.geonameId") }),
+    ...(rawGeo["accuracyRadiusKm"] === undefined
       ? {}
-      : { accuracyRadiusKm: expectNumber(rawGeo.accuracyRadiusKm, "canary response.geo.accuracyRadiusKm") }),
+      : { accuracyRadiusKm: expectNumber(rawGeo["accuracyRadiusKm"], "canary response.geo.accuracyRadiusKm") }),
   };
-  const rawGeoDataset = parsed.geoDataset;
+  const rawGeoDataset = parsed["geoDataset"];
   const geoDataset: GeoIpDatasetMetadata | undefined =
     rawGeoDataset === undefined
       ? undefined
       : (() => {
           const dataset = expectRecord(rawGeoDataset, "canary response.geoDataset");
           return {
-            vendor: expectString(dataset.vendor, "canary response.geoDataset.vendor"),
-            edition: expectString(dataset.edition, "canary response.geoDataset.edition"),
-            buildTimestamp: expectString(dataset.buildTimestamp, "canary response.geoDataset.buildTimestamp"),
+            vendor: expectString(dataset["vendor"], "canary response.geoDataset.vendor"),
+            edition: expectString(dataset["edition"], "canary response.geoDataset.edition"),
+            buildTimestamp: expectString(dataset["buildTimestamp"], "canary response.geoDataset.buildTimestamp"),
           };
         })();
   if (
@@ -76,11 +76,11 @@ async function responseBody(response: NodeJS.ReadableStream, statusCode: number 
     throw new Error("Canary GeoIP dataset metadata was malformed");
   }
   return {
-    observedIp: expectString(parsed.observedIp, "canary response.observedIp"),
+    observedIp: expectString(parsed["observedIp"], "canary response.observedIp"),
     geo,
     ...(geoDataset === undefined ? {} : { geoDataset }),
-    timestamp: expectString(parsed.timestamp, "canary response.timestamp"),
-    correlationId: expectString(parsed.correlationId, "canary response.correlationId"),
+    timestamp: expectString(parsed["timestamp"], "canary response.timestamp"),
+    correlationId: expectString(parsed["correlationId"], "canary response.correlationId"),
   };
 }
 

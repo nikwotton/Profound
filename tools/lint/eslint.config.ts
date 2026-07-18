@@ -27,6 +27,7 @@ export default defineConfig(
       "@typescript-eslint/no-non-null-assertion": "error",
       "@typescript-eslint/no-unnecessary-type-assertion": "error",
       "@typescript-eslint/no-unnecessary-condition": "error",
+      "@typescript-eslint/dot-notation": ["error", { allowIndexSignaturePropertyAccess: true }],
       "no-restricted-syntax": [
         "error",
         {
@@ -47,9 +48,20 @@ export default defineConfig(
     },
   },
   {
+    files: ["src/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-unsafe-type-assertion": "error",
+    },
+  },
+  {
     files: ["tests/**/*.ts"],
     rules: {
-      "@typescript-eslint/no-floating-promises": "off",
+      "@typescript-eslint/no-floating-promises": [
+        "error",
+        {
+          allowForKnownSafeCalls: [{ from: "package", name: ["test", "it", "describe"], package: "node:test" }],
+        },
+      ],
       "@typescript-eslint/no-unnecessary-condition": "off",
     },
   },

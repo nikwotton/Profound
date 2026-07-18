@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { expectOptionalString, expectRecord, parseJson } from "../src/decoding.js";
 
-const sha = process.env.DEPLOYED_SHA;
-const image = process.env.RELEASE_IMAGE_URI;
+const sha = process.env["DEPLOYED_SHA"];
+const image = process.env["RELEASE_IMAGE_URI"];
 if (!sha || !image) throw new Error("DEPLOYED_SHA and RELEASE_IMAGE_URI are required");
 const parameter = "/sst/profound-proxy-router/production/deployed-release";
 let previousSha: string | undefined;
@@ -17,7 +17,7 @@ try {
     ),
     "previous deployed release",
   );
-  previousSha = expectOptionalString(previous.sha, "previous deployed release.sha");
+  previousSha = expectOptionalString(previous["sha"], "previous deployed release.sha");
 } catch {
   previousSha = undefined;
 }
@@ -31,7 +31,7 @@ const manifest = JSON.stringify({ schemaVersion: 1, sha, image, deployedAt: new 
 execFileSync("aws", ["ssm", "put-parameter", "--name", parameter, "--type", "String", "--overwrite", "--value", manifest], {
   stdio: "inherit",
 });
-const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+const summaryPath = process.env["GITHUB_STEP_SUMMARY"];
 if (summaryPath) {
   const notes = subjects.length === 0 ? "- No commit subjects were found." : subjects.map((subject) => `- ${subject}`).join("\n");
   await appendFile(

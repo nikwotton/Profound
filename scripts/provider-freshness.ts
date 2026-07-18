@@ -11,10 +11,10 @@ interface ProviderSource {
 function decodeProviderSource(value: unknown, index: number): ProviderSource {
   const source = expectRecord(value, `provider source ${index}`);
   return {
-    contract: expectString(source.contract, `provider source ${index}.contract`),
-    id: expectString(source.id, `provider source ${index}.id`),
-    reviewedAt: expectString(source.reviewedAt, `provider source ${index}.reviewedAt`),
-    sources: expectArray(source.sources, `provider source ${index}.sources`).map((item, sourceIndex) =>
+    contract: expectString(source["contract"], `provider source ${index}.contract`),
+    id: expectString(source["id"], `provider source ${index}.id`),
+    reviewedAt: expectString(source["reviewedAt"], `provider source ${index}.reviewedAt`),
+    sources: expectArray(source["sources"], `provider source ${index}.sources`).map((item, sourceIndex) =>
       expectString(item, `provider source ${index}.sources[${sourceIndex}]`),
     ),
   };
@@ -24,7 +24,7 @@ const rawManifest = expectRecord(
   parseJson(await readFile(new URL("../config/provider-sources.json", import.meta.url), "utf8"), "provider source manifest"),
   "provider source manifest",
 );
-const providers = expectArray(rawManifest.providers, "provider source manifest.providers").map(decodeProviderSource);
+const providers = expectArray(rawManifest["providers"], "provider source manifest.providers").map(decodeProviderSource);
 const remote = process.argv.includes("--remote");
 const errors: string[] = [];
 for (const provider of providers) {
@@ -32,7 +32,7 @@ for (const provider of providers) {
     parseJson(await readFile(new URL(`../${provider.contract}`, import.meta.url), "utf8"), provider.contract),
     provider.contract,
   );
-  if (contract.provider !== provider.id || typeof contract.version !== "string") {
+  if (contract["provider"] !== provider.id || typeof contract["version"] !== "string") {
     errors.push(`${provider.id}: pinned contract identity/version is invalid`);
   }
   if (!remote) continue;

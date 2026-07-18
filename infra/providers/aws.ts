@@ -3,9 +3,58 @@
 import { existsSync } from "node:fs";
 import { resolveStageConfiguration } from "../stage-config.js";
 
+const v0Policy = {
+  loadBalancer: {
+    tcpIdleTimeoutSeconds: 1_200,
+    deregistrationDelaySeconds: 300,
+  },
+  routing: {
+    allowedTargetPorts: "80,443",
+    connectTimeoutMs: "10000",
+    operationTimeoutMs: "30000",
+    retryMaxAttempts: "4",
+  },
+  telemetry: {
+    axiomEndpoint: "https://api.axiom.co",
+    retentionDays: 30,
+  },
+  canary: {
+    requestsPerMinute: "60",
+    throttleBurst: 30,
+    throttleRate: 10,
+    geoIpDatabaseSource: ".sst/geoip/GeoLite2-City.mmdb",
+    geoIpMaxAccuracyRadiusKm: "100",
+  },
+  health: {
+    providerRefreshMs: "60000",
+    passiveMaxAgeMs: "300000",
+    syntheticCooldownMs: "300000",
+    alertDegradedDelayMs: "300000",
+    alertWebhookTimeoutMs: "5000",
+    alertWebhookMaxAttempts: "5",
+    alertWebhookInitialBackoffMs: "1000",
+    alertDestinationIds: "",
+    alertConfigurationVersion: "unconfigured",
+    statusStaleAfterMs: "300000",
+  },
+  usageAccounting: {
+    intervalMs: "60000",
+    providerCostTotalsJson: "[]",
+    provisionedProxySlotCapacityJson: "[]",
+    sourceUrl: undefined as string | undefined,
+    sourceTimeoutMs: "10000",
+    varianceAbsoluteFloorUsd: "1",
+    varianceWarningRelative: "0.05",
+    varianceErrorRelative: "0.15",
+  },
+  notification: {
+    pollIntervalMs: "5000",
+  },
+} as const;
+
 export const awsDeployment: Parameters<typeof $config>[0] = {
   app(input: { stage: string }) {
-    const stage = resolveStageConfiguration(input.stage, process.env);
+    const stage = resolveStageConfiguration(input.stage);
     return {
       name: "profound-proxy-router",
       home: "aws" as const,
@@ -14,7 +63,7 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     };
   },
   async run() {
-    const stage = resolveStageConfiguration($app.stage, process.env);
+    const stage = resolveStageConfiguration($app.stage);
     const production = stage.production;
     const cloudTestStage = stage.cloudTest;
     const devControlApiToken = "change-me";
@@ -23,7 +72,8 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     // `sst dev` reserves 127.0.0.1:1080 for its VPC tunnel.
     const socks5Port = $dev ? 1081 : 1080;
     const providerMode = stage.providerMode;
-    const geoIpDatabaseSource = process.env.GEOIP_DATABASE_SOURCE?.trim() || ".sst/geoip/GeoLite2-City.mmdb";
+    const proxidizeExactCitySupport = providerMode === "mock" ? "provider_guaranteed" : "verifiable";
+    const geoIpDatabaseSource = v0Policy.canary.geoIpDatabaseSource;
     const geoIpMetadataSource = `${geoIpDatabaseSource}.metadata.json`;
     const geoIpBundleConfigured = existsSync(geoIpDatabaseSource) && existsSync(geoIpMetadataSource);
     if (production && !geoIpBundleConfigured) {
@@ -54,26 +104,14 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     const controlPlaneCidrs = cidrs(process.env.CONTROL_PLANE_ALLOWED_CIDRS);
     const minimumTasks = stage.minimumTasks;
     const maximumTasks = stage.maximumTasks;
-    const nlbTcpIdleTimeoutSeconds = boundedInteger(
-      process.env.NLB_TCP_IDLE_TIMEOUT_SECONDS,
-      1_200,
-      "NLB_TCP_IDLE_TIMEOUT_SECONDS",
-      60,
-      6_000,
-    );
-    const nlbDeregistrationDelaySeconds = boundedInteger(
-      process.env.NLB_DEREGISTRATION_DELAY_SECONDS,
-      300,
-      "NLB_DEREGISTRATION_DELAY_SECONDS",
-      0,
-      3_600,
-    );
-    const telemetryRetentionDays = positiveInteger(process.env.TELEMETRY_RETENTION_DAYS, 30, "TELEMETRY_RETENTION_DAYS");
-    const axiomEndpoint = normalizedHttpsOrigin(process.env.AXIOM_OTLP_ENDPOINT ?? "https://api.axiom.co", "AXIOM_OTLP_ENDPOINT");
+    const nlbTcpIdleTimeoutSeconds = v0Policy.loadBalancer.tcpIdleTimeoutSeconds;
+    const nlbDeregistrationDelaySeconds = v0Policy.loadBalancer.deregistrationDelaySeconds;
+    const telemetryRetentionDays = v0Policy.telemetry.retentionDays;
+    const axiomEndpoint = v0Policy.telemetry.axiomEndpoint;
     const axiomDatasets = {
-      logs: datasetName(process.env.AXIOM_LOGS_DATASET, `${$app.name}-${$app.stage}-logs`, "AXIOM_LOGS_DATASET"),
-      traces: datasetName(process.env.AXIOM_TRACES_DATASET, `${$app.name}-${$app.stage}-traces`, "AXIOM_TRACES_DATASET"),
-      metrics: datasetName(process.env.AXIOM_METRICS_DATASET, `${$app.name}-${$app.stage}-metrics`, "AXIOM_METRICS_DATASET"),
+      logs: `${$app.name}-${$app.stage}-logs`,
+      traces: `${$app.name}-${$app.stage}-traces`,
+      metrics: `${$app.name}-${$app.stage}-metrics`,
     };
     const releaseImageUri = process.env.RELEASE_IMAGE_URI?.trim();
     if (releaseImageUri !== undefined && releaseImageUri !== "" && !/@sha256:[a-f0-9]{64}$/.test(releaseImageUri)) {
@@ -328,14 +366,25 @@ service:
     const adotImage =
       "public.ecr.aws/aws-observability/aws-otel-collector@sha256:d2bdfff2c377c3d71d78bd5d9ce9862fd535b12134a5739d87a07801297cf9fd";
 
-    const axiomToken = containerSecret("AxiomIngestToken", new sst.Secret("AxiomIngestToken").value, production);
-    const controlApiToken = containerSecret("ControlApiToken", new sst.Secret("ControlApiToken").value, production);
-    const controlIdentitiesSecret =
-      process.env.CONTROL_API_IDENTITIES_CONFIGURED === "true"
-        ? containerSecret("ControlApiIdentities", new sst.Secret("ControlApiIdentities").value, production)
-        : undefined;
-    const healthAggregatorToken = containerSecret("HealthAggregatorToken", new sst.Secret("HealthAggregatorToken").value, production);
-    const canarySigningSecretValue = new sst.Secret("CanarySigningSecret").value;
+    const axiomToken = containerSecret(
+      "AxiomIngestToken",
+      new sst.Secret("AxiomIngestToken", $dev ? "unused-in-sst-dev" : undefined).value,
+      production,
+    );
+    const controlApiToken = containerSecret(
+      "ControlApiToken",
+      new sst.Secret("ControlApiToken", $dev ? devControlApiToken : undefined).value,
+      production,
+    );
+    const controlIdentitiesSecret = stage.features.controlApiIdentities
+      ? containerSecret("ControlApiIdentities", new sst.Secret("ControlApiIdentities").value, production)
+      : undefined;
+    const healthAggregatorToken = containerSecret(
+      "HealthAggregatorToken",
+      new sst.Secret("HealthAggregatorToken", $dev ? devHealthAggregatorToken : undefined).value,
+      production,
+    );
+    const canarySigningSecretValue = new sst.Secret("CanarySigningSecret", $dev ? devCanarySigningSecret : undefined).value;
     const canarySigningSecret = containerSecret("CanarySigningSecret", canarySigningSecretValue, production);
     const providerSecrets =
       providerMode === "live"
@@ -347,21 +396,18 @@ service:
             PROXIDIZE_API_TOKEN: containerSecret("ProxidizeApiToken", new sst.Secret("ProxidizeApiToken").value, production),
           }
         : undefined;
-    const syntheticRouteSecrets =
-      process.env.HEALTH_SYNTHETIC_ROUTE_CONFIGURED === "true"
-        ? {
-            HEALTH_PROXY_USERNAME: containerSecret("HealthProxyUsername", new sst.Secret("HealthProxyUsername").value, production),
-            HEALTH_PROXY_PASSWORD: containerSecret("HealthProxyPassword", new sst.Secret("HealthProxyPassword").value, production),
-          }
-        : undefined;
-    const alertDestinationSecret =
-      process.env.HEALTH_ALERTING_CONFIGURED === "true"
-        ? containerSecret("HealthAlertDestinations", new sst.Secret("HealthAlertDestinations").value, production)
-        : undefined;
-    const usageAccountingSourceToken =
-      process.env.USAGE_ACCOUNTING_SOURCE_TOKEN_CONFIGURED === "true"
-        ? containerSecret("UsageAccountingSourceToken", new sst.Secret("UsageAccountingSourceToken").value, production)
-        : undefined;
+    const syntheticRouteSecrets = stage.features.syntheticHealthRoute
+      ? {
+          HEALTH_PROXY_USERNAME: containerSecret("HealthProxyUsername", new sst.Secret("HealthProxyUsername").value, production),
+          HEALTH_PROXY_PASSWORD: containerSecret("HealthProxyPassword", new sst.Secret("HealthProxyPassword").value, production),
+        }
+      : undefined;
+    const alertDestinationSecret = stage.features.healthAlerting
+      ? containerSecret("HealthAlertDestinations", new sst.Secret("HealthAlertDestinations").value, production)
+      : undefined;
+    const usageAccountingSourceToken = stage.features.usageAccountingSource
+      ? containerSecret("UsageAccountingSourceToken", new sst.Secret("UsageAccountingSourceToken").value, production)
+      : undefined;
     const proxyContainerSecretArns = providerSecrets === undefined ? [] : Object.values(providerSecrets);
     const controlContainerSecretArns = [
       controlApiToken,
@@ -574,12 +620,11 @@ service:
           image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "data-plane",
             PROVIDER_MODE: providerMode,
-            PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
             DEPLOYMENT_ID: deploymentId,
             FORWARD_PROXY_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
@@ -589,13 +634,12 @@ service:
             CONTROL_API_DISABLED: "true",
             ADVERTISED_PROXY_HOST: proxyDomain ?? "internal-proxy.invalid",
             ADVERTISED_HTTP_PROXY_PROTOCOL: tlsEnabled ? "https" : "http",
-            ALLOWED_TARGET_PORTS: process.env.ALLOWED_TARGET_PORTS ?? "80,443",
-            CONNECT_TIMEOUT_MS: process.env.CONNECT_TIMEOUT_MS ?? "10000",
-            OPERATION_TIMEOUT_MS: process.env.OPERATION_TIMEOUT_MS ?? "30000",
-            STREAM_IDLE_TIMEOUT_MS: process.env.STREAM_IDLE_TIMEOUT_MS ?? String(nlbTcpIdleTimeoutSeconds * 1_000),
-            RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
-            PROXIDIZE_EXACT_CITY_SUPPORT:
-              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "verifiable"),
+            ALLOWED_TARGET_PORTS: v0Policy.routing.allowedTargetPorts,
+            CONNECT_TIMEOUT_MS: v0Policy.routing.connectTimeoutMs,
+            OPERATION_TIMEOUT_MS: v0Policy.routing.operationTimeoutMs,
+            STREAM_IDLE_TIMEOUT_MS: String(nlbTcpIdleTimeoutSeconds * 1_000),
+            RETRY_MAX_ATTEMPTS: v0Policy.routing.retryMaxAttempts,
+            PROXIDIZE_EXACT_CITY_SUPPORT: proxidizeExactCitySupport,
             ...otelEnvironment(`profound-proxy-router-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: proxyAppSsm,
@@ -702,25 +746,23 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "control-plane",
             PROVIDER_MODE: providerMode,
-            PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
             FORWARD_PROXY_PORT: "8080",
             SOCKS5_PROXY_PORT: String(socks5Port),
             CONTROL_API_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             CONTROL_API_PORT: "8081",
-            CONTROL_API_USER_ID: process.env.CONTROL_API_USER_ID ?? `sst:${$app.stage}`,
+            CONTROL_API_USER_ID: `sst:${$app.stage}`,
             ADVERTISED_PROXY_HOST: host,
             ADVERTISED_HTTP_PROXY_PROTOCOL: tlsEnabled ? "https" : "http",
-            CONNECT_TIMEOUT_MS: process.env.CONNECT_TIMEOUT_MS ?? "10000",
-            OPERATION_TIMEOUT_MS: process.env.OPERATION_TIMEOUT_MS ?? "30000",
-            RETRY_MAX_ATTEMPTS: process.env.RETRY_MAX_ATTEMPTS ?? "4",
-            PROXIDIZE_EXACT_CITY_SUPPORT:
-              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "verifiable"),
+            CONNECT_TIMEOUT_MS: v0Policy.routing.connectTimeoutMs,
+            OPERATION_TIMEOUT_MS: v0Policy.routing.operationTimeoutMs,
+            RETRY_MAX_ATTEMPTS: v0Policy.routing.retryMaxAttempts,
+            PROXIDIZE_EXACT_CITY_SUPPORT: proxidizeExactCitySupport,
             ...otelEnvironment(`profound-proxy-control-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev ? { CONTROL_API_TOKEN: devControlApiToken } : {}),
           },
@@ -787,8 +829,8 @@ service:
       transform: {
         stage(args) {
           args.defaultRouteSettings = {
-            throttlingBurstLimit: positiveInteger(process.env.CANARY_THROTTLE_BURST, 30, "CANARY_THROTTLE_BURST"),
-            throttlingRateLimit: positiveInteger(process.env.CANARY_THROTTLE_RATE, 10, "CANARY_THROTTLE_RATE"),
+            throttlingBurstLimit: v0Policy.canary.throttleBurst,
+            throttlingRateLimit: v0Policy.canary.throttleRate,
           };
         },
       },
@@ -807,9 +849,9 @@ service:
         : [],
       environment: {
         CANARY_SIGNING_SECRET: canarySigningSecretValue,
-        CANARY_REQUESTS_PER_MINUTE: process.env.CANARY_REQUESTS_PER_MINUTE ?? "60",
+        CANARY_REQUESTS_PER_MINUTE: v0Policy.canary.requestsPerMinute,
         GEOIP_DATABASE_PATH: "./data/GeoLite2-City.mmdb",
-        GEOIP_MAX_ACCURACY_RADIUS_KM: process.env.GEOIP_MAX_ACCURACY_RADIUS_KM ?? "100",
+        GEOIP_MAX_ACCURACY_RADIUS_KM: v0Policy.canary.geoIpMaxAccuracyRadiusKm,
         OTEL_EXPORTER_OTLP_ENDPOINT: canaryTelemetryCollectorEndpoint,
         OTEL_SERVICE_NAME: `profound-proxy-canary-${$app.stage}`,
         DEPLOYMENT_ENVIRONMENT: $app.stage,
@@ -930,34 +972,32 @@ service:
           image: applicationImage,
           cpu: "0.75 vCPU",
           memory: "1.5 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "health-aggregator",
             PROVIDER_MODE: providerMode,
-            PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
             CONTROL_API_HOST: "127.0.0.1",
             HEALTH_AGGREGATOR_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             HEALTH_AGGREGATOR_PORT: "8082",
-            HEALTH_PROVIDER_REFRESH_MS: process.env.HEALTH_PROVIDER_REFRESH_MS ?? "60000",
-            HEALTH_PASSIVE_MAX_AGE_MS: process.env.HEALTH_PASSIVE_MAX_AGE_MS ?? "300000",
-            HEALTH_SYNTHETIC_COOLDOWN_MS: process.env.HEALTH_SYNTHETIC_COOLDOWN_MS ?? "300000",
-            HEALTH_ALERT_DEGRADED_DELAY_MS: process.env.HEALTH_ALERT_DEGRADED_DELAY_MS ?? "300000",
-            HEALTH_ALERT_WEBHOOK_TIMEOUT_MS: process.env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS ?? "5000",
-            HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS: process.env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS ?? "5",
-            HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS: process.env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS ?? "1000",
-            HEALTH_ALERT_DESTINATION_IDS: process.env.HEALTH_ALERT_DESTINATION_IDS ?? "",
-            HEALTH_ALERT_CONFIGURATION_VERSION: process.env.HEALTH_ALERT_CONFIGURATION_VERSION ?? "unconfigured",
+            HEALTH_PROVIDER_REFRESH_MS: v0Policy.health.providerRefreshMs,
+            HEALTH_PASSIVE_MAX_AGE_MS: v0Policy.health.passiveMaxAgeMs,
+            HEALTH_SYNTHETIC_COOLDOWN_MS: v0Policy.health.syntheticCooldownMs,
+            HEALTH_ALERT_DEGRADED_DELAY_MS: v0Policy.health.alertDegradedDelayMs,
+            HEALTH_ALERT_WEBHOOK_TIMEOUT_MS: v0Policy.health.alertWebhookTimeoutMs,
+            HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS: v0Policy.health.alertWebhookMaxAttempts,
+            HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS: v0Policy.health.alertWebhookInitialBackoffMs,
+            HEALTH_ALERT_DESTINATION_IDS: v0Policy.health.alertDestinationIds,
+            HEALTH_ALERT_CONFIGURATION_VERSION: v0Policy.health.alertConfigurationVersion,
             HEALTH_CANARY_URL: $interpolate`${canaryApi.url}/v1/challenge`,
             ...(syntheticRouteSecrets === undefined
               ? {}
               : {
                   HEALTH_PROXY_URL: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
                 }),
-            CONNECT_TIMEOUT_MS: process.env.CONNECT_TIMEOUT_MS ?? "10000",
-            PROXIDIZE_EXACT_CITY_SUPPORT:
-              process.env.PROXIDIZE_EXACT_CITY_SUPPORT ?? (providerMode === "mock" ? "provider_guaranteed" : "verifiable"),
+            CONNECT_TIMEOUT_MS: v0Policy.routing.connectTimeoutMs,
+            PROXIDIZE_EXACT_CITY_SUPPORT: proxidizeExactCitySupport,
             ...otelEnvironment(`profound-proxy-health-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev
               ? {
@@ -1031,15 +1071,14 @@ service:
           image: applicationImage,
           cpu: "0.25 vCPU",
           memory: "0.5 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "status",
-            PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
             STATUS_APP_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             STATUS_APP_PORT: "8083",
-            STATUS_STALE_AFTER_MS: process.env.STATUS_STALE_AFTER_MS ?? "300000",
+            STATUS_STALE_AFTER_MS: v0Policy.health.statusStaleAfterMs,
             HEALTH_AGGREGATOR_URL: healthAggregator.url,
             ...otelEnvironment(`profound-proxy-status-${$app.stage}`, telemetryCollectorEndpoint),
             ...($dev ? { HEALTH_AGGREGATOR_TOKEN: devHealthAggregatorToken } : {}),
@@ -1102,24 +1141,23 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "usage-accounting",
-            PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
             USAGE_ACCOUNTING_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             USAGE_ACCOUNTING_PORT: "8085",
-            USAGE_ACCOUNTING_INTERVAL_MS: process.env.USAGE_ACCOUNTING_INTERVAL_MS ?? "60000",
-            PROVIDER_COST_TOTALS_JSON: process.env.PROVIDER_COST_TOTALS_JSON ?? "[]",
-            PROVISIONED_PROXY_SLOT_CAPACITY_JSON: process.env.PROVISIONED_PROXY_SLOT_CAPACITY_JSON ?? "[]",
-            ...(process.env.USAGE_ACCOUNTING_SOURCE_URL?.trim()
-              ? { USAGE_ACCOUNTING_SOURCE_URL: process.env.USAGE_ACCOUNTING_SOURCE_URL.trim() }
-              : {}),
-            USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS: process.env.USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS ?? "10000",
-            USAGE_VARIANCE_ABSOLUTE_FLOOR_USD: process.env.USAGE_VARIANCE_ABSOLUTE_FLOOR_USD ?? "1",
-            USAGE_VARIANCE_WARNING_RELATIVE: process.env.USAGE_VARIANCE_WARNING_RELATIVE ?? "0.05",
-            USAGE_VARIANCE_ERROR_RELATIVE: process.env.USAGE_VARIANCE_ERROR_RELATIVE ?? "0.15",
+            USAGE_ACCOUNTING_INTERVAL_MS: v0Policy.usageAccounting.intervalMs,
+            PROVIDER_COST_TOTALS_JSON: v0Policy.usageAccounting.providerCostTotalsJson,
+            PROVISIONED_PROXY_SLOT_CAPACITY_JSON: v0Policy.usageAccounting.provisionedProxySlotCapacityJson,
+            ...(v0Policy.usageAccounting.sourceUrl === undefined
+              ? {}
+              : { USAGE_ACCOUNTING_SOURCE_URL: v0Policy.usageAccounting.sourceUrl }),
+            USAGE_ACCOUNTING_SOURCE_TIMEOUT_MS: v0Policy.usageAccounting.sourceTimeoutMs,
+            USAGE_VARIANCE_ABSOLUTE_FLOOR_USD: v0Policy.usageAccounting.varianceAbsoluteFloorUsd,
+            USAGE_VARIANCE_WARNING_RELATIVE: v0Policy.usageAccounting.varianceWarningRelative,
+            USAGE_VARIANCE_ERROR_RELATIVE: v0Policy.usageAccounting.varianceErrorRelative,
             ...otelEnvironment(`profound-proxy-usage-accounting-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: usageAccountingSourceToken === undefined ? {} : { USAGE_ACCOUNTING_SOURCE_TOKEN: usageAccountingSourceToken },
@@ -1183,18 +1221,17 @@ service:
           image: applicationImage,
           cpu: "0.5 vCPU",
           memory: "1 GB",
-          dev: { command: "pnpm dev" },
+          dev: { command: "pnpm dev:service" },
           environment: {
             NODE_ENV: "production",
             SERVICE_MODE: "notification",
-            PERSISTENCE_BACKEND: "dynamodb",
             ROUTE_TABLE_NAME: routeState.name,
             NOTIFICATION_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
             NOTIFICATION_PORT: "8084",
-            NOTIFICATION_POLL_INTERVAL_MS: process.env.NOTIFICATION_POLL_INTERVAL_MS ?? "5000",
-            HEALTH_ALERT_WEBHOOK_TIMEOUT_MS: process.env.HEALTH_ALERT_WEBHOOK_TIMEOUT_MS ?? "5000",
-            HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS: process.env.HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS ?? "5",
-            HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS: process.env.HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS ?? "1000",
+            NOTIFICATION_POLL_INTERVAL_MS: v0Policy.notification.pollIntervalMs,
+            HEALTH_ALERT_WEBHOOK_TIMEOUT_MS: v0Policy.health.alertWebhookTimeoutMs,
+            HEALTH_ALERT_WEBHOOK_MAX_ATTEMPTS: v0Policy.health.alertWebhookMaxAttempts,
+            HEALTH_ALERT_WEBHOOK_INITIAL_BACKOFF_MS: v0Policy.health.alertWebhookInitialBackoffMs,
             ...otelEnvironment(`profound-proxy-notification-${$app.stage}`, telemetryCollectorEndpoint),
           },
           ssm: alertDestinationSecret === undefined ? {} : { HEALTH_ALERT_DESTINATIONS_JSON: alertDestinationSecret },
@@ -1415,48 +1452,6 @@ function cidrs(value: string | undefined): string[] {
 function required<T>(value: T | undefined, name: string): T {
   if (value === undefined) throw new Error(`${name} is required`);
   return value;
-}
-
-function positiveInteger(value: string | undefined, fallback: number, name: string): number {
-  const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`);
-  return parsed;
-}
-
-function boundedInteger(value: string | undefined, fallback: number, name: string, minimum: number, maximum: number): number {
-  const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
-  }
-  return parsed;
-}
-
-function normalizedHttpsOrigin(value: string, name: string): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error(`${name} must be a valid HTTPS origin`);
-  }
-  if (
-    url.protocol !== "https:" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    url.pathname !== "/" ||
-    url.search !== "" ||
-    url.hash !== ""
-  ) {
-    throw new Error(`${name} must be an HTTPS origin without credentials, path, query, or fragment`);
-  }
-  return url.origin;
-}
-
-function datasetName(value: string | undefined, fallback: string, name: string): string {
-  const result = (value ?? fallback).trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(result)) {
-    throw new Error(`${name} must be 1-128 characters using letters, digits, dots, underscores, or hyphens`);
-  }
-  return result;
 }
 
 function portIngress(port: number, allowedCidrs: string[]): aws.types.input.ec2.SecurityGroupIngress[] {

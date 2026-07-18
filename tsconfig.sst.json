@@ -5,6 +5,7 @@
     "moduleResolution": "Bundler",
     "noEmit": true,
     "strict": true,
+    "noPropertyAccessFromIndexSignature": false,
     "noUncheckedSideEffectImports": true,
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,

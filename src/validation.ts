@@ -1,20 +1,24 @@
+import { ParseResult, Schema } from "effect";
 import { ValidationError } from "./errors.js";
+import { RouteProfilePayload } from "./route-profile-schema.js";
+import type { DecodedRouteProfilePayload } from "./route-profile-schema.js";
 import type { RetryPolicy, RouteProfile, RouteProfileInput, Targeting } from "./types.js";
 
 const COUNTRY_CODE = /^[A-Za-z]{2}$/;
-const PROFILE_FIELDS = new Set(["customerId", "geography", "carrier", "providerOverride", "isTargetAuthenticated", "allowConnectionRetry"]);
-const GEOGRAPHY_FIELDS = new Set(["countryCode", "regionCode", "city"]);
 
-function object(value: unknown, field: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ValidationError(`${field} must be an object`);
+function routeProfileContractError(error: ParseResult.ParseError): ValidationError {
+  const issues = ParseResult.ArrayFormatter.formatIssueSync(error.issue);
+  const first = issues[0];
+  const path = first?.path.map(String) ?? [];
+  if (path.length === 1 && path[0] === "providerOverride") {
+    return new ValidationError("providerOverride must be bright_data, proxidize, or null");
   }
-  return value as Record<string, unknown>;
-}
-
-function rejectUnknown(input: Record<string, unknown>, fields: ReadonlySet<string>, context: string): void {
-  const unknown = Object.keys(input).find((key) => !fields.has(key));
-  if (unknown !== undefined) throw new ValidationError(`${context}.${unknown} is not part of the profile contract`);
+  if (first?._tag === "Unexpected" && path.length > 0) {
+    const field = path.length === 1 ? `profile.${path[0]}` : path.join(".");
+    return new ValidationError(`${field} is not part of the profile contract`);
+  }
+  const field = path.length === 0 ? "profile" : path.length === 1 ? `profile.${path[0]}` : path.join(".");
+  return new ValidationError(`${field} does not match the route profile contract`);
 }
 
 function string(value: unknown, field: string): string {
@@ -22,21 +26,22 @@ function string(value: unknown, field: string): string {
   return value.trim();
 }
 
-function optionalString(value: unknown, field: string): string | undefined {
+function optionalString(value: string | undefined, field: string): string | undefined {
   return value === undefined ? undefined : string(value, field);
 }
 
-function parseGeography(value: unknown): { profile?: RouteProfileInput["geography"]; targeting: Targeting } {
+function parseGeography(value: DecodedRouteProfilePayload["geography"]): {
+  profile?: RouteProfileInput["geography"];
+  targeting: Targeting;
+} {
   if (value === undefined) return { targeting: {} };
-  const input = object(value, "geography");
-  rejectUnknown(input, GEOGRAPHY_FIELDS, "geography");
-  const rawCountry = optionalString(input.countryCode, "geography.countryCode");
+  const rawCountry = optionalString(value.countryCode, "geography.countryCode");
   const countryCode = rawCountry?.toUpperCase();
   if (countryCode !== undefined && !COUNTRY_CODE.test(countryCode)) {
     throw new ValidationError("geography.countryCode must be a two-letter ISO country code");
   }
-  const regionCode = optionalString(input.regionCode, "geography.regionCode");
-  const city = optionalString(input.city, "geography.city");
+  const regionCode = optionalString(value.regionCode, "geography.regionCode");
+  const city = optionalString(value.city, "geography.city");
   const profile = {
     ...(countryCode === undefined ? {} : { countryCode }),
     ...(regionCode === undefined ? {} : { regionCode }),
@@ -53,25 +58,13 @@ function parseGeography(value: unknown): { profile?: RouteProfileInput["geograph
 }
 
 export function validateRouteProfile(value: unknown, userId: string, retryDefaults: RetryPolicy): RouteProfile {
-  const input = object(value, "profile");
-  rejectUnknown(input, PROFILE_FIELDS, "profile");
-  if (typeof input.isTargetAuthenticated !== "boolean") {
-    throw new ValidationError("isTargetAuthenticated must be boolean");
-  }
-  if (typeof input.allowConnectionRetry !== "boolean") {
-    throw new ValidationError("allowConnectionRetry must be boolean");
-  }
+  const decoded = Schema.decodeUnknownEither(RouteProfilePayload)(value);
+  if (decoded._tag === "Left") throw routeProfileContractError(decoded.left);
+  const input: DecodedRouteProfilePayload = decoded.right;
 
   const { profile: geography, targeting } = parseGeography(input.geography);
   const carrier = optionalString(input.carrier, "carrier");
-  const providerOverride = (() => {
-    if (input.providerOverride === undefined || input.providerOverride === null) return undefined;
-    const provider = string(input.providerOverride, "providerOverride");
-    if (provider !== "bright_data" && provider !== "proxidize") {
-      throw new ValidationError("providerOverride must be bright_data, proxidize, or null");
-    }
-    return provider;
-  })();
+  const providerOverride = input.providerOverride ?? undefined;
   if (input.isTargetAuthenticated && (geography?.countryCode === undefined || geography.city === undefined)) {
     throw new ValidationError("geography.countryCode and geography.city are required when isTargetAuthenticated is true");
   }

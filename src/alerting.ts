@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { isUnknownRecord } from "./decoding.js";
 import type { Logger } from "./logger.js";
 import type { RouteStore } from "./store.js";
 import type {
@@ -42,37 +43,35 @@ export function parseHealthAlertDestinationConfig(raw: string | undefined): Heal
   } catch {
     throw new Error("HEALTH_ALERT_DESTINATIONS_JSON must be valid JSON");
   }
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (!isUnknownRecord(value)) {
     throw new Error("HEALTH_ALERT_DESTINATIONS_JSON must be an object");
   }
-  const config = value as Record<string, unknown>;
-  if (typeof config.version !== "string" || config.version.trim() === "") {
+  if (typeof value["version"] !== "string" || value["version"].trim() === "") {
     throw new Error("Health alert destination configuration requires a non-empty version");
   }
-  if (!Array.isArray(config.destinations) || config.destinations.length > 20) {
+  if (!Array.isArray(value["destinations"]) || value["destinations"].length > 20) {
     throw new Error("Health alert destination configuration requires at most 20 destinations");
   }
   const ids = new Set<string>();
-  const destinations = config.destinations.map((entry): HealthAlertDestination => {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+  const destinations = value["destinations"].map((entry): HealthAlertDestination => {
+    if (!isUnknownRecord(entry)) {
       throw new Error("Each health alert destination must be an object");
     }
-    const destination = entry as Record<string, unknown>;
-    if (typeof destination.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(destination.id)) {
+    if (typeof entry["id"] !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(entry["id"])) {
       throw new Error("Each health alert destination requires a valid id");
     }
-    if (ids.has(destination.id)) throw new Error(`Duplicate health alert destination id: ${destination.id}`);
-    ids.add(destination.id);
-    if (typeof destination.url !== "string" || typeof destination.secret !== "string" || destination.secret.length < 16) {
-      throw new Error(`Health alert destination ${destination.id} requires a URL and a secret of at least 16 characters`);
+    if (ids.has(entry["id"])) throw new Error(`Duplicate health alert destination id: ${entry["id"]}`);
+    ids.add(entry["id"]);
+    if (typeof entry["url"] !== "string" || typeof entry["secret"] !== "string" || entry["secret"].length < 16) {
+      throw new Error(`Health alert destination ${entry["id"]} requires a URL and a secret of at least 16 characters`);
     }
-    const url = new URL(destination.url);
+    const url = new URL(entry["url"]);
     if (url.username !== "" || url.password !== "" || (url.protocol !== "https:" && !isLocalHost(url.hostname))) {
-      throw new Error(`Health alert destination ${destination.id} must use HTTPS without URL credentials`);
+      throw new Error(`Health alert destination ${entry["id"]} must use HTTPS without URL credentials`);
     }
-    return { id: destination.id, url: url.toString(), secret: destination.secret };
+    return { id: entry["id"], url: url.toString(), secret: entry["secret"] };
   });
-  return { version: config.version, destinations };
+  return { version: value["version"], destinations };
 }
 
 export interface WebhookNotificationAdapterOptions {

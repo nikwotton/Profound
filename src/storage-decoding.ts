@@ -13,27 +13,36 @@ import type {
   StoredAccessGrant,
   StoredAccessGrantCredential,
   StoredRoute,
-  UsageRecord,
   UsageAlertEvent,
   UsageReconciliation,
+  UsageRecord,
   UsageRollup,
 } from "./types.js";
 
 const mutableArray = <S extends Schema.Schema.Any>(schema: S) => Schema.mutable(Schema.Array(schema));
 const exactOptional = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true });
+const IsoTimestamp = Schema.String.pipe(
+  Schema.filter((value) => {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+  }),
+);
+const NonNegativeNumber = Schema.Number.pipe(Schema.finite(), Schema.nonNegative());
+const NonNegativeInteger = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
+const PositiveInteger = Schema.Number.pipe(Schema.int(), Schema.greaterThan(0));
 
 const Targeting = Schema.Struct({
   country: exactOptional(Schema.String),
   region: exactOptional(Schema.String),
   city: exactOptional(Schema.String),
   postalCode: exactOptional(Schema.String),
-  asn: exactOptional(Schema.Number),
+  asn: exactOptional(PositiveInteger),
   carrier: exactOptional(Schema.String),
 });
 
 const Rotation = Schema.Union(
   Schema.Struct({ mode: Schema.Literal("per_request") }),
-  Schema.Struct({ mode: Schema.Literal("interval"), intervalSeconds: Schema.Number }),
+  Schema.Struct({ mode: Schema.Literal("interval"), intervalSeconds: Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(60)) }),
   Schema.Struct({ mode: Schema.Literal("manual") }),
 );
 
@@ -51,11 +60,11 @@ const StoredAccessGrantCredentialSchema = Schema.Struct({
   tokenSalt: Schema.String,
   tokenHash: Schema.String,
   status: Schema.Literal("active", "overlap", "revoked"),
-  createdAt: Schema.String,
-  renewalDueAt: Schema.String,
-  expiresAt: Schema.String,
-  revokeAt: exactOptional(Schema.String),
-  lastUsedAt: exactOptional(Schema.String),
+  createdAt: IsoTimestamp,
+  renewalDueAt: IsoTimestamp,
+  expiresAt: IsoTimestamp,
+  revokeAt: exactOptional(IsoTimestamp),
+  lastUsedAt: exactOptional(IsoTimestamp),
 });
 
 const StoredAccessGrantSchema = Schema.Struct({
@@ -65,8 +74,8 @@ const StoredAccessGrantSchema = Schema.Struct({
   credentials: mutableArray(StoredAccessGrantCredentialSchema),
   status: Schema.Literal("ready", "revoked"),
   terminateActive: Schema.Boolean,
-  createdAt: Schema.String,
-  updatedAt: Schema.String,
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
 });
 
 const StoredRouteSchema = Schema.Struct({
@@ -91,16 +100,16 @@ const StoredRouteSchema = Schema.Struct({
   userId: Schema.String,
   isAuthenticated: Schema.Boolean,
   shouldRetry: Schema.Boolean,
-  retryPolicy: Schema.Struct({ maxAttempts: Schema.Number }),
+  retryPolicy: Schema.Struct({ maxAttempts: PositiveInteger }),
   provider: Schema.Literal("bright_data", "proxidize"),
   endpointId: exactOptional(Schema.String),
   status: Schema.Literal("ready", "rotating", "failed", "revoked"),
   terminateActive: Schema.Boolean,
   lastError: exactOptional(Schema.String),
-  rotationEpoch: Schema.Number,
-  lastRotationAt: Schema.String,
-  createdAt: Schema.String,
-  updatedAt: Schema.String,
+  rotationEpoch: NonNegativeInteger,
+  lastRotationAt: IsoTimestamp,
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
 });
 
 const ActiveTunnelSchema = Schema.Struct({
@@ -112,38 +121,38 @@ const ActiveTunnelSchema = Schema.Struct({
   provider: Schema.Literal("bright_data", "proxidize"),
   endpointId: exactOptional(Schema.String),
   routingPolicyVersion: exactOptional(Schema.String),
-  routingScore: exactOptional(Schema.Number),
-  startedAt: Schema.String,
-  lastHeartbeatAt: Schema.String,
-  expiresAt: Schema.String,
+  routingScore: exactOptional(NonNegativeNumber),
+  startedAt: IsoTimestamp,
+  lastHeartbeatAt: IsoTimestamp,
+  expiresAt: IsoTimestamp,
 });
 
 const CapacityCircuitStateSchema = Schema.Struct({
   provider: Schema.Literal("bright_data", "proxidize"),
   candidateKey: Schema.String,
   status: Schema.Literal("closed", "open", "half_open"),
-  consecutiveFailures: Schema.Number,
-  openCount: Schema.Number,
+  consecutiveFailures: NonNegativeInteger,
+  openCount: NonNegativeInteger,
   reason: exactOptional(Schema.Literal("provider_hard_limit", "capacity_failure", "establishment_failure", "timeout")),
-  cooldownUntil: exactOptional(Schema.String),
-  probeExpiresAt: exactOptional(Schema.String),
-  updatedAt: Schema.String,
-  expiresAt: Schema.String,
+  cooldownUntil: exactOptional(IsoTimestamp),
+  probeExpiresAt: exactOptional(IsoTimestamp),
+  updatedAt: IsoTimestamp,
+  expiresAt: IsoTimestamp,
 });
 
 const DeploymentDrainStateSchema = Schema.Struct({
   deploymentId: Schema.String,
-  startedAt: Schema.String,
+  startedAt: IsoTimestamp,
   terminateRemaining: Schema.Boolean,
-  lastNotificationAt: exactOptional(Schema.String),
-  extensionUntil: exactOptional(Schema.String),
-  updatedAt: Schema.String,
+  lastNotificationAt: exactOptional(IsoTimestamp),
+  extensionUntil: exactOptional(IsoTimestamp),
+  updatedAt: IsoTimestamp,
 });
 
 const ProviderHealthSchema = Schema.Struct({
   provider: Schema.Literal("bright_data", "proxidize"),
   state: Schema.Literal("healthy", "degraded", "unhealthy"),
-  checkedAt: Schema.String,
+  checkedAt: IsoTimestamp,
   message: exactOptional(Schema.String),
 });
 
@@ -162,14 +171,14 @@ const ProviderInventorySnapshotSchema = Schema.Struct({
       egressIp: exactOptional(Schema.String),
     }),
   ),
-  capturedAt: Schema.String,
+  capturedAt: IsoTimestamp,
 });
 
 const CapabilityHealth = Schema.Struct({
   capability: Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic", "health_verification"),
   status: Schema.Literal("operational", "degraded", "unavailable"),
-  providerStatusAt: exactOptional(Schema.String),
-  endToEndValidatedAt: exactOptional(Schema.String),
+  providerStatusAt: exactOptional(IsoTimestamp),
+  endToEndValidatedAt: exactOptional(IsoTimestamp),
   message: exactOptional(Schema.String),
 });
 
@@ -177,13 +186,13 @@ const GeographyHealth = Schema.Struct({
   country: Schema.String,
   city: exactOptional(Schema.String),
   status: Schema.Literal("operational", "degraded", "unavailable"),
-  validatedAt: Schema.String,
+  validatedAt: IsoTimestamp,
   source: Schema.Literal("passive", "synthetic"),
 });
 
 const CapabilityHealthSnapshotSchema = Schema.Struct({
   id: Schema.String,
-  generatedAt: Schema.String,
+  generatedAt: IsoTimestamp,
   capabilities: mutableArray(CapabilityHealth),
   providers: mutableArray(ProviderHealthSchema),
   geographies: mutableArray(GeographyHealth),
@@ -197,7 +206,7 @@ const HealthAlertEventSchema = Schema.Struct({
   status: Schema.Literal("operational", "degraded", "unavailable"),
   previousStatus: exactOptional(Schema.Literal("degraded", "unavailable")),
   severity: Schema.Literal("critical", "warning", "info"),
-  createdAt: Schema.String,
+  createdAt: IsoTimestamp,
   snapshotId: Schema.String,
   configurationVersion: Schema.String,
   geographies: mutableArray(GeographyHealth),
@@ -206,21 +215,21 @@ const HealthAlertEventSchema = Schema.Struct({
 const HealthAlertStateSchema = Schema.Struct({
   capability: Schema.Literal("all_traffic", "authenticated_traffic", "unauthenticated_traffic", "health_verification"),
   observedStatus: Schema.Literal("operational", "degraded", "unavailable"),
-  observedSince: Schema.String,
+  observedSince: IsoTimestamp,
   alertedStatus: exactOptional(Schema.Literal("degraded", "unavailable")),
-  alertedAt: exactOptional(Schema.String),
-  updatedAt: Schema.String,
+  alertedAt: exactOptional(IsoTimestamp),
+  updatedAt: IsoTimestamp,
 });
 
 const HealthAlertDeliverySchema = Schema.Struct({
   alertId: Schema.String,
   destinationId: Schema.String,
   status: Schema.Literal("pending", "delivered", "failed"),
-  attemptCount: Schema.Number,
-  nextAttemptAt: Schema.String,
-  lastAttemptAt: exactOptional(Schema.String),
-  deliveredAt: exactOptional(Schema.String),
-  responseStatus: exactOptional(Schema.Number),
+  attemptCount: NonNegativeInteger,
+  nextAttemptAt: IsoTimestamp,
+  lastAttemptAt: exactOptional(IsoTimestamp),
+  deliveredAt: exactOptional(IsoTimestamp),
+  responseStatus: exactOptional(Schema.Number.pipe(Schema.int(), Schema.between(100, 599))),
   error: exactOptional(Schema.String),
   event: HealthAlertEventSchema,
 });
@@ -236,98 +245,98 @@ const UsageRecordSchema = Schema.Struct({
   provider: Schema.Literal("bright_data", "proxidize", "unresolved"),
   protocol: Schema.Literal("http", "https", "socks5"),
   outcome: Schema.Literal("success", "http_error", "retry", "failure"),
-  retryIndex: Schema.Number,
+  retryIndex: NonNegativeInteger,
   failover: Schema.Boolean,
-  bytesSent: Schema.Number,
-  bytesReceived: Schema.Number,
+  bytesSent: NonNegativeInteger,
+  bytesReceived: NonNegativeInteger,
   country: exactOptional(Schema.String),
   city: exactOptional(Schema.String),
   endpointId: exactOptional(Schema.String),
   proxySlotId: exactOptional(Schema.String),
   upstreamConnectionId: exactOptional(Schema.String),
-  connectionStartedAt: exactOptional(Schema.String),
-  connectionEndedAt: exactOptional(Schema.String),
-  selectedSlotLoad: exactOptional(Schema.Number),
+  connectionStartedAt: exactOptional(IsoTimestamp),
+  connectionEndedAt: exactOptional(IsoTimestamp),
+  selectedSlotLoad: exactOptional(NonNegativeInteger),
   capacityPressure: exactOptional(Schema.Boolean),
   capacityPressureProvider: exactOptional(Schema.Literal("bright_data", "proxidize")),
   capacityConstraint: exactOptional(Schema.Literal("slot_exhaustion", "geography", "carrier", "hard_limit", "capacity_circuit")),
-  establishmentWaitMs: exactOptional(Schema.Number),
+  establishmentWaitMs: exactOptional(NonNegativeNumber),
   capacityPolicyVersion: exactOptional(Schema.String),
   providerOverride: exactOptional(Schema.Literal("bright_data", "proxidize")),
   capacityCircuitState: exactOptional(Schema.Literal("closed", "open", "half_open")),
   capacityCircuitReason: exactOptional(Schema.Literal("provider_hard_limit", "capacity_failure", "establishment_failure", "timeout")),
-  capacityCircuitCooldownUntil: exactOptional(Schema.String),
+  capacityCircuitCooldownUntil: exactOptional(IsoTimestamp),
   routingPolicyVersion: exactOptional(Schema.String),
-  routingScore: exactOptional(Schema.Number),
+  routingScore: exactOptional(NonNegativeNumber),
   routingScoreComponents: exactOptional(
     Schema.Struct({
-      reliability: Schema.Number,
-      headroom: Schema.Number,
-      performance: Schema.Number,
-      costEfficiency: Schema.Number,
-      stability: Schema.Number,
+      reliability: NonNegativeNumber,
+      headroom: NonNegativeNumber,
+      performance: NonNegativeNumber,
+      costEfficiency: NonNegativeNumber,
+      stability: NonNegativeNumber,
     }),
   ),
   pricingVersion: exactOptional(Schema.String),
   pricingModel: exactOptional(Schema.Literal("per_gib", "per_device_month")),
-  priceUsd: exactOptional(Schema.Number),
+  priceUsd: exactOptional(NonNegativeNumber),
   capacityState: exactOptional(Schema.Literal("healthy_idle", "unhealthy")),
-  startedAt: Schema.String,
-  completedAt: Schema.String,
+  startedAt: IsoTimestamp,
+  completedAt: IsoTimestamp,
 });
 
 const UsageRollupSchema = Schema.Struct({
   id: Schema.String,
   interval: Schema.Literal("hour", "day", "week", "month"),
-  periodStartedAt: Schema.String,
-  periodEndsAt: Schema.String,
+  periodStartedAt: IsoTimestamp,
+  periodEndsAt: IsoTimestamp,
   group: Schema.Record({ key: Schema.String, value: Schema.String }),
-  requestCount: Schema.Number,
-  successCount: Schema.Number,
-  retryCount: Schema.Number,
-  failoverCount: Schema.Number,
-  bytesSent: Schema.Number,
-  bytesReceived: Schema.Number,
-  activeConnectionMs: Schema.Number,
-  provisionedSlotMs: Schema.Number,
-  healthyIdleSlotMs: Schema.Number,
-  unhealthySlotMs: Schema.Number,
-  slotOccupancy: Schema.Number,
-  currentSlotOccupancy: Schema.Number,
-  provisionedSlots: Schema.Number,
-  activeConnections: Schema.Number,
-  peakConcurrentConnections: Schema.Number,
-  p95ConcurrentConnections: Schema.Number,
-  concurrencyUtilization: Schema.Number,
-  throughputUtilization: Schema.Number,
-  prioritizedGbUsed: Schema.Number,
-  prioritizedGbForecast: Schema.Number,
-  capacityDrivenFallbackCount: Schema.Number,
-  capacityFailureCount: Schema.Number,
-  capacityWaitMs: Schema.Number,
+  requestCount: NonNegativeInteger,
+  successCount: NonNegativeInteger,
+  retryCount: NonNegativeInteger,
+  failoverCount: NonNegativeInteger,
+  bytesSent: NonNegativeInteger,
+  bytesReceived: NonNegativeInteger,
+  activeConnectionMs: NonNegativeNumber,
+  provisionedSlotMs: NonNegativeNumber,
+  healthyIdleSlotMs: NonNegativeNumber,
+  unhealthySlotMs: NonNegativeNumber,
+  slotOccupancy: NonNegativeNumber,
+  currentSlotOccupancy: NonNegativeNumber,
+  provisionedSlots: NonNegativeInteger,
+  activeConnections: NonNegativeInteger,
+  peakConcurrentConnections: NonNegativeInteger,
+  p95ConcurrentConnections: NonNegativeNumber,
+  concurrencyUtilization: NonNegativeNumber,
+  throughputUtilization: NonNegativeNumber,
+  prioritizedGbUsed: NonNegativeNumber,
+  prioritizedGbForecast: NonNegativeNumber,
+  capacityDrivenFallbackCount: NonNegativeInteger,
+  capacityFailureCount: NonNegativeInteger,
+  capacityWaitMs: NonNegativeNumber,
   capacityConstraint: exactOptional(Schema.Literal("slot_exhaustion", "geography", "carrier", "hard_limit", "capacity_circuit")),
   capacityPolicyVersion: Schema.String,
-  providerSpendUsd: Schema.Number,
-  attributedCostUsd: Schema.Number,
-  estimatedCostUsd: Schema.Number,
+  providerSpendUsd: NonNegativeNumber,
+  attributedCostUsd: NonNegativeNumber,
+  estimatedCostUsd: NonNegativeNumber,
   costStatus: Schema.Literal("estimated", "reconciled"),
   pricingVersions: mutableArray(Schema.String),
-  updatedAt: Schema.String,
+  updatedAt: IsoTimestamp,
 });
 
 const UsageReconciliationSchema = Schema.Struct({
   id: Schema.String,
   provider: Schema.Literal("bright_data", "proxidize"),
-  periodStartedAt: Schema.String,
-  periodEndsAt: Schema.String,
-  estimatedTotalUsd: Schema.Number,
-  reportedTotalUsd: Schema.Number,
+  periodStartedAt: IsoTimestamp,
+  periodEndsAt: IsoTimestamp,
+  estimatedTotalUsd: NonNegativeNumber,
+  reportedTotalUsd: NonNegativeNumber,
   varianceUsd: Schema.Number,
-  relativeVariance: Schema.Number,
+  relativeVariance: NonNegativeNumber,
   varianceAttribution: Schema.Literal("Unallocated"),
   severity: Schema.Literal("normal", "warning", "error"),
   sourceVersion: Schema.String,
-  createdAt: Schema.String,
+  createdAt: IsoTimestamp,
 });
 
 const UsageAlertEventSchema = Schema.Struct({
@@ -335,36 +344,44 @@ const UsageAlertEventSchema = Schema.Struct({
   kind: Schema.Literal("capacity_recommendation", "reconciliation_variance"),
   severity: Schema.Literal("warning", "error"),
   provider: Schema.Literal("bright_data", "proxidize"),
-  periodStartedAt: Schema.String,
-  periodEndsAt: Schema.String,
+  periodStartedAt: IsoTimestamp,
+  periodEndsAt: IsoTimestamp,
   relatedRecordId: Schema.String,
   capacityPolicyVersion: exactOptional(Schema.String),
   capacityConstraint: exactOptional(Schema.Literal("slot_exhaustion", "geography", "carrier", "hard_limit", "capacity_circuit")),
-  capacityDrivenFallbackCount: exactOptional(Schema.Number),
-  capacityFailureCount: exactOptional(Schema.Number),
-  capacityWaitMs: exactOptional(Schema.Number),
+  capacityDrivenFallbackCount: exactOptional(NonNegativeInteger),
+  capacityFailureCount: exactOptional(NonNegativeInteger),
+  capacityWaitMs: exactOptional(NonNegativeNumber),
   varianceUsd: exactOptional(Schema.Number),
-  relativeVariance: exactOptional(Schema.Number),
-  createdAt: Schema.String,
+  relativeVariance: exactOptional(NonNegativeNumber),
+  createdAt: IsoTimestamp,
 });
 
 const CapacityPressureEvidenceSchema = Schema.Struct({
   id: Schema.String,
   provider: Schema.Literal("bright_data", "proxidize"),
-  periodStartedAt: Schema.String,
-  periodEndsAt: Schema.String,
+  periodStartedAt: IsoTimestamp,
+  periodEndsAt: IsoTimestamp,
   relatedRollupId: Schema.String,
   capacityPolicyVersion: Schema.String,
   capacityConstraint: exactOptional(Schema.Literal("slot_exhaustion", "geography", "carrier", "hard_limit", "capacity_circuit")),
-  capacityDrivenFallbackCount: Schema.Number,
-  capacityFailureCount: Schema.Number,
-  capacityWaitMs: Schema.Number,
-  concurrencyUtilization: Schema.Number,
-  throughputUtilization: Schema.Number,
-  observedAt: Schema.String,
+  capacityDrivenFallbackCount: NonNegativeInteger,
+  capacityFailureCount: NonNegativeInteger,
+  capacityWaitMs: NonNegativeNumber,
+  concurrencyUtilization: NonNegativeNumber,
+  throughputUtilization: NonNegativeNumber,
+  observedAt: IsoTimestamp,
 });
 
-const decode = <A, I>(schema: Schema.Schema<A, I>, value: unknown): A => Schema.decodeUnknownSync(schema)(value);
+const decode = <A, I>(schema: Schema.Schema<A, I>, value: unknown): A =>
+  Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
+
+function requirePositivePeriod<A extends { periodStartedAt: string; periodEndsAt: string }>(value: A): A {
+  if (value.periodStartedAt >= value.periodEndsAt) {
+    throw new TypeError("Persisted accounting record must have a positive time range");
+  }
+  return value;
+}
 
 export const decodeStoredAccessGrantCredential = (value: unknown): StoredAccessGrantCredential =>
   decode(StoredAccessGrantCredentialSchema, value);
@@ -381,7 +398,9 @@ export const decodeHealthAlertEvent = (value: unknown): HealthAlertEvent => deco
 export const decodeHealthAlertState = (value: unknown): HealthAlertState => decode(HealthAlertStateSchema, value);
 export const decodeHealthAlertDelivery = (value: unknown): HealthAlertDelivery => decode(HealthAlertDeliverySchema, value);
 export const decodeUsageRecord = (value: unknown): UsageRecord => decode(UsageRecordSchema, value);
-export const decodeUsageRollup = (value: unknown): UsageRollup => decode(UsageRollupSchema, value);
-export const decodeUsageReconciliation = (value: unknown): UsageReconciliation => decode(UsageReconciliationSchema, value);
-export const decodeUsageAlertEvent = (value: unknown): UsageAlertEvent => decode(UsageAlertEventSchema, value);
-export const decodeCapacityPressureEvidence = (value: unknown): CapacityPressureEvidence => decode(CapacityPressureEvidenceSchema, value);
+export const decodeUsageRollup = (value: unknown): UsageRollup => requirePositivePeriod(decode(UsageRollupSchema, value));
+export const decodeUsageReconciliation = (value: unknown): UsageReconciliation =>
+  requirePositivePeriod(decode(UsageReconciliationSchema, value));
+export const decodeUsageAlertEvent = (value: unknown): UsageAlertEvent => requirePositivePeriod(decode(UsageAlertEventSchema, value));
+export const decodeCapacityPressureEvidence = (value: unknown): CapacityPressureEvidence =>
+  requirePositivePeriod(decode(CapacityPressureEvidenceSchema, value));

@@ -8,8 +8,14 @@ This guide covers local development, contracts, tests, migrations, and delivery 
 - pnpm 10.12.1
 - TypeScript 7 for authoritative compilation
 - the repository's isolated lint toolchain
-- Docker for image and SST work
-- AWS credentials only for deployed tests and infrastructure changes
+- AWS credentials for SST development, deployed tests, and infrastructure changes
+- Docker for container image builds and deployments
+
+The compiler/linter version split is intentional. `pnpm check` currently uses TypeScript 7.0.2 as the authoritative compiler, while `pnpm lint` uses the isolated TypeScript 6.0.3 and typescript-eslint 8.64.0 toolchain under `tools/lint`. TypeScript 7.0 does not expose the programmatic compiler API required by type-aware tools such as typescript-eslint, and [Microsoft recommends running TypeScript 6 alongside TypeScript 7 during this transition](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-60). TypeScript 6.0.3 is within [typescript-eslint's currently supported TypeScript range](https://typescript-eslint.io/users/dependency-versions/#typescript).
+
+This remains an outstanding toolchain gap pending TypeScript 7.1. Once TypeScript 7.1 provides its new API and typescript-eslint officially supports it, migrate the lint toolchain to the TypeScript 7 API and remove the isolated TypeScript 6 dependency. Until both conditions are met, do not point type-aware ESLint directly at TypeScript 7.
+
+The main compiler requires bracket access for properties supplied only by index signatures. The SST compiler boundary cannot currently enable that rule because SST transitively compiles generated `.sst/platform` TypeScript that does not satisfy it. `skipLibCheck` also remains enabled because current Effect and Vitest/Chai dependency declarations conflict under full declaration checking. Re-evaluate both exceptions when upgrading those dependencies; do not patch generated or third-party sources to satisfy repository policy.
 
 Install dependencies without starting a service:
 
@@ -22,20 +28,19 @@ The repository explicitly allows the required `esbuild` install script and ignor
 
 ## Start and build
 
-Start the combined local proxy/control process in mock mode:
+Start a personal SST development stage. SST provisions the supporting AWS resources and starts each application service locally with generated configuration:
 
 ```sh
-pnpm dev
+pnpm sst:dev --stage yourname-dev
 ```
 
 Build production JavaScript:
 
 ```sh
 pnpm build
-pnpm start
 ```
 
-`pnpm build` does not start a server. `pnpm start` runs the compiled `SERVICE_MODE` selected by the environment.
+`pnpm build` does not start a server. `dev:service` and the compiled `start` command are internal SST/container entry points; invoking them directly is unsupported.
 
 ## Source map
 
@@ -48,8 +53,9 @@ pnpm start
 | `src/route-service.ts`              | Route/grant lifecycle and candidate routing             |
 | `src/providers/`                    | Provider abstraction and Bright Data/Proxidize adapters |
 | `src/simulators/`                   | Offline provider contracts                              |
-| `src/store.ts`                      | SQLite schema and persistence contract                  |
-| `src/dynamo-store.ts`               | DynamoDB implementation                                 |
+| `src/store.ts`                      | Persistence interface and credential helpers            |
+| `src/dynamo-store.ts`               | Production DynamoDB implementation                      |
+| `tests/in-memory-route-store.ts`    | Test-only in-memory persistence adapter                 |
 | `src/health-aggregator.ts`          | Capability-health evaluation                            |
 | `src/public-canary.ts`              | Signed source/geography canary                          |
 | `src/status-app.ts`                 | Company-facing dashboard and status/usage APIs          |
@@ -177,7 +183,7 @@ pnpm test:aws
 
 The runner discovers non-secret component metadata from `/sst/profound-proxy-router/ci-manual/deployed-integration`. It verifies the deployed AWS topology, durable persistence and restart behavior, private services, telemetry, migration safety, and environment isolation. Public lifecycle behavior is covered independently by `pnpm test:e2e`.
 
-The disruptive flag forces a proxy ECS replacement to verify DynamoDB-backed credentials and route requirements. Omit it for a non-disruptive run. Set `DEPLOYED_EXPECTED_TELEMETRY_RETENTION_DAYS` only when intentionally testing a non-default Axiom policy.
+The disruptive flag forces a proxy ECS replacement to verify DynamoDB-backed credentials and route requirements. Omit it for a non-disruptive run. The suite verifies the fixed v0 30-day telemetry-retention expectation.
 
 Remove the stage when finished:
 
@@ -233,17 +239,7 @@ Pull requests declare the migration category through repository labels and templ
 
 ## Telemetry development
 
-No exporter is contacted unless configured. To send local OTLP/HTTP:
-
-```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
-OTEL_TRACES_EXPORTER=otlp \
-OTEL_METRICS_EXPORTER=otlp \
-OTEL_LOGS_EXPORTER=otlp \
-pnpm dev
-```
-
-Preserve the redaction contract. Never add bodies, raw headers, queries, cookies, authorization, access-grant tokens, control tokens, provider secrets, or unsanitized errors to logs/traces. Keep high-cardinality identities out of metric attributes.
+Personal SST stages use the reviewed development telemetry policy; application processes do not accept an independent local exporter configuration. Preserve the redaction contract. Never add bodies, raw headers, queries, cookies, authorization, access-grant tokens, control tokens, provider secrets, or unsanitized errors to logs/traces. Keep high-cardinality identities out of metric attributes.
 
 ## CI and release flow
 
@@ -263,7 +259,7 @@ The workflow files encode jobs, but branch protection, OIDC, environments, label
 - Put caller-facing protocol and lifecycle behavior in `USAGE.md`.
 - Put deployment, configuration, monitoring, and runbooks in `OPERATIONS.md`.
 - Put contribution, contracts, and test workflow here.
-- Keep `.env.example` complete and comment every non-obvious variable.
+- Update `CONFIGURATION.md` when an SST secret, deployment input, internal runtime value, or test input changes.
 - Keep examples runnable against loopback or a reachable public endpoint. Label reserved example domains/CIDRs as syntax placeholders.
 - Link to the OpenAPI artifact rather than duplicating machine schemas.
 - Run `pnpm format:check` and a link/path check after editing documentation.

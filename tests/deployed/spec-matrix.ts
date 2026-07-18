@@ -159,7 +159,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
     section: 4,
     requirement: "User identity comes from trusted control-plane claims",
     deployed: ["deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles"],
-    offline: ["access-grant credentials and route requirements survive a service restart"],
+    offline: ["access-grant credentials and route requirements are reloaded when the application restarts"],
   },
   {
     id: "4.auth-city",
@@ -292,7 +292,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
       "Every new upstream connection atomically increments durable liveness-backed load for its scored compatible healthy Proxidize slot; soft-saturated slots remain overflow without binding a grant, while cross-class effects follow the asymmetric authenticated and unauthenticated policy",
     deployed: [],
     offline: [
-      "active proxy-slot loads are shared across callers, durable, and released with each connection",
+      "active proxy-slot loads are shared across store adapters and released with each connection",
       "concurrent proxy-slot claims atomically include earlier claims in candidate load",
       "concurrent mobile connections persist distinct atomic load claims for scored compatible slots",
       "mobile grants share scored proxy-slot capacity and credential rotation creates no affinity",

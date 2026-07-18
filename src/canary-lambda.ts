@@ -1,29 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { LocalGeoIpResolver } from "./geoip.js";
+import { decodeBufferedLogLine, decodeCanaryGatewayEvent, type BufferedLog, type CanaryGatewayEvent } from "./lambda-decoding.js";
 import { createLogger, type Logger } from "./logger.js";
 import { PublicCanary } from "./public-canary.js";
-
-interface ApiGatewayV2Event {
-  rawPath?: string;
-  body?: string | null;
-  isBase64Encoded?: boolean;
-  headers?: Record<string, string | undefined>;
-  requestContext?: { http?: { method?: string; path?: string; sourceIp?: string } };
-}
 
 interface ApiGatewayV2Result {
   statusCode: number;
   headers: Record<string, string>;
   body: string;
   isBase64Encoded: false;
-}
-
-interface BufferedLog {
-  level: string;
-  time: string;
-  message: string;
-  context?: Record<string, unknown>;
 }
 
 const bufferedLines: string[] = [];
@@ -52,16 +38,16 @@ function integer(value: string | undefined, fallback: number, name: string): num
 const runtime = (async () => {
   const geoIp = new LocalGeoIpResolver(
     {
-      databasePath: resolve(process.env.GEOIP_DATABASE_PATH ?? "./data/GeoLite2-City.mmdb"),
-      maximumAccuracyRadiusKm: integer(process.env.GEOIP_MAX_ACCURACY_RADIUS_KM, 100, "GEOIP_MAX_ACCURACY_RADIUS_KM"),
+      databasePath: resolve(process.env["GEOIP_DATABASE_PATH"] ?? "./data/GeoLite2-City.mmdb"),
+      maximumAccuracyRadiusKm: integer(process.env["GEOIP_MAX_ACCURACY_RADIUS_KM"], 100, "GEOIP_MAX_ACCURACY_RADIUS_KM"),
     },
     securityLogger,
   );
   await geoIp.load();
   return new PublicCanary(
     {
-      signingSecret: required(process.env.CANARY_SIGNING_SECRET, "CANARY_SIGNING_SECRET"),
-      requestsPerMinute: integer(process.env.CANARY_REQUESTS_PER_MINUTE, 60, "CANARY_REQUESTS_PER_MINUTE"),
+      signingSecret: required(process.env["CANARY_SIGNING_SECRET"], "CANARY_SIGNING_SECRET"),
+      requestsPerMinute: integer(process.env["CANARY_REQUESTS_PER_MINUTE"], 60, "CANARY_REQUESTS_PER_MINUTE"),
     },
     securityLogger,
     geoIp,
@@ -85,7 +71,7 @@ function unixNano(value: number | string): string {
 }
 
 async function postOtlp(path: "/v1/logs" | "/v1/traces" | "/v1/metrics", payload: unknown): Promise<void> {
-  const endpoint = required(process.env.OTEL_EXPORTER_OTLP_ENDPOINT, "OTEL_EXPORTER_OTLP_ENDPOINT");
+  const endpoint = required(process.env["OTEL_EXPORTER_OTLP_ENDPOINT"], "OTEL_EXPORTER_OTLP_ENDPOINT");
   const response = await fetch(new URL(path, endpoint), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -101,22 +87,19 @@ async function exportInvocationTelemetry(
   statusCode: number,
   lines: readonly string[],
 ): Promise<void> {
-  const serviceName = process.env.OTEL_SERVICE_NAME ?? "profound-proxy-canary";
+  const serviceName = process.env["OTEL_SERVICE_NAME"] ?? "profound-proxy-canary";
   const resource = {
     attributes: attributes({
       "service.name": serviceName,
       "service.version": "0.3.0",
-      "deployment.environment.name": process.env.DEPLOYMENT_ENVIRONMENT ?? "unknown",
+      "deployment.environment.name": process.env["DEPLOYMENT_ENVIRONMENT"] ?? "unknown",
       "cloud.provider": "aws",
       "cloud.platform": "aws_lambda",
     }),
   };
   const parsedLogs = lines.flatMap((line): BufferedLog[] => {
-    try {
-      return [JSON.parse(line) as BufferedLog];
-    } catch {
-      return [];
-    }
+    const decoded = decodeBufferedLogLine(line);
+    return decoded === undefined ? [] : [decoded];
   });
   const traceId = randomBytes(16).toString("hex");
   const spanId = randomBytes(8).toString("hex");
@@ -213,9 +196,20 @@ async function exportInvocationTelemetry(
   }
 }
 
-export async function handler(event: ApiGatewayV2Event): Promise<ApiGatewayV2Result> {
+export async function handler(input: unknown): Promise<ApiGatewayV2Result> {
   bufferedLines.length = 0;
   const startedAt = Date.now();
+  let event: CanaryGatewayEvent;
+  try {
+    event = decodeCanaryGatewayEvent(input);
+  } catch {
+    return {
+      statusCode: 400,
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
+      body: JSON.stringify({ error: "invalid_gateway_event" }),
+      isBase64Encoded: false,
+    };
+  }
   const canary = await runtime;
   const bodyText = event.body ?? "";
   const body = event.isBase64Encoded ? Buffer.from(bodyText, "base64") : Buffer.from(bodyText, "utf8");

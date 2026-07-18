@@ -8,7 +8,7 @@ import { expectBufferChunk } from "../../src/decoding.js";
 import { basicAuth } from "../../src/net-utils.js";
 import type { PublicAccessGrant, PublicAccessGrantCredential, PublicRoute, RouteProfileInput } from "../../src/types.js";
 
-export const e2eTestsEnabled = process.env.RUN_PROXY_E2E_TESTS === "1";
+export const e2eTestsEnabled = process.env["RUN_PROXY_E2E_TESTS"] === "1";
 
 export interface IssuedAccessGrantResponse {
   grant: PublicAccessGrant;

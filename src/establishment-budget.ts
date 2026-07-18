@@ -40,6 +40,6 @@ export function beginAttemptBudget(overallDeadline: number, attemptTimeoutMs: nu
   };
 }
 
-export function abortReason(signal: AbortSignal): unknown {
+export function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new ProviderUnavailableError("Candidate establishment was cancelled");
 }

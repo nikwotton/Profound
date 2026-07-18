@@ -8,6 +8,12 @@ export interface DestinationResponsePlan {
   connection: DestinationConnectionBehavior;
 }
 
+const CONNECTION_BEHAVIORS = ["respond", "close", "reset", "timeout"] as const satisfies readonly DestinationConnectionBehavior[];
+
+function isConnectionBehavior(value: string): value is DestinationConnectionBehavior {
+  return CONNECTION_BEHAVIORS.some((candidate) => candidate === value);
+}
+
 const FORBIDDEN_RESPONSE_HEADERS = new Set([
   "connection",
   "content-length",
@@ -27,9 +33,7 @@ export function destinationResponsePlan(url: URL): DestinationResponsePlan {
   const delayMs = Number(url.searchParams.get("delayMs") ?? "0");
   if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 5_000) throw new Error("invalid_delay");
   const connection = url.searchParams.get("connection") ?? "respond";
-  if (!(["respond", "close", "reset", "timeout"] as const).includes(connection as DestinationConnectionBehavior)) {
-    throw new Error("invalid_connection_behavior");
-  }
+  if (!isConnectionBehavior(connection)) throw new Error("invalid_connection_behavior");
   const headers: Record<string, string> = {};
   for (const value of url.searchParams.getAll("responseHeader")) {
     const separator = value.indexOf(":");
@@ -47,7 +51,7 @@ export function destinationResponsePlan(url: URL): DestinationResponsePlan {
     headers,
     ...(body === null ? {} : { body }),
     delayMs,
-    connection: connection as DestinationConnectionBehavior,
+    connection,
   };
 }
 

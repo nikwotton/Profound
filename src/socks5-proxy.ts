@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { createServer, type Socket } from "node:net";
 import { Transform } from "node:stream";
 import { assignmentAttributes, assignmentLogContext } from "./assignment-evidence.js";
+import { expectBufferChunk } from "./decoding.js";
 import { assertSafeProviderResolution, recordDestinationResolution } from "./destination-resolution.js";
 import { beginAttemptBudget, operationDeadline } from "./establishment-budget.js";
 import {
@@ -57,8 +58,9 @@ class HandshakeReader {
     const chunks: Buffer[] = [];
     let remaining = length;
     while (remaining > 0) {
-      const chunk = this.socket.read(remaining) as Buffer | null;
-      if (chunk !== null) {
+      const rawChunk: unknown = this.socket.read(remaining);
+      if (rawChunk !== null) {
+        const chunk = expectBufferChunk(rawChunk, "SOCKS5 handshake chunk");
         chunks.push(chunk);
         remaining -= chunk.length;
         continue;

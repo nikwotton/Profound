@@ -6,6 +6,26 @@
 
 declare module "sst" {
   export interface Resource {
+    "AxiomIngestToken": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "CanarySigningSecret": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ControlApiToken": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "HealthAggregatorToken": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "PublicCanary": {
+      "type": "sst.aws.ApiGatewayV2"
+      "url": string
+    }
   }
 }
 

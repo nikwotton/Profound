@@ -23,11 +23,11 @@ export interface PassiveAttemptContext {
 
 export function isTelemetryExportConfigured(environment: NodeJS.ProcessEnv): boolean {
   return (
-    environment.OTEL_SDK_DISABLED !== "true" &&
-    (environment.OTEL_EXPORTER_OTLP_ENDPOINT !== undefined ||
-      environment.OTEL_TRACES_EXPORTER !== undefined ||
-      environment.OTEL_METRICS_EXPORTER !== undefined ||
-      environment.OTEL_LOGS_EXPORTER !== undefined)
+    environment["OTEL_SDK_DISABLED"] !== "true" &&
+    (environment["OTEL_EXPORTER_OTLP_ENDPOINT"] !== undefined ||
+      environment["OTEL_TRACES_EXPORTER"] !== undefined ||
+      environment["OTEL_METRICS_EXPORTER"] !== undefined ||
+      environment["OTEL_LOGS_EXPORTER"] !== undefined)
   );
 }
 
@@ -119,9 +119,9 @@ export class Telemetry {
     }
     span.end();
     const metricAttributes: Attributes = {
-      plane: attributes.plane ?? "unknown",
-      protocol: attributes.protocol ?? "unknown",
-      outcome: attributes.outcome ?? (error === undefined ? "success" : "failure"),
+      plane: attributes["plane"] ?? "unknown",
+      protocol: attributes["protocol"] ?? "unknown",
+      outcome: attributes["outcome"] ?? (error === undefined ? "success" : "failure"),
     };
     this.#requests.add(1, metricAttributes);
     this.#duration.record(Date.now() - startedAt, metricAttributes);
@@ -138,15 +138,15 @@ export class Telemetry {
     }
     span.end();
     const metricAttributes: Attributes = {
-      provider: attributes.provider ?? "unknown",
-      protocol: attributes.protocol ?? "unknown",
-      outcome: attributes.outcome ?? (error === undefined ? "success" : "failure"),
+      provider: attributes["provider"] ?? "unknown",
+      protocol: attributes["protocol"] ?? "unknown",
+      outcome: attributes["outcome"] ?? (error === undefined ? "success" : "failure"),
     };
     this.#attempts.add(1, metricAttributes);
     this.#attemptDuration.record(Date.now() - startedAt, metricAttributes);
-    const provider = attributes.provider;
+    const provider = attributes["provider"];
     if ((provider === "bright_data" || provider === "proxidize") && passive !== undefined) {
-      const attemptOutcome = attributes.outcome;
+      const attemptOutcome = attributes["outcome"];
       this.recordPassiveHealthSignal({
         provider,
         capability: passive.isAuthenticated ? "authenticated_traffic" : "unauthenticated_traffic",

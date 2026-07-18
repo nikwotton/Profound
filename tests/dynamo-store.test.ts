@@ -17,7 +17,7 @@ interface CapturedCommand {
   input: Record<string, unknown>;
 }
 
-test("DynamoDB persistence hashes credentials and stores provider inventory without caller-facing secrets", async () => {
+test("DynamoDB persistence survives store replacement and excludes caller-facing secrets", async () => {
   const commands: CapturedCommand[] = [];
   let routeItem: Record<string, unknown> | undefined;
   let accessGrantItem: Record<string, unknown> | undefined;
@@ -30,16 +30,16 @@ test("DynamoDB persistence hashes credentials and stores provider inventory with
       const command = raw as CapturedCommand;
       commands.push(command);
       if (command.constructor.name === "PutCommand") {
-        const item = command.input.Item as Record<string, unknown>;
-        if (item.entity === "route") routeItem = item;
-        if (item.entity === "access_grant") accessGrantItem = item;
-        if (item.entity === "health") healthItem = item;
-        if (item.entity === "provider_inventory") inventoryItem = item;
-        if (item.entity === "capability_health") capabilityItems.unshift(item);
+        const item = command.input["Item"] as Record<string, unknown>;
+        if (item["entity"] === "route") routeItem = item;
+        if (item["entity"] === "access_grant") accessGrantItem = item;
+        if (item["entity"] === "health") healthItem = item;
+        if (item["entity"] === "provider_inventory") inventoryItem = item;
+        if (item["entity"] === "capability_health") capabilityItems.unshift(item);
         return {};
       }
       if (command.constructor.name === "GetCommand") {
-        const key = command.input.Key as { pk?: string };
+        const key = command.input["Key"] as { pk?: string };
         const item = key.pk?.startsWith("ACCESS_GRANT#")
           ? accessGrantItem
           : key.pk?.startsWith("PROVIDER_INVENTORY#")
@@ -48,9 +48,9 @@ test("DynamoDB persistence hashes credentials and stores provider inventory with
         return item === undefined ? {} : { Item: item };
       }
       if (command.constructor.name === "QueryCommand") {
-        const values = command.input.ExpressionAttributeValues as Record<string, unknown>;
+        const values = command.input["ExpressionAttributeValues"] as Record<string, unknown>;
         if (values[":pk"] === "CAPABILITY_HEALTH#GLOBAL") {
-          const limit = Number(command.input.Limit ?? capabilityItems.length);
+          const limit = Number(command.input["Limit"] ?? capabilityItems.length);
           return { Items: capabilityItems.slice(0, limit) };
         }
         return values[":entity"] === "health"
@@ -94,6 +94,9 @@ test("DynamoDB persistence hashes credentials and stores provider inventory with
     (await store.list()).map((route) => route.id),
     ["route-1"],
   );
+  const replacement = new DynamoRouteStore("route-state", client);
+  assert.equal((await replacement.get("route-1")).customerId, "customer-a");
+  assert.equal((await replacement.authenticateAccessGrant("pxy_credential-1", token))?.id, "grant-1");
 
   const health: ProviderHealth = {
     provider: "proxidize",
@@ -132,9 +135,9 @@ test("DynamoDB persistence hashes credentials and stores provider inventory with
   assert.deepEqual(await store.capabilityHealthHistory(10), [snapshot]);
   await store.revoke("route-1");
   const revoke = commands.find(
-    (command) => command.constructor.name === "UpdateCommand" && String(command.input.UpdateExpression).includes("REMOVE gsi1pk"),
+    (command) => command.constructor.name === "UpdateCommand" && String(command.input["UpdateExpression"]).includes("REMOVE gsi1pk"),
   );
-  assert.match(String(revoke?.input.UpdateExpression), /REMOVE gsi1pk, gsi1sk/);
+  assert.match(String(revoke?.input["UpdateExpression"]), /REMOVE gsi1pk, gsi1sk/);
   await store.close();
   assert.equal(destroyed, true);
 });
@@ -145,9 +148,9 @@ test("DynamoDB persists alert episodes and delivery state", async () => {
     send: async (raw: unknown): Promise<Record<string, unknown>> => {
       const command = raw as CapturedCommand;
       if (command.constructor.name === "PutCommand") {
-        const item = command.input.Item as Record<string, unknown>;
-        const key = `${String(item.pk)}|${String(item.sk)}`;
-        if (command.input.ConditionExpression !== undefined && items.has(key)) {
+        const item = command.input["Item"] as Record<string, unknown>;
+        const key = `${String(item["pk"])}|${String(item["sk"])}`;
+        if (command.input["ConditionExpression"] !== undefined && items.has(key)) {
           const error = new Error("duplicate");
           error.name = "ConditionalCheckFailedException";
           throw error;
@@ -156,20 +159,20 @@ test("DynamoDB persists alert episodes and delivery state", async () => {
         return {};
       }
       if (command.constructor.name === "GetCommand") {
-        const key = command.input.Key as Record<string, unknown>;
-        return { Item: items.get(`${String(key.pk)}|${String(key.sk)}`) };
+        const key = command.input["Key"] as Record<string, unknown>;
+        return { Item: items.get(`${String(key["pk"])}|${String(key["sk"])}`) };
       }
       if (command.constructor.name === "QueryCommand") {
-        const values = command.input.ExpressionAttributeValues as Record<string, unknown>;
+        const values = command.input["ExpressionAttributeValues"] as Record<string, unknown>;
         const entity = values[":entity"];
         const dueBefore = values[":dueBefore"];
         if (dueBefore !== undefined && typeof dueBefore !== "string") throw new TypeError(":dueBefore must be a string");
         const matched = [...items.values()]
-          .filter((item) => entity === undefined || item.entity === entity)
-          .filter((item) => dueBefore === undefined || String(item.createdAt) <= dueBefore)
-          .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
-        if (command.input.ScanIndexForward === false) matched.reverse();
-        return { Items: matched.slice(0, Number(command.input.Limit ?? matched.length)) };
+          .filter((item) => entity === undefined || item["entity"] === entity)
+          .filter((item) => dueBefore === undefined || String(item["createdAt"]) <= dueBefore)
+          .sort((left, right) => String(left["createdAt"]).localeCompare(String(right["createdAt"])));
+        if (command.input["ScanIndexForward"] === false) matched.reverse();
+        return { Items: matched.slice(0, Number(command.input["Limit"] ?? matched.length)) };
       }
       return {};
     },

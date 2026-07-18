@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { basicAuth } from "../src/net-utils.js";
 import { expectBufferChunk, expectRecord, parseJson } from "../src/decoding.js";
 import { CAPACITY_POLICY } from "../src/capacity-policy.js";
-import { SqliteRouteStore } from "../src/store.js";
+import { InMemoryRouteStore } from "./in-memory-route-store.js";
 import {
   controlRequest,
   createRoute,
@@ -74,7 +74,7 @@ test("unauthenticated profiles use fresh residential exits per request", async (
   const first = await requestViaProxy(rotating.proxyUrls.http, target.url);
   const second = await requestViaProxy(rotating.proxyUrls.http, target.url);
   assert.equal(first.status, 200);
-  assert.equal(expectRecord(parseJson(first.body, "target response"), "target response").body, "target-response");
+  assert.equal(expectRecord(parseJson(first.body, "target response"), "target response")["body"], "target-response");
   assert.notEqual(first.headers["x-mock-exit-ip"], second.headers["x-mock-exit-ip"]);
 });
 
@@ -97,10 +97,10 @@ test("plain HTTP preserves method, path, headers, and buffered body", async (t) 
   });
   assert.equal(response.status, 200);
   const received = JSON.parse(response.body) as Record<string, string>;
-  assert.equal(received.method, "POST");
-  assert.equal(received.path, "/resource?secret=query-value");
-  assert.equal(received.authorization, "Bearer target-token");
-  assert.equal(received.requestBody, "streamed-request-body");
+  assert.equal(received["method"], "POST");
+  assert.equal(received["path"], "/resource?secret=query-value");
+  assert.equal(received["authorization"], "Bearer target-token");
+  assert.equal(received["requestBody"], "streamed-request-body");
 });
 
 test("plain HTTP buffers complete requests and rejects oversized bodies before forwarding", async (t) => {
@@ -129,11 +129,11 @@ test("plain HTTP buffers complete requests and rejects oversized bodies before f
     body: "0123456789abcdefg",
   });
   assert.equal(declaredOversize.status, 413);
-  assert.equal(expectRecord(parseJson(declaredOversize.body, "proxy error"), "proxy error").code, "request_too_large");
+  assert.equal(expectRecord(parseJson(declaredOversize.body, "proxy error"), "proxy error")["code"], "request_too_large");
 
   const chunkedOversize = await requestViaProxyChunks(route.proxyUrls.http, target.url, ["0123456789abcdef", "g"]);
   assert.equal(chunkedOversize.status, 413);
-  assert.equal(expectRecord(parseJson(chunkedOversize.body, "proxy error"), "proxy error").code, "request_too_large");
+  assert.equal(expectRecord(parseJson(chunkedOversize.body, "proxy error"), "proxy error")["code"], "request_too_large");
   assert.equal(forwardedRequests, 1);
 });
 
@@ -150,7 +150,7 @@ test("plain HTTP buffers complete responses and rejects oversized bodies before 
 
   const response = await requestViaProxy(route.proxyUrls.http, target.url);
   assert.equal(response.status, 502);
-  assert.equal(expectRecord(parseJson(response.body, "proxy error"), "proxy error").code, "response_too_large");
+  assert.equal(expectRecord(parseJson(response.body, "proxy error"), "proxy error")["code"], "response_too_large");
   assert.equal(response.headers["content-type"], "application/problem+json");
 });
 
@@ -186,7 +186,7 @@ test("HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage recor
   assert.equal((await exchangeViaHttpConnect(route.proxyUrls.http, `127.0.0.1:${echoTarget.port}`, "connect-bytes")).body, "connect-bytes");
   assert.equal((await exchangeViaSocks5(route.proxyUrls.socks5, "127.0.0.1", echoTarget.port, "socks-bytes")).body, "socks-bytes");
 
-  const store = new SqliteRouteStore(testApp.databasePath);
+  const store = new InMemoryRouteStore(testApp.storeState);
   try {
     let records = await store.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
     const deadline = Date.now() + 2_000;
@@ -255,16 +255,16 @@ test("provider-side DNS remains authoritative while local and provider observati
     ({ message }) => message === "Destination resolution observed" || message === "Destination resolution requires operator review",
   );
   assert.ok(observations.length >= 3);
-  assert.deepEqual(new Set(observations.map(({ context }) => context?.dataPlaneProtocol)), new Set(["http", "https", "socks5"]));
+  assert.deepEqual(new Set(observations.map(({ context }) => context?.["dataPlaneProtocol"])), new Set(["http", "https", "socks5"]));
   for (const { context } of observations) {
-    assert.equal(context?.localResolutionStatus, "available");
-    assert.deepEqual(context?.localResolvedAddresses, ["93.184.216.34"]);
-    assert.equal(context?.providerResolutionStatus, "available");
-    assert.equal(context?.resolutionDivergence, "different");
-    assert.equal(context?.resolutionVerificationAvailability, "available");
-    assert.equal(context?.resolutionGeographyVerification, "match");
-    assert.equal(context?.providerResolverCountry, "US");
-    assert.ok(Array.isArray(context?.providerResolvedAddresses));
+    assert.equal(context?.["localResolutionStatus"], "available");
+    assert.deepEqual(context?.["localResolvedAddresses"], ["93.184.216.34"]);
+    assert.equal(context?.["providerResolutionStatus"], "available");
+    assert.equal(context?.["resolutionDivergence"], "different");
+    assert.equal(context?.["resolutionVerificationAvailability"], "available");
+    assert.equal(context?.["resolutionGeographyVerification"], "match");
+    assert.equal(context?.["providerResolverCountry"], "US");
+    assert.ok(Array.isArray(context?.["providerResolvedAddresses"]));
   }
 });
 
@@ -368,7 +368,7 @@ test("soft-saturated preferred slots remain ahead of the fallback provider class
   t.after(async () => {
     await Promise.all([target.stop(), testApp.stop()]);
   });
-  const store = new SqliteRouteStore(testApp.databasePath);
+  const store = new InMemoryRouteStore(testApp.storeState);
   try {
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 120_000).toISOString();
@@ -405,7 +405,7 @@ test("unauthenticated residential soft saturation promotes an eligible device-ba
     await Promise.all([target.stop(), testApp.stop()]);
   });
   const completedAt = new Date(Date.now() - 1_000).toISOString();
-  const store = new SqliteRouteStore(testApp.databasePath);
+  const store = new InMemoryRouteStore(testApp.storeState);
   try {
     await store.recordUsage({
       kind: "attempt",
@@ -441,7 +441,7 @@ test("unauthenticated residential soft saturation promotes an eligible device-ba
   assert.equal(response.status, 200);
   assert.equal(response.headers["x-mock-endpoint-id"], "px-us-ny-1");
 
-  const usageStore = new SqliteRouteStore(testApp.databasePath);
+  const usageStore = new InMemoryRouteStore(testApp.storeState);
   try {
     let records = await usageStore.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
     const deadline = Date.now() + 2_000;
@@ -475,7 +475,7 @@ test("a provider-reported hard capacity limit opens the shared circuit immediate
   testApp.application.simulators?.brightData.setFailure("capacity");
   assert.equal((await exchangeViaHttpConnect(route.proxyUrls.http, echo.url, "")).status, 502);
 
-  const store = new SqliteRouteStore(testApp.databasePath);
+  const store = new InMemoryRouteStore(testApp.storeState);
   try {
     const circuit = await store.getCapacityCircuit("bright_data", "bright_data");
     assert.equal(circuit?.status, "open");
@@ -596,7 +596,7 @@ test("concurrent mobile connections persist distinct atomic load claims for scor
   const firstTunnel = await openTunnel(firstRoute.proxyUrls.http);
   const secondTunnel = await openTunnel(secondRoute.proxyUrls.http);
   assert.equal(testApp.application.simulators?.proxidize.lastIdentity()?.city, "New York");
-  const store = new SqliteRouteStore(testApp.databasePath);
+  const store = new InMemoryRouteStore(testApp.storeState);
   try {
     const active = await store.listAllActiveTunnels();
     assert.equal(active.length, 2);
@@ -712,7 +712,7 @@ test("mobile grants share scored proxy-slot capacity and credential rotation cre
   assert.equal(list.status, 200);
   const listed = (await list.json()) as { data: Array<Record<string, unknown>> };
   assert.equal(listed.data.length, 3);
-  assert.equal(listed.data.filter((grant) => grant.status === "revoked").length, 0);
+  assert.equal(listed.data.filter((grant) => grant["status"] === "revoked").length, 0);
   const listedText = JSON.stringify(listed);
   assert.doesNotMatch(listedText, /proxyUrl|proxyPassword|tokenHash|tokenSalt/i);
   assert.match(listedText, /lastUsedAt|renewalDueAt|expiresAt/);
@@ -910,10 +910,10 @@ test("control API rejects unauthorized and malformed route requests", async (t) 
   });
   assert.equal(invalid.status, 400);
   const invalidBody = (await invalid.json()) as Record<string, unknown>;
-  assert.equal(typeof invalidBody.code, "string");
-  assert.equal(typeof invalidBody.message, "string");
-  assert.equal(typeof invalidBody.retryable, "boolean");
-  assert.equal(typeof invalidBody.requestId, "string");
+  assert.equal(typeof invalidBody["code"], "string");
+  assert.equal(typeof invalidBody["message"], "string");
+  assert.equal(typeof invalidBody["retryable"], "boolean");
+  assert.equal(typeof invalidBody["requestId"], "string");
   assert.doesNotMatch(JSON.stringify(invalidBody), /bright|proxidize|provider|candidate/i);
 
   const openApi = await controlRequest(testApp.application, "/openapi.json", {}, false);

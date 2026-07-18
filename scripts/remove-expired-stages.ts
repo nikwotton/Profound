@@ -23,15 +23,15 @@ for (const [index, value] of expectArray(
   "expired-stage parameter response",
 ).entries()) {
   const parameter = expectRecord(value, `expired-stage parameter ${index}`);
-  const rawValue = expectString(parameter.Value, `expired-stage parameter ${index}.Value`);
+  const rawValue = expectString(parameter["Value"], `expired-stage parameter ${index}.Value`);
   let metadata: Record<string, unknown>;
   try {
     metadata = expectRecord(parseJson(rawValue, `expired-stage parameter ${index}.Value`), `expired-stage parameter ${index}.Value`);
   } catch {
     continue;
   }
-  const stage = expectOptionalString(metadata.stage, `expired-stage parameter ${index}.stage`);
-  const expiresAtValue = expectOptionalString(metadata.expiresAt, `expired-stage parameter ${index}.expiresAt`);
+  const stage = expectOptionalString(metadata["stage"], `expired-stage parameter ${index}.stage`);
+  const expiresAtValue = expectOptionalString(metadata["expiresAt"], `expired-stage parameter ${index}.expiresAt`);
   if (stage === undefined || !stage.startsWith("ci-pr-")) continue;
   const expiresAt = Date.parse(expiresAtValue ?? "");
   if (!Number.isFinite(expiresAt) || expiresAt > now) continue;
