@@ -36,6 +36,7 @@ test("repository delivery policy encodes required CI, review, dependency, migrat
 test("AWS delivery workflows build once, promote unchanged, serialize releases, and clean ephemeral stages", () => {
   const release = file(".github/workflows/release.yml");
   const ephemeral = file(".github/workflows/aws-pr.yml");
+  const janitor = file(".github/workflows/ephemeral-janitor.yml");
   assert.match(release, /cancel-in-progress: false/);
   assert.match(release, /Build candidate once/);
   assert.ok((release.match(/RELEASE_IMAGE_URI: \$\{\{ steps\.image\.outputs\.uri \}\}/g) ?? []).length >= 2);
@@ -49,7 +50,8 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
   assert.match(ephemeral, /ROUTE_TABLE_NAME=/);
   assert.match(ephemeral, /Rollback rehearsal/);
   assert.match(ephemeral, /if: always\(\)/);
-  assert.match(file(".github/workflows/ephemeral-janitor.yml"), /remove-expired-stages/);
+  assert.match(janitor, /remove-expired-stages/);
+  assert.match(janitor, /vars\.AWS_REGION != '' && vars\.AWS_DEPLOY_ROLE_ARN != ''/);
 });
 
 test("gateway releases persist active tunnels and enforce the staged drain escalation policy", () => {
