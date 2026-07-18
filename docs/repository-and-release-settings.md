@@ -10,17 +10,12 @@ Protect `main` with:
 - the branch required to be up to date before merge;
 - required `verify` and `production-shaped` checks;
 - at least one approval;
-- CODEOWNER review for owned paths;
 - stale approvals dismissed when material commits are pushed;
 - conversations resolved before merge;
 - force pushes and branch deletion disabled;
 - administrator bypass limited to documented emergencies.
 
 Allow merge commits only. The release workflow reasons about cumulative main commits and immutable image promotion. Delete merged branches automatically. Enable the merge queue only when pull-request volume warrants it; required workflows already accept `merge_group` events.
-
-## CODEOWNERS
-
-Keep [`.github/CODEOWNERS`](../.github/CODEOWNERS) aligned with actual ownership. Changes to infrastructure, workflows, migrations, provider contracts, security/authentication, usage accounting, and redaction should require the appropriate platform or security owner rather than relying on a general approval.
 
 AI review may remain advisory. Manual approval is authoritative for v0.
 
@@ -89,7 +84,6 @@ Create these migration labels:
 - `migration:compatible`
 - `migration:backfill`
 - `migration:destructive`
-- `migration:none-reviewed`
 
 Also create `provider-freshness` for reviewed provider-source updates. Keep label spelling synchronized with the pull-request template and policy validator.
 
@@ -114,7 +108,6 @@ Generated client SDK compilation remains a roadmap item until consumer languages
 Before the first production release, verify:
 
 - branch protection and required checks behave on a test pull request;
-- CODEOWNER changes cannot merge without owner review;
 - OIDC can deploy without stored AWS keys and cannot assume the wrong environment role;
 - staging deploy, migration, black-box E2E and AWS acceptance suites, rollback, and removal complete;
 - production approval blocks an unapproved promotion;

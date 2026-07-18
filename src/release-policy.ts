@@ -24,11 +24,6 @@ export function validateMigrationDeclaration(labels: readonly string[], files: r
   if (declarations.length !== 1) {
     errors.push(`Exactly one migration declaration is required: ${MIGRATION_LABELS.join(", ")}`);
   }
-  if (declarations[0] === "migration:none" && sensitiveFiles.length > 0 && !labels.includes("migration:none-reviewed")) {
-    errors.push(
-      `migration:none touches migration-sensitive paths and requires CODEOWNER confirmation via migration:none-reviewed: ${sensitiveFiles.join(", ")}`,
-    );
-  }
   return {
     ...(declarations[0] === undefined ? {} : { declaration: declarations[0] }),
     errors,

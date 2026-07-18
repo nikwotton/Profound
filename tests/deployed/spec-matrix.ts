@@ -677,7 +677,7 @@ export const SPEC_COVERAGE: readonly SpecCoverage[] = [
       "State evolves through backward-compatible expand-migrate-contract changes, restartable backfills, coexistence checks, and rollback gates",
     deployed: [],
     offline: [
-      "migration policy requires one declaration and CODEOWNER confirmation for sensitive migration-none changes",
+      "migration policy requires exactly one declaration and reports sensitive paths",
       "migration runner applies every unapplied migration in order and is restartable",
     ],
   },
