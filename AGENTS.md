@@ -13,6 +13,7 @@
 - When a task requires resolving discrepancies, implement and verify discovered discrepancies before reporting the audit complete.
 - When a recurring audit changes repository files, finish that cycle by committing and pushing the changes, then verify CI passes on the pushed commit before reporting completion.
 - When using an isolated clone or worktree to preserve local changes, do not report completion until the primary checkout is reconciled with the pushed branch or its remaining divergence is explicitly reported and approved.
+- Before removing temporary clones or worktrees, inventory their committed and uncommitted changes, integrate every unique change into the primary checkout, and verify the consolidated result.
 - Expose distinct developer workflows as explicit commands; keep environment-selected service dispatch internal to orchestrators and deployment runtimes.
 - Keep caller-facing black-box E2E tests independent of deployment-stage and infrastructure metadata; test provider-specific infrastructure through a separate acceptance suite.
 - Give top-level test commands safe defaults when possible; do not require undocumented environment setup for their basic supported path.
