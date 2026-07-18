@@ -16,6 +16,10 @@ concurrency:
 
 jobs:
   promote:
+    if: >-
+      vars.AWS_REGION != '' &&
+      vars.AWS_DEPLOY_ROLE_ARN != '' &&
+      vars.ECR_REPOSITORY != ''
     runs-on: ubuntu-latest
     timeout-minutes: 180
     environment: production

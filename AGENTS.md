@@ -22,4 +22,5 @@
 - Keep pre-v0 operator configuration minimal: expose only values that must vary by installation, and keep tuning thresholds, feature policy, generated metadata, and safe defaults in typed code.
 - When a demo exercises live flows, print the actual sanitized requests, responses, and protocol details for each step rather than only outcome descriptions.
 - Pace long terminal demos between major steps when interactive, and provide a non-interactive mode that is safe for automation and redirected output.
+- Track promised deliverable cleanup items through verification; explicitly report any blocked item instead of silently omitting it.
 - When verifying deliverable access, prefer existing public or link-sharing access; do not grant a named recipient explicit access unless the user asks.

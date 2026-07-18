@@ -36,6 +36,9 @@ test("AWS delivery workflows build once, promote unchanged, serialize releases, 
   const ephemeral = file(".github/workflows/aws-pr.yml");
   const janitor = file(".github/workflows/ephemeral-janitor.yml");
   assert.match(release, /cancel-in-progress: false/);
+  assert.match(release, /vars\.AWS_REGION != ''/);
+  assert.match(release, /vars\.AWS_DEPLOY_ROLE_ARN != ''/);
+  assert.match(release, /vars\.ECR_REPOSITORY != ''/);
   assert.match(release, /Build candidate once/);
   assert.ok((release.match(/RELEASE_IMAGE_URI: \$\{\{ steps\.image\.outputs\.uri \}\}/g) ?? []).length >= 2);
   assert.match(release, /assert-current-main/);

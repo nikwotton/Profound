@@ -55,6 +55,8 @@ At minimum configure:
 - `AWS_DEPLOY_ROLE_ARN`
 - `ECR_REPOSITORY`
 
+The production release job skips cleanly until all three values are configured. This keeps repository CI usable before an AWS installation is connected without implying that deployment has been validated.
+
 The pull-request AWS acceptance job is skipped until `AWS_REGION` and `AWS_DEPLOY_ROLE_ARN` are configured. Do not require `production-shaped` in branch protection until its variables, protected environment, and secrets are present and a test deployment has passed.
 
 The deploy role should have only the permissions required by SST, ECR promotion, migrations, deployed verification, and cleanup for its environment. Production and non-production should use distinct trust conditions and, where practical, distinct roles/accounts.
