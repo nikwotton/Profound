@@ -12,6 +12,7 @@ import {
   createRoute,
   exchangeViaHttpConnect,
   materializeIssuedAccessGrant,
+  recentWallClockRange,
   requestViaProxy,
   startEchoTarget,
   startHttpTarget,
@@ -189,14 +190,15 @@ test("stateless residential soft saturation promotes an eligible device-backed f
 
   const usageStore = new InMemoryRouteStore(testApp.storeState);
   try {
-    let records = await usageStore.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+    const usageRange = recentWallClockRange();
+    let records = await usageStore.listUsageRecords(...usageRange);
     const deadline = Date.now() + 2_000;
     while (
       !records.some((record) => record.id !== "bright-data-soft-pressure" && record.provider === "proxidize") &&
       Date.now() < deadline
     ) {
       await new Promise((resolve) => setTimeout(resolve, 10));
-      records = await usageStore.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+      records = await usageStore.listUsageRecords(...usageRange);
     }
     const fallback = records.find((record) => record.id !== "bright-data-soft-pressure" && record.provider === "proxidize");
     assert.equal(fallback?.failover, true);
