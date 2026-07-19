@@ -13,6 +13,7 @@ import {
   exchangeViaHttpConnect,
   exchangeViaSocks5,
   materializeIssuedAccessGrant,
+  recentWallClockRange,
   requestViaProxy,
   socks5AuthenticationStatus,
   startEchoTarget,
@@ -198,7 +199,7 @@ test("logical-session APIs require an explicit mode and support rotation, close,
   assert.equal(((await inspectedGrant.json()) as { grant: { jobId: string | null } }).grant.jobId, "job-managed-lifecycle");
   const storedUsage = new InMemoryRouteStore(testApp.storeState);
   try {
-    const usage = await storedUsage.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+    const usage = await storedUsage.listUsageRecords(...recentWallClockRange());
     assert.ok(usage.length >= 2);
     assert.ok(usage.every((record) => record.jobId === "job-managed-lifecycle"));
     assert.ok(usage.every((record) => record.logicalOperationId.length > 0));
@@ -381,7 +382,7 @@ test("managed cross-class fallback fails back only after health stabilization an
   await new Promise<void>((resolve) => setImmediate(resolve));
   const store = new InMemoryRouteStore(testApp.storeState);
   try {
-    const usage = await store.listUsageRecords("2026-07-17T00:00:00.000Z", "2026-07-19T00:00:00.000Z");
+    const usage = await store.listUsageRecords(...recentWallClockRange());
     assert.ok(usage.some((record) => record.degradedFallback === true));
     assert.ok(usage.some((record) => record.failbackOutcome === "success"));
   } finally {

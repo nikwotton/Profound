@@ -38,6 +38,11 @@ export interface CreatedRouteResponse {
   proxyUrls: { http: string; socks5: string };
 }
 
+export function recentWallClockRange(paddingMs = 60_000): readonly [from: string, to: string] {
+  const now = Date.now();
+  return [new Date(now - paddingMs).toISOString(), new Date(now + paddingMs).toISOString()];
+}
+
 export type IssuedAccessGrantApiResponse = typeof IssuedAccessGrantSchema.Type;
 
 export function materializeIssuedAccessGrant(issued: IssuedAccessGrantApiResponse): Omit<CreatedRouteResponse, "profile"> {

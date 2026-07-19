@@ -8,6 +8,7 @@ import {
   createRoute,
   exchangeViaHttpConnect,
   exchangeViaSocks5,
+  recentWallClockRange,
   requestViaProxy,
   startEchoTarget,
   startHttpTarget,
@@ -185,11 +186,12 @@ test("HTTP, HTTPS CONNECT, and SOCKS5 attempts persist authoritative usage recor
 
   const store = new InMemoryRouteStore(testApp.storeState);
   try {
-    let records = await store.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+    const usageRange = recentWallClockRange();
+    let records = await store.listUsageRecords(...usageRange);
     const deadline = Date.now() + 2_000;
     while (records.length < 3 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
-      records = await store.listUsageRecords("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z");
+      records = await store.listUsageRecords(...usageRange);
     }
     assert.deepEqual(new Set(records.map((record) => record.protocol)), new Set(["http", "https", "socks5"]));
     assert.ok(records.every((record) => record.kind === "attempt" && record.pricingVersion !== undefined));
