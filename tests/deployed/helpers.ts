@@ -399,6 +399,9 @@ export async function requestViaHttpProxy(
   targetUrl: string,
   options: { method?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<ProxyResponse> {
+  if (new URL(targetUrl).protocol === "https:") {
+    return requestViaHttpConnect(proxyUrl, targetUrl, options);
+  }
   const proxy = new URL(proxyUrl);
   const transport = proxy.protocol === "https:" ? httpsRequest : httpRequest;
   return await new Promise((resolve, reject) => {

@@ -42,6 +42,11 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - run: pnpm install --frozen-lockfile
+      - name: Prepare GeoIP bundle
+        run: pnpm geoip:prepare
+        env:
+          MAXMIND_ACCOUNT_ID: ${{ secrets.MAXMIND_ACCOUNT_ID }}
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
       - name: Ignore superseded main candidates
         id: candidate
         run: pnpm exec tsx scripts/assert-current-main.ts
@@ -71,6 +76,29 @@ jobs:
           CONTROL_CERT_ARN: ${{ vars.STAGING_CONTROL_CERT_ARN }}
           DATA_PLANE_ALLOWED_CIDRS: ${{ vars.STAGING_DATA_PLANE_ALLOWED_CIDRS }}
           CONTROL_PLANE_ALLOWED_CIDRS: ${{ vars.STAGING_CONTROL_PLANE_ALLOWED_CIDRS }}
+      - name: Connect runner to the staging VPC
+        if: steps.candidate.outputs.current == 'true'
+        shell: bash
+        run: |
+          pnpm sst tunnel --stage staging > /tmp/sst-tunnel.log 2>&1 &
+          for attempt in {1..30}; do
+            grep -q "Tunnel ready" /tmp/sst-tunnel.log && exit 0
+            sleep 2
+          done
+          cat /tmp/sst-tunnel.log
+          exit 1
+      - name: Wait for the staging candidate to serve traffic
+        if: steps.candidate.outputs.current == 'true'
+        shell: bash
+        run: |
+          metadata="$(aws ssm get-parameter --name "/sst/profound-proxy-router/staging/deployed-integration" --query 'Parameter.Value' --output text)"
+          aws ecs wait services-stable --cluster "$(jq -r '.services.proxy.cluster' <<< "$metadata")" --services "$(jq -r '.services.proxy.service' <<< "$metadata")"
+      - name: Run ordered staging migrations
+        if: steps.candidate.outputs.current == 'true'
+        shell: bash
+        run: |
+          metadata="$(aws ssm get-parameter --name "/sst/profound-proxy-router/staging/deployed-integration" --query 'Parameter.Value' --output text)"
+          ROUTE_TABLE_NAME="$(jq -r '.routeTable' <<< "$metadata")" pnpm migrate
       - name: Staging release validation
         if: steps.candidate.outputs.current == 'true'
         run: pnpm test:live
@@ -102,6 +130,18 @@ jobs:
           CONTROL_CERT_ARN: ${{ vars.CONTROL_CERT_ARN }}
           DATA_PLANE_ALLOWED_CIDRS: ${{ vars.DATA_PLANE_ALLOWED_CIDRS }}
           CONTROL_PLANE_ALLOWED_CIDRS: ${{ vars.CONTROL_PLANE_ALLOWED_CIDRS }}
+      - name: Run ordered production migrations
+        if: steps.reconciled.outputs.current == 'true'
+        shell: bash
+        run: |
+          metadata="$(aws ssm get-parameter --name "/sst/profound-proxy-router/production/deployed-integration" --query 'Parameter.Value' --output text)"
+          ROUTE_TABLE_NAME="$(jq -r '.routeTable' <<< "$metadata")" pnpm migrate
+      - name: Wait for the production candidate to serve traffic
+        if: steps.reconciled.outputs.current == 'true'
+        shell: bash
+        run: |
+          metadata="$(aws ssm get-parameter --name "/sst/profound-proxy-router/production/deployed-integration" --query 'Parameter.Value' --output text)"
+          aws ecs wait services-stable --cluster "$(jq -r '.services.proxy.cluster' <<< "$metadata")" --services "$(jq -r '.services.proxy.service' <<< "$metadata")"
       - name: Record deployed manifest and cumulative release notes
         if: steps.reconciled.outputs.current == 'true'
         run: pnpm exec tsx scripts/record-release.ts

@@ -11,6 +11,7 @@ import {
   proxyWithCredentials,
   requestViaHttpProxy,
   revokeRoute,
+  waitFor,
 } from "./helpers.js";
 
 deployedTest("deployed SST metadata identifies a mock non-production stage with a controlled serverless target", async () => {
@@ -87,7 +88,7 @@ deployedTest(
   "deployed access grants are principal-scoped, one-time, independently revocable, and absent from route profiles",
   async (t) => {
     const environment = await deployedEnvironment();
-    const target = environment.metadata.integrationTarget;
+    const target = environment.metadata.integrationTransportTarget;
     assert.ok(target);
     const route = await createRoute({
       name: `credential-lifecycle-${Date.now()}`,
@@ -199,15 +200,19 @@ deployedTest(
     assert.equal(emergencyRotationResponse.status, 200);
     const emergency = Schema.decodeUnknownSync(IssuedAccessGrantSchema)(await emergencyRotationResponse.json());
     const emergencyProxy = proxyWithCredentials(emergency.endpoints.http, emergency.credential.username, emergency.credential.password);
-    assert.equal((await requestViaHttpProxy(route.proxyUrls.http, new URL("/lifecycle", target.url).toString())).status, 407);
-    assert.equal((await requestViaHttpProxy(rotatedProxy, new URL("/lifecycle", target.url).toString())).status, 407);
+    const lifecycleTarget = new URL("/lifecycle", target.url).toString();
+    await waitFor("emergency credential rotation to reach the data plane", async () =>
+      (await requestViaHttpProxy(rotatedProxy, lifecycleTarget)).status === 407 ? true : undefined,
+    );
+    assert.equal((await requestViaHttpProxy(route.proxyUrls.http, lifecycleTarget)).status, 200);
     assert.equal((await requestViaHttpProxy(emergencyProxy, new URL("/lifecycle", target.url).toString())).status, 200);
 
     const revoke = await controlRequest(`/v1/grants/${route.accessGrant.id}`, { method: "DELETE" });
     assert.equal(revoke.status, 204);
     assert.equal((await controlRequest(`/v1/grants/${route.accessGrant.id}`, { method: "DELETE" })).status, 204);
-    const revoked = await requestViaHttpProxy(emergencyProxy, new URL("/lifecycle", target.url).toString());
-    assert.equal(revoked.status, 407);
+    await waitFor("grant revocation to reach the data plane", async () =>
+      (await requestViaHttpProxy(emergencyProxy, lifecycleTarget)).status === 407 ? true : undefined,
+    );
     const secondProxy = proxyWithCredentials(second.endpoints.http, second.credential.username, second.credential.password);
     assert.equal((await requestViaHttpProxy(secondProxy, new URL("/lifecycle", target.url).toString())).status, 200);
 

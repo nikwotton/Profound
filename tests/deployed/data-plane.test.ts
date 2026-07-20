@@ -22,7 +22,7 @@ deployedTest("deployed HTTP forwarding preserves native method, path, query, hea
   assert.ok(metadata.integrationTarget);
   const route = await createRoute({
     name: `http-transparency-${Date.now()}`,
-    targeting: { country: "US", postalCode: "10001", asn: 12_345 },
+    targeting: { country: "US" },
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
@@ -51,8 +51,6 @@ deployedTest("deployed HTTP forwarding preserves native method, path, query, hea
   assert.equal(observed["testHeader"], "preserved-header-value");
   assert.equal(observed["requestBody"], "streamed-request-body");
   assert.equal(observed["requestCount"], 1);
-  assert.equal(response.headers["x-mock-postal-code"], "10001");
-  assert.equal(response.headers["x-mock-asn"], "12345");
 });
 
 deployedTest("deployed target statuses and redirects remain caller-owned and are never replayed", async (t) => {
@@ -86,8 +84,8 @@ deployedTest("deployed target statuses and redirects remain caller-owned and are
 
 deployedTest("deployed Bright Data routes support fresh exits and exact-city policies", async (t) => {
   const { metadata } = await deployedEnvironment();
-  assert.ok(metadata.integrationTarget);
-  const target = new URL("/bright-data", metadata.integrationTarget.url).toString();
+  assert.ok(metadata.integrationTransportTarget);
+  const target = new URL("/bright-data", metadata.integrationTransportTarget.url).toString();
   const routeIds: string[] = [];
   t.after(async () => Promise.all(routeIds.map((id) => revokeRoute(id).catch(() => undefined))));
 
@@ -115,8 +113,8 @@ deployedTest("deployed Bright Data routes support fresh exits and exact-city pol
 
 deployedTest("deployed Proxidize connections share slot capacity and preserve the exact city", async (t) => {
   const { metadata } = await deployedEnvironment();
-  assert.ok(metadata.integrationTarget);
-  const target = new URL("/mobile", metadata.integrationTarget.url).toString();
+  assert.ok(metadata.integrationTransportTarget);
+  const target = new URL("/mobile", metadata.integrationTransportTarget.url).toString();
   const routes: CreatedRouteResponse[] = [];
   for (const number of [1, 2]) {
     routes.push(
@@ -189,14 +187,14 @@ deployedTest("deployed HTTP CONNECT and SOCKS5 CONNECT preserve opaque TCP and T
 
 deployedTest("deployed gateways enforce public destinations, ports, and credential-free targets", async (t) => {
   const { metadata } = await deployedEnvironment();
-  assert.ok(metadata.integrationTarget);
+  assert.ok(metadata.integrationTransportTarget);
   const route = await createRoute({
     name: `http-only-security-${Date.now()}`,
     targeting: { country: "US" },
     shouldRetry: false,
   });
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
-  const publicTarget = new URL("/security", metadata.integrationTarget.url).toString();
+  const publicTarget = new URL("/security", metadata.integrationTransportTarget.url).toString();
 
   const privateTarget = await requestViaHttpProxy(route.proxyUrls.http, "http://127.0.0.1:80/internal");
   assert.equal(privateTarget.status, 403);

@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { createIntegrationTargets } from "./aws-integration-targets.js";
 import { createOperationsServices } from "./aws-operations-services.js";
 import { v0Policy } from "./aws-policy.js";
-import { containerHttpHealth } from "./aws-service-config.js";
+import { containerHttpHealth, createPrivateHttpIngress } from "./aws-service-config.js";
 import { containerSecret } from "./aws-secrets.js";
 import { createStateResources } from "./aws-state.js";
 import { createTelemetryCollectorServices } from "./aws-telemetry-services.js";
@@ -322,7 +322,14 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
       memory: "2 GB",
       permissions: [
         {
-          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:TransactWriteItems", "dynamodb:Query"],
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+            "dynamodb:DeleteItem",
+            "dynamodb:TransactWriteItems",
+            "dynamodb:Query",
+          ],
           resources: [routeState.arn, $interpolate`${routeState.arn}/index/*`],
         },
       ],
@@ -377,7 +384,7 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
         cpuUtilization: 60,
         memoryUtilization: 70,
       },
-      wait: true,
+      wait: false,
       transform: {
         executionRole(args) {
           args.inlinePolicies =
@@ -404,9 +411,10 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
             securityGroups: [proxyTaskSecurityGroup.id],
           };
           args.deploymentCircuitBreaker = undefined;
+          args.serviceRegistries = undefined;
           args.deploymentConfiguration = {
             strategy: "BLUE_GREEN",
-            bakeTimeInMinutes: "360",
+            bakeTimeInMinutes: cloudTestStage ? "0" : "360",
             lifecycleHooks: [
               {
                 hookTargetArn: deploymentCoordinator.arn,
@@ -489,6 +497,14 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
     }
     const host = $dev ? "127.0.0.1" : (proxyDomain ?? proxyLoadBalancer.dnsName);
 
+    const controlPlaneIngress = createPrivateHttpIngress("ControlPlane", {
+      vpc,
+      port: 8081,
+      healthPath: "/health/ready",
+      domain: controlDomain,
+      certificateArn: controlCertificateArn,
+      allowedCidrs: controlPlaneCidrs,
+    });
     const controlPlane = new sst.aws.Service("ControlPlane", {
       cluster,
       dev: { url: "http://127.0.0.1:8081" },
@@ -532,25 +548,6 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
           logging: { retention: "1 month" },
         },
       ],
-      loadBalancer: {
-        public: false,
-        ...(controlDomain === undefined
-          ? {}
-          : {
-              domain:
-                controlCertificateArn === undefined
-                  ? controlDomain
-                  : { name: controlDomain, dns: false as const, cert: controlCertificateArn },
-            }),
-        rules: [
-          {
-            listen: controlDomain === undefined ? "80/http" : "443/https",
-            forward: "8081/http",
-            container: "app",
-          },
-        ],
-        health: { "8081/http": { path: "/health/ready", interval: "30 seconds" } },
-      },
       scaling: { min: 1, max: production ? 2 : 1, cpuUtilization: 60, memoryUtilization: 70 },
       wait: true,
       transform: {
@@ -569,9 +566,7 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
             },
           ];
         },
-        loadBalancerSecurityGroup(args) {
-          args.ingress = portIngress(controlDomain === undefined ? 80 : 443, controlPlaneCidrs);
-        },
+        service: controlPlaneIngress.attach,
       },
     });
 
@@ -622,27 +617,29 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
       applicationImage,
     });
 
-    const { healthAggregator, status, usageAccounting, notification } = createOperationsServices({
-      cluster,
-      production,
-      routeState,
-      applicationImage,
-      providerMode,
-      healthAggregatorToken,
-      canarySigningSecret,
-      providerSecrets,
-      syntheticRouteSecrets,
-      canaryApi,
-      tlsEnabled,
-      host,
-      proxidizeExactCitySupport,
-      telemetryCollectorEndpoint,
-      otelEnvironment,
-      devHealthAggregatorToken,
-      devCanarySigningSecret,
-      usageAccountingSourceToken,
-      alertDestinationSecret,
-    });
+    const { healthAggregator, healthAggregatorUrl, status, statusUrl, usageAccounting, usageAccountingUrl, notification } =
+      createOperationsServices({
+        cluster,
+        vpc,
+        production,
+        routeState,
+        applicationImage,
+        providerMode,
+        healthAggregatorToken,
+        canarySigningSecret,
+        providerSecrets,
+        syntheticRouteSecrets,
+        canaryApi,
+        tlsEnabled,
+        host,
+        proxidizeExactCitySupport,
+        telemetryCollectorEndpoint,
+        otelEnvironment,
+        devHealthAggregatorToken,
+        devCanarySigningSecret,
+        usageAccountingSourceToken,
+        alertDestinationSecret,
+      });
 
     const integrationMetadataParameterName = `/sst/${$app.name}/${$app.stage}/deployed-integration`;
     const integrationMetadata = $dev
@@ -650,6 +647,7 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
       : new aws.ssm.Parameter("DeployedIntegrationMetadata", {
           name: integrationMetadataParameterName,
           type: "String",
+          tier: "Advanced",
           value: $jsonStringify({
             schemaVersion: 3,
             app: $app.name,
@@ -683,12 +681,12 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
             },
             httpProxy: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
             socks5Proxy: $interpolate`socks5h://${host}:${socks5Port}`,
-            controlApi: controlPlane.url,
+            controlApi: controlPlaneIngress.url,
             publicCanary: canaryApi.url,
-            statusApplication: status.url,
-            companyDashboard: status.url,
-            usageAccounting: usageAccounting.url,
-            healthAggregator: healthAggregator.url,
+            statusApplication: statusUrl,
+            companyDashboard: statusUrl,
+            usageAccounting: usageAccountingUrl,
+            healthAggregator: healthAggregatorUrl,
             productVpcId: vpc.id,
             canaryVpcId: canaryVpc.id,
             services: {
@@ -785,8 +783,8 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
       loadBalancerHost: $dev ? "not-deployed-in-sst-dev" : proxyLoadBalancer.dnsName,
       httpProxy: $interpolate`${tlsEnabled ? "https" : "http"}://${host}:8080`,
       socks5Proxy: $interpolate`socks5h://${host}:${socks5Port}`,
-      controlApi: controlPlane.url,
-      apiDocs: $interpolate`${controlPlane.url}/docs`,
+      controlApi: controlPlaneIngress.url,
+      apiDocs: $interpolate`${controlPlaneIngress.url}/docs`,
       providerMode,
       routeTable: routeState.name,
       deploymentProvider: "aws",
@@ -794,10 +792,10 @@ export const awsDeployment: Parameters<typeof $config>[0] = {
       axiomEndpoint,
       axiomDatasets,
       telemetryRetentionDays,
-      statusApplication: status.url,
-      companyDashboard: status.url,
-      usageAccounting: usageAccounting.url,
-      healthAggregator: healthAggregator.url,
+      statusApplication: statusUrl,
+      companyDashboard: statusUrl,
+      usageAccounting: usageAccountingUrl,
+      healthAggregator: healthAggregatorUrl,
       publicCanary: canaryApi.url,
       integrationTarget: integrationTargetApi?.url ?? "not-deployed",
       integrationTransportTarget: integrationTransportTarget?.url ?? "not-deployed",

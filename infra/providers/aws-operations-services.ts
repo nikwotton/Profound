@@ -1,10 +1,11 @@
 /// <reference path="../../.sst/platform/config.d.ts" />
 
 import { v0Policy } from "./aws-policy.js";
-import { containerHttpHealth, privateHttpLoadBalancer } from "./aws-service-config.js";
+import { containerHttpHealth, createPrivateHttpIngress } from "./aws-service-config.js";
 import type { containerSecret } from "./aws-secrets.js";
 
 type Cluster = InstanceType<typeof sst.aws.Cluster>;
+type Vpc = InstanceType<typeof sst.aws.Vpc>;
 type RouteTable = InstanceType<typeof sst.aws.Dynamo>;
 type CanaryApi = InstanceType<typeof sst.aws.ApiGatewayV2>;
 type SecretReference = ReturnType<typeof containerSecret>;
@@ -19,6 +20,7 @@ type OtelEnvironment = (
 
 export function createOperationsServices(options: {
   cluster: Cluster;
+  vpc: Vpc;
   production: boolean;
   routeState: RouteTable;
   applicationImage: ServiceImage;
@@ -40,6 +42,7 @@ export function createOperationsServices(options: {
 }) {
   const {
     cluster,
+    vpc,
     production,
     routeState,
     applicationImage,
@@ -66,6 +69,11 @@ export function createOperationsServices(options: {
     ...(providerSecrets === undefined ? [] : Object.values(providerSecrets)),
     ...(syntheticRouteSecrets === undefined ? [] : Object.values(syntheticRouteSecrets)),
   ];
+  const healthAggregatorIngress = createPrivateHttpIngress("HealthAggregator", {
+    vpc,
+    port: 8082,
+    healthPath: "/health/ready",
+  });
   const healthAggregator = new sst.aws.Service("HealthAggregator", {
     cluster,
     dev: { url: "http://127.0.0.1:8082" },
@@ -130,7 +138,6 @@ export function createOperationsServices(options: {
         logging: { retention: "1 month" },
       },
     ],
-    loadBalancer: privateHttpLoadBalancer(8082, "/health/ready"),
     scaling: { min: 1, max: 1 },
     wait: true,
     transform: {
@@ -149,9 +156,15 @@ export function createOperationsServices(options: {
           },
         ];
       },
+      service: healthAggregatorIngress.attach,
     },
   });
 
+  const statusIngress = createPrivateHttpIngress("CompanyDashboard", {
+    vpc,
+    port: 8083,
+    healthPath: "/health/live",
+  });
   const status = new sst.aws.Service("CompanyDashboard", {
     cluster,
     dev: { url: "http://127.0.0.1:8083" },
@@ -178,7 +191,7 @@ export function createOperationsServices(options: {
           STATUS_APP_HOST: $dev ? "127.0.0.1" : "0.0.0.0",
           STATUS_APP_PORT: "8083",
           STATUS_STALE_AFTER_MS: v0Policy.health.statusStaleAfterMs,
-          HEALTH_AGGREGATOR_URL: healthAggregator.url,
+          HEALTH_AGGREGATOR_URL: healthAggregatorIngress.url,
           ...otelEnvironment(`profound-proxy-status-${$app.stage}`, telemetryCollectorEndpoint),
           ...($dev ? { HEALTH_AGGREGATOR_TOKEN: devHealthAggregatorToken } : {}),
         },
@@ -187,7 +200,6 @@ export function createOperationsServices(options: {
         logging: { retention: "1 month" },
       },
     ],
-    loadBalancer: privateHttpLoadBalancer(8083, "/health/live"),
     scaling: { min: 1, max: production ? 2 : 1, cpuUtilization: 60, memoryUtilization: 70 },
     wait: true,
     transform: {
@@ -206,9 +218,15 @@ export function createOperationsServices(options: {
           },
         ];
       },
+      service: statusIngress.attach,
     },
   });
 
+  const usageAccountingIngress = createPrivateHttpIngress("UsageAccounting", {
+    vpc,
+    port: 8085,
+    healthPath: "/health/ready",
+  });
   const usageAccounting = new sst.aws.Service("UsageAccounting", {
     cluster,
     dev: { url: "http://127.0.0.1:8085" },
@@ -249,7 +267,6 @@ export function createOperationsServices(options: {
         logging: { retention: "1 month" },
       },
     ],
-    loadBalancer: privateHttpLoadBalancer(8085, "/health/ready"),
     scaling: { min: 1, max: 1 },
     wait: true,
     transform: {
@@ -271,9 +288,15 @@ export function createOperationsServices(options: {
                 },
               ];
       },
+      service: usageAccountingIngress.attach,
     },
   });
 
+  const notificationIngress = createPrivateHttpIngress("NotificationService", {
+    vpc,
+    port: 8084,
+    healthPath: "/health/ready",
+  });
   const notification = new sst.aws.Service("NotificationService", {
     cluster,
     dev: { url: "http://127.0.0.1:8084" },
@@ -310,7 +333,6 @@ export function createOperationsServices(options: {
         logging: { retention: "1 month" },
       },
     ],
-    loadBalancer: privateHttpLoadBalancer(8084, "/health/ready"),
     scaling: { min: 1, max: 1 },
     wait: true,
     transform: {
@@ -332,8 +354,17 @@ export function createOperationsServices(options: {
                 },
               ];
       },
+      service: notificationIngress.attach,
     },
   });
 
-  return { healthAggregator, status, usageAccounting, notification };
+  return {
+    healthAggregator,
+    healthAggregatorUrl: healthAggregatorIngress.url,
+    status,
+    statusUrl: statusIngress.url,
+    usageAccounting,
+    usageAccountingUrl: usageAccountingIngress.url,
+    notification,
+  };
 }

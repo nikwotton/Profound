@@ -42,13 +42,13 @@ export function basicAuth(username: string, password: string): string {
 
 export function parseHostPort(authority: string, defaultPort: number): { host: string; port: number } {
   try {
-    const url = new URL(`http://${authority}`);
+    const url = new URL(`tcp://${authority}`);
     if (
       authority.trim() === "" ||
       url.hostname === "" ||
       url.username !== "" ||
       url.password !== "" ||
-      url.pathname !== "/" ||
+      url.pathname !== "" ||
       url.search !== "" ||
       url.hash !== ""
     ) {

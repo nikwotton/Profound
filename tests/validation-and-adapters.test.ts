@@ -342,6 +342,8 @@ test("destination safety is verified with provider evidence and provider-trusted
 
 test("CONNECT authority parsing rejects embedded credentials, paths, and queries", () => {
   assert.deepEqual(parseHostPort("example.com:443", 443), { host: "example.com", port: 443 });
+  assert.deepEqual(parseHostPort("example.com:80", 443), { host: "example.com", port: 80 });
+  assert.deepEqual(parseHostPort("example.com", 443), { host: "example.com", port: 443 });
   assert.deepEqual(parseHostPort("[2606:4700:4700::1111]:443", 443), {
     host: "2606:4700:4700::1111",
     port: 443,

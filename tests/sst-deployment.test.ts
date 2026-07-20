@@ -7,6 +7,7 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   const root = readFileSync("sst.config.ts", "utf8");
   const aws = awsInfrastructureSource();
   const awsPolicy = readFileSync("infra/providers/aws-policy.ts", "utf8");
+  const awsServiceConfig = readFileSync("infra/providers/aws-service-config.ts", "utf8");
   const awsTelemetry = readFileSync("infra/providers/aws-telemetry-config.ts", "utf8");
 
   assert.doesNotMatch(root, /DEPLOYMENT_PROVIDER|process\.env/);
@@ -20,10 +21,13 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /new sst\.Secret\("HealthAggregatorToken", \$dev \? devHealthAggregatorToken : undefined\)/);
   assert.match(aws, /"CanarySigningSecret",\s*\$dev \? devCanarySigningSecret : undefined/);
   assert.match(aws, /schemaVersion: 3/);
+  assert.match(aws, /new aws\.ssm\.Parameter\("DeployedIntegrationMetadata"[\s\S]*?tier: "Advanced"/);
   assert.match(aws, /new sst\.Secret\("ControlApiIdentities"\)/);
   assert.match(aws, /CONTROL_API_IDENTITIES_JSON: controlIdentitiesSecret/);
   assert.match(aws, /new sst\.aws\.Service\("ProxyRouter"/);
   assert.match(aws, /new sst\.aws\.Service\("ProxyRouter"[\s\S]*?dev: \{ url: "http:\/\/127\.0\.0\.1:8080" \}/);
+  assert.match(aws, /new sst\.aws\.Service\("ProxyRouter"[\s\S]*?"dynamodb:DeleteItem"[\s\S]*?containers:/);
+  assert.match(aws, /new sst\.aws\.Service\("ProxyRouter"[\s\S]*?wait: false/);
   assert.match(aws, /const host = \$dev \? "127\.0\.0\.1"/);
   assert.match(aws, /const socks5Port = \$dev \? 1081 : 1080/);
   assert.match(aws, /SOCKS5_PROXY_PORT: String\(socks5Port\)/);
@@ -31,7 +35,7 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /new sst\.aws\.Service\("ControlPlane"/);
   assert.match(aws, /new sst\.aws\.Service\("HealthAggregator"/);
   assert.match(aws, /new sst\.aws\.Service\("CompanyDashboard"/);
-  assert.match(aws, /companyDashboard: status\.url/);
+  assert.match(aws, /companyDashboard: statusUrl/);
   assert.doesNotMatch(aws, /internalDashboard/);
   assert.match(aws, /new sst\.aws\.Service\("UsageAccounting"/);
   assert.match(aws, /new sst\.aws\.Service\("NotificationService"/);
@@ -56,6 +60,8 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /new aws\.lb\.TargetGroup\("ProxySocksBlueTarget"/);
   assert.match(aws, /new aws\.lb\.TargetGroup\("ProxySocksGreenTarget"/);
   assert.match(aws, /strategy: "BLUE_GREEN"/);
+  assert.match(aws, /bakeTimeInMinutes: cloudTestStage \? "0" : "360"/);
+  assert.match(aws, /args\.serviceRegistries = undefined/);
   assert.match(aws, /lifecycleStages: \["POST_PRODUCTION_TRAFFIC_SHIFT"\]/);
   assert.match(aws, /alternateTargetGroupArn: httpGreenTarget\.arn/);
   assert.match(aws, /alternateTargetGroupArn: socksGreenTarget\.arn/);
@@ -67,6 +73,8 @@ test("SST isolates AWS resources behind a provider-selected deployment module", 
   assert.match(aws, /iam::aws:policy\/AmazonECSInfrastructureRolePolicyForLoadBalancers/);
   assert.doesNotMatch(aws, /iam::aws:policy\/service-role\/AmazonECSInfrastructureRolePolicyForLoadBalancers/);
   assert.match(awsPolicy, /geoIpDatabaseSource: "\.sst\/geoip\/GeoLite2-City\.mmdb"/);
+  assert.match(awsServiceConfig, /new aws\.lb\.ListenerRule/);
+  assert.match(awsServiceConfig, /opts\.dependsOn = rule/);
   assert.match(aws, /copyFiles: geoIpBundleConfigured/);
   assert.match(awsTelemetry, /otlp_http\/axiom_logs/);
   assert.match(awsTelemetry, /otlp_http\/axiom_traces/);

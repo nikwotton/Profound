@@ -532,7 +532,7 @@ deployedTest("deployed access-grant credentials and route requirements survive a
     return;
   }
   const environment = await deployedEnvironment();
-  assert.ok(environment.metadata.integrationTarget);
+  assert.ok(environment.metadata.integrationTransportTarget);
   const proxyService = environment.metadata.services.proxy;
   const route = await createRoute(
     {
@@ -544,10 +544,11 @@ deployedTest("deployed access-grant credentials and route requirements survive a
     "managed",
   );
   t.after(() => revokeRoute(route.profile.id).catch(() => undefined));
-  const target = new URL("/restart", environment.metadata.integrationTarget.url).toString();
+  const target = new URL("/restart", environment.metadata.integrationTransportTarget.url).toString();
   const before = await requestViaHttpProxy(route.proxyUrls.http, target);
   assert.equal(before.status, 200);
   const city = before.headers["x-mock-city"];
+  assert.equal(city, "Los Angeles");
 
   const previousTasks = await awsJson(
     ["ecs", "list-tasks", "--cluster", proxyService.cluster, "--service-name", proxyService.service],
